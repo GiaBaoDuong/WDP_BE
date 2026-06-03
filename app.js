@@ -7,6 +7,15 @@ const logger = require("morgan");
 const mongoose = require("mongoose");
 const session = require("express-session");
 const User = require("./models/User");
+const { MangaSeries } = require("./models/MangaSeries");
+const SeriesDraftFile = require("./models/SeriesDraftFile");
+const { EBVote } = require("./models/EBVote");
+const ReaderVote = require("./models/ReaderVote");
+const { Chapter } = require("./models/Chapter");
+const { MangaPage } = require("./models/MangaPage");
+const { AssistantTask } = require("./models/AssistantTask");
+const { EditorFeedback } = require("./models/EditorFeedback");
+const { PageNote } = require("./models/PageNote");
 
 const app = express();
 
@@ -22,9 +31,18 @@ mongoose
     // Init collections
     await Promise.all([
       User.createCollection(),
+      MangaSeries.createCollection(),
+      SeriesDraftFile.createCollection(),
+      EBVote.createCollection(),
+      ReaderVote.createCollection(),
+      Chapter.createCollection(),
+      MangaPage.createCollection(),
+      AssistantTask.createCollection(),
+      EditorFeedback.createCollection(),
+      PageNote.createCollection(),
     ]);
 
-    console.log("📦 Collections initialized: user");
+    console.log("📦 Collections initialized: user, mangaSeries, seriesDraftFiles, ebVotes, readerVotes, chapters, mangaPages, pageNotes, assistantTasks, editorFeedbacks");
 
     const port = process.env.PORT || 3000;
     console.log(`🚀 App running at: http://localhost:${port}`);
@@ -44,6 +62,7 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
 app.use(cookieParser());
 app.use(express.static(path.join(__dirname, "public")));
+app.use("/uploads", express.static(path.join(__dirname, "uploads")));
 
 // Session setup
 app.use(
@@ -57,9 +76,17 @@ app.use(
 
 // Import routes
 const authRouter = require("./routes/auth");
+const mangakaRouter = require("./routes/mangaka");
+const editorRouter = require("./routes/editor");
+const ebRouter = require("./routes/eb");
+const readerRouter = require("./routes/reader");
 
 // Register routes
 app.use("/auth", authRouter);
+app.use("/mangaka", mangakaRouter);
+app.use("/editor", editorRouter);
+app.use("/eb", ebRouter);
+app.use("/reader", readerRouter);
 
 // Welcome route
 app.get("/", (req, res) => {
