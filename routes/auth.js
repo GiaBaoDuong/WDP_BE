@@ -30,6 +30,29 @@ const buildUserResponse = (user) => ({
   proExpiredAt: null,
 });
 
+/**
+ * @swagger
+ * /auth/register:
+ *   post:
+ *     summary: Đăng ký tài khoản mới
+ *     tags: [Auth]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [username, password, full_name, email, role]
+ *             properties:
+ *               username: { type: string }
+ *               password: { type: string }
+ *               full_name: { type: string }
+ *               email: { type: string }
+ *               role: { type: string, enum: [Mangaka, Assistant, Editor, EB, Reader] }
+ *     responses:
+ *       201: { description: Đăng ký thành công }
+ *       409: { description: Username hoặc email đã tồn tại }
+ */
 router.post("/register", async (req, res) => {
   try {
     const { username, password, full_name, email, role } = req.body;
@@ -41,7 +64,7 @@ router.post("/register", async (req, res) => {
       });
     }
 
-    const validRoles = ["Mangaka", "Assistant", "Editor", "EB"];
+    const validRoles = ["Mangaka", "Assistant", "Editor", "EB", "Reader"];
     if (!validRoles.includes(role)) {
       return res.status(400).json({
         success: false,
@@ -81,6 +104,26 @@ router.post("/register", async (req, res) => {
   }
 });
 
+/**
+ * @swagger
+ * /auth/login:
+ *   post:
+ *     summary: Đăng nhập
+ *     tags: [Auth]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [username, password]
+ *             properties:
+ *               username: { type: string }
+ *               password: { type: string }
+ *     responses:
+ *       200: { description: Đăng nhập thành công, trả về JWT token }
+ *       401: { description: Sai username hoặc password }
+ */
 router.post("/login", async (req, res) => {
   try {
     const { username, password } = req.body;
@@ -128,6 +171,18 @@ router.post("/login", async (req, res) => {
   }
 });
 
+/**
+ * @swagger
+ * /auth/me:
+ *   get:
+ *     summary: Lấy thông tin user hiện tại
+ *     tags: [Auth]
+ *     security:
+ *       - BearerAuth: []
+ *     responses:
+ *       200: { description: Thông tin user }
+ *       404: { description: User not found }
+ */
 router.get("/me", authMiddleware, async (req, res) => {
   try {
     const user = await User.findById(req.user.nameid);

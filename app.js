@@ -5,84 +5,78 @@ const path = require("path");
 const cookieParser = require("cookie-parser");
 const logger = require("morgan");
 const mongoose = require("mongoose");
-const session = require("express-session");
-const User = require("./models/User");
+const http = require("http");
+const { initSocket } = require("./config/socket");
+const swaggerUi = require("swagger-ui-express");
+const swaggerSpec = require("./config/swagger");
 
 const app = express();
+const server = http.createServer(app);
 
-// Connect to MongoDB
-const uri = process.env.MONGODB_URI;
+// ─── Socket.IO ────────────────────────────────────────────────────────────────
+initSocket(server);
 
+// ─── MongoDB ─────────────────────────────────────────────────────────────────
 mongoose
-  .connect(uri)
+  .connect(process.env.MONGODB_URI)
   .then(async () => {
-    console.log("✅ MongoDB connected successfully");
-    console.log("📊 Database:", uri);
+    console.log("MongoDB connected:", process.env.MONGODB_URI);
 
-    // Init collections
-    await Promise.all([
-      User.createCollection(),
-    ]);
-
-    console.log("📦 Collections initialized: user");
-
-    const port = process.env.PORT || 3000;
-    console.log(`🚀 App running at: http://localhost:${port}`);
+    const collections = [
+      "users", "series", "chapters", "pages", "tasks",
+      "cooperationrequests", "cooperations", "tereviews",
+      "ebevaluations", "votes", "notifications", "pagenotes",
+    ];
+    await Promise.all(collections.map((c) => mongoose.connection.db.createCollection(c).catch(() => {})));
+    console.log("Collections initialized");
   })
   .catch((err) => {
-    console.error("❌ MongoDB connection error:", err.message);
+    console.error("MongoDB connection error:", err.message);
     process.exit(1);
   });
 
-// View engine setup
-app.set("views", path.join(__dirname, "views"));
-app.set("view engine", "ejs");
-
-// Middleware
+// ─── Middleware ───────────────────────────────────────────────────────────────
 app.use(logger("dev"));
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
 app.use(cookieParser());
-app.use(express.static(path.join(__dirname, "public")));
+app.use("/uploads", express.static(path.join(__dirname, "public/uploads")));
 
-// Session setup
-app.use(
-  session({
-    secret: process.env.JWT_SECRET,
-    resave: false,
-    saveUninitialized: false,
-    cookie: { secure: false, maxAge: 24 * 60 * 60 * 1000 },
-  }),
-);
+// ─── Routes ───────────────────────────────────────────────────────────────────
+app.use("/auth", require("./routes/auth"));
+app.use("/notifications", require("./routes/notifications"));
+app.use("/series", require("./routes/series"));
+app.use("/chapters", require("./routes/chapters"));
+app.use("/tasks", require("./routes/tasks"));
+app.use("/submissions", require("./routes/submissions"));
+app.use("/cooperation-requests", require("./routes/cooperations"));
+app.use("/te-reviews", require("./routes/teReviews"));
+app.use("/eb-evaluations", require("./routes/ebEvaluations"));
+app.use("/reader", require("./routes/readers"));
 
-// Import routes
-const authRouter = require("./routes/auth");
-
-// Register routes
-app.use("/auth", authRouter);
-
-// Welcome route
-app.get("/", (req, res) => {
-  res.redirect("/auth/login");
+// Health check
+app.get("/health", (req, res) => {
+  res.json({ status: "ok", timestamp: new Date().toISOString() });
 });
 
-// Catch 404 and forward to error handler
+// Swagger UI
+app.use("/swagger", swaggerUi.serve, swaggerUi.setup(swaggerSpec, {
+  customCss: ".swagger-ui .topbar { display: none }",
+  customSiteTitle: "WDP Manga API Docs",
+}));
+
+// ─── Error Handling ────────────────────────────────────────────────────────────
 app.use(function (req, res, next) {
   next(createError(404));
 });
 
-// Error handler
 app.use(function (err, req, res, next) {
-  res.locals.message = err.message;
-  res.locals.error = req.app.get("env") === "development" ? err : {};
-
-  res.status(err.status || 500);
-  res.json({
+  res.status(err.status || 500).json({
     success: false,
     message: err.message,
-    error: req.app.get("env") === "development" ? err : {},
+    ...(process.env.NODE_ENV === "development" && { stack: err.stack }),
   });
 });
 
-module.exports = app;
-
+// ─── Start ────────────────────────────────────────────────────────────────────
+module.exports = { app, server };
