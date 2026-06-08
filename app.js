@@ -20,7 +20,7 @@ initSocket(server);
 mongoose
   .connect(process.env.MONGODB_URI)
   .then(async () => {
-    console.log("MongoDB connected:", process.env.MONGODB_URI);
+    console.log("MongoDB connected to Atlas cluster");
 
     const collections = [
       "users", "series", "chapters", "pages", "tasks",
