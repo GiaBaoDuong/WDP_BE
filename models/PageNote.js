@@ -12,9 +12,38 @@ const pageNoteSchema = new mongoose.Schema(
       ref: "User",
       required: true,
     },
-    content: {
+    text: {
       type: String,
       required: true,
+    },
+    x: {
+      type: Number,
+      required: true,
+      min: 0,
+      max: 100,
+    },
+    y: {
+      type: Number,
+      required: true,
+      min: 0,
+      max: 100,
+    },
+    w: {
+      type: Number,
+      required: true,
+      min: 0,
+      max: 100,
+    },
+    h: {
+      type: Number,
+      required: true,
+      min: 0,
+      max: 100,
+    },
+    taskType: {
+      type: String,
+      enum: ["background", "shading", "fx", "other"],
+      default: "other",
     },
   },
   { timestamps: true }

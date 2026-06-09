@@ -89,6 +89,93 @@ router.post("/requests", authMiddleware, requireMangaka, async (req, res, next) 
   }
 });
 
+// ─── GET /cooperation-requests/assistants ────────────────────────────────────
+// Mangaka xem danh sách tất cả Assistant để gửi lời mời hợp tác
+/**
+ * @swagger
+ * /cooperation-requests/assistants:
+ *   get:
+ *     summary: Lấy danh sách tất cả Assistant
+ *     tags: [Cooperations]
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: search
+ *         schema:
+ *           type: string
+ *         description: Tìm kiếm theo username hoặc full_name
+ *       - in: query
+ *         name: page
+ *         schema:
+ *           type: integer
+ *           default: 1
+ *       - in: query
+ *         name: limit
+ *         schema:
+ *           type: integer
+ *           default: 20
+ *     responses:
+ *       200:
+ *         description: Danh sách Assistant
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 data:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       _id:
+ *                         type: string
+ *                       username:
+ *                         type: string
+ *                       full_name:
+ *                         type: string
+ *                       email:
+ *                         type: string
+ */
+router.get("/assistants", authMiddleware, requireMangaka, async (req, res, next) => {
+  try {
+    const { search, page = 1, limit = 20 } = req.query;
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+
+    const filter = { role: "Assistant" };
+    if (search) {
+      filter.$or = [
+        { username: { $regex: search, $options: "i" } },
+        { full_name: { $regex: search, $options: "i" } },
+      ];
+    }
+
+    const [assistants, total] = await Promise.all([
+      User.find(filter)
+        .select("username full_name email")
+        .skip(skip)
+        .limit(parseInt(limit))
+        .lean(),
+      User.countDocuments(filter),
+    ]);
+
+    return res.status(200).json({
+      success: true,
+      data: assistants,
+      pagination: {
+        total,
+        page: parseInt(page),
+        limit: parseInt(limit),
+        pages: Math.ceil(total / parseInt(limit)),
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 // ─── GET /cooperation-requests/mine ─────────────────────────────────────────
 // Mangaka xem danh sách request đã gửi
 /**

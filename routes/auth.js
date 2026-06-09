@@ -2,10 +2,11 @@ const express = require("express");
 const jwt = require("jsonwebtoken");
 const User = require("../models/User");
 const authMiddleware = require("../middleware/auth");
+const { sendOtp, verifyOtp } = require("../services/otpService");
 
 const router = express.Router();
 
-const EXPIRES_IN = 7 * 24 * 60 * 60; // 7 days in seconds
+const EXPIRES_IN = 7 * 24 * 60 * 60;
 
 const buildTokenPayload = (user) => ({
   nameid: user._id,
@@ -30,11 +31,13 @@ const buildUserResponse = (user) => ({
   proExpiredAt: null,
 });
 
+// ─── Step 1: Send OTP ──────────────────────────────────────────────────────────
+
 /**
  * @swagger
- * /auth/register:
+ * /auth/register/send-otp:
  *   post:
- *     summary: Đăng ký tài khoản mới
+ *     summary: Gửi mã OTP đến email để xác thực đăng ký
  *     tags: [Auth]
  *     requestBody:
  *       required: true
@@ -50,10 +53,12 @@ const buildUserResponse = (user) => ({
  *               email: { type: string }
  *               role: { type: string, enum: [Mangaka, Assistant, Editor, EB, Reader] }
  *     responses:
- *       201: { description: Đăng ký thành công }
+ *       200: { description: OTP đã được gửi đến email }
+ *       400: { description: Thiếu thông tin hoặc role không hợp lệ }
  *       409: { description: Username hoặc email đã tồn tại }
+ *       500: { description: Lỗi gửi email }
  */
-router.post("/register", async (req, res) => {
+router.post("/register/send-otp", async (req, res) => {
   try {
     const { username, password, full_name, email, role } = req.body;
 
@@ -72,6 +77,21 @@ router.post("/register", async (req, res) => {
       });
     }
 
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid email format",
+      });
+    }
+
+    if (password.length < 6) {
+      return res.status(400).json({
+        success: false,
+        message: "Password must be at least 6 characters",
+      });
+    }
+
     const existingUser = await User.findOne({
       $or: [{ username }, { email }],
     });
@@ -83,26 +103,94 @@ router.post("/register", async (req, res) => {
       });
     }
 
-    const user = await User.create({
-      username,
-      password,
-      full_name,
-      email,
-      role,
-    });
+    await sendOtp({ email, purpose: "register" });
 
-    return res.status(201).json({
+    return res.status(200).json({
       success: true,
-      message: "Đăng ký thành công",
+      message: "Mã OTP đã được gửi đến email của bạn.",
     });
   } catch (error) {
     return res.status(500).json({
       success: false,
-      message: "Internal server error",
-      error: error.message,
+      message: error.message || "Internal server error",
     });
   }
 });
+
+// ─── Step 2: Verify OTP & Create Account ──────────────────────────────────────
+
+/**
+ * @swagger
+ * /auth/register/verify-otp:
+ *   post:
+ *     summary: Xác thực OTP và hoàn tất đăng ký tài khoản
+ *     tags: [Auth]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [username, password, full_name, email, role, otp]
+ *             properties:
+ *               username: { type: string }
+ *               password: { type: string }
+ *               full_name: { type: string }
+ *               email: { type: string }
+ *               role: { type: string, enum: [Mangaka, Assistant, Editor, EB, Reader] }
+ *               otp: { type: string, description: 6-digit OTP code sent to email }
+ *     responses:
+ *       201: { description: Đăng ký thành công }
+ *       400: { description: Mã OTP không hợp lệ hoặc đã hết hạn }
+ *       409: { description: Username hoặc email đã tồn tại }
+ *       500: { description: Lỗi server }
+ */
+router.post("/register/verify-otp", async (req, res) => {
+  try {
+    const { username, password, full_name, email, role, otp } = req.body;
+
+    if (!username || !password || !full_name || !email || !role || !otp) {
+      return res.status(400).json({
+        success: false,
+        message: "All fields including otp are required",
+      });
+    }
+
+    const { valid, reason } = await verifyOtp({ email, code: otp.trim(), purpose: "register" });
+
+    if (!valid) {
+      return res.status(400).json({
+        success: false,
+        message: reason,
+      });
+    }
+
+    const existingUser = await User.findOne({
+      $or: [{ username }, { email }],
+    });
+
+    if (existingUser) {
+      return res.status(409).json({
+        success: false,
+        message: "Username or email already exists",
+      });
+    }
+
+    await User.create({ username, password, full_name, email, role });
+
+    return res.status(201).json({
+      success: true,
+      message: "Đăng ký tài khoản thành công!",
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      message: error.message || "Internal server error",
+    });
+  }
+});
+
+// ─── Login (giữ nguyên) ───────────────────────────────────────────────────────
 
 /**
  * @swagger
@@ -170,6 +258,8 @@ router.post("/login", async (req, res) => {
     });
   }
 });
+
+// ─── Get current user ───────────────────────────────────────────────────────────
 
 /**
  * @swagger

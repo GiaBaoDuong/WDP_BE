@@ -647,20 +647,43 @@ router.get("/my-assignments", authMiddleware, requireAssistant, async (req, res,
  *           schema:
  *             type: object
  *             required:
- *               - content
+ *               - text
+ *               - x
+ *               - y
+ *               - w
+ *               - h
  *             properties:
- *               content:
+ *               text:
  *                 type: string
  *                 description: Nội dung note
+ *               x:
+ *                 type: number
+ *                 description: Tọa độ X (%)
+ *               y:
+ *                 type: number
+ *                 description: Tọa độ Y (%)
+ *               w:
+ *                 type: number
+ *                 description: Chiều rộng (%)
+ *               h:
+ *                 type: number
+ *                 description: Chiều cao (%)
+ *               taskType:
+ *                 type: string
+ *                 enum: [background, shading, fx, other]
+ *                 description: Loại công việc
  *     responses:
  *       201:
  *         description: Note đã được tạo
  */
 router.post("/pages/:id/notes", authMiddleware, requireMangaka, async (req, res, next) => {
   try {
-    const { content } = req.body;
-    if (!content || !content.trim()) {
-      return next(new AppError("content is required", 400));
+    const { text, x, y, w, h, taskType } = req.body;
+    if (!text || text.trim() === "") {
+      return next(new AppError("text is required", 400));
+    }
+    if ([x, y, w, h].some((v) => v === undefined || v === null)) {
+      return next(new AppError("x, y, w, h are required", 400));
     }
 
     const page = await Page.findById(req.params.id).lean();
@@ -676,7 +699,12 @@ router.post("/pages/:id/notes", authMiddleware, requireMangaka, async (req, res,
     const note = await PageNote.create({
       page_id: page._id,
       author_id: req.user.nameid,
-      content: content.trim(),
+      text: text.trim(),
+      x,
+      y,
+      w,
+      h,
+      taskType: taskType || "other",
     });
 
     res.status(201).json({
@@ -772,19 +800,37 @@ router.get("/pages/:id/notes", authMiddleware, requireMangakaOrAssistant, async 
  *           schema:
  *             type: object
  *             required:
- *               - content
+ *               - text
+ *               - x
+ *               - y
+ *               - w
+ *               - h
  *             properties:
- *               content:
+ *               text:
  *                 type: string
+ *               x:
+ *                 type: number
+ *               y:
+ *                 type: number
+ *               w:
+ *                 type: number
+ *               h:
+ *                 type: number
+ *               taskType:
+ *                 type: string
+ *                 enum: [background, shading, fx, other]
  *     responses:
  *       200:
  *         description: Note đã được cập nhật
  */
 router.put("/pages/:id/notes/:noteId", authMiddleware, requireMangaka, async (req, res, next) => {
   try {
-    const { content } = req.body;
-    if (!content || !content.trim()) {
-      return next(new AppError("content is required", 400));
+    const { text, x, y, w, h, taskType } = req.body;
+    if (!text || text.trim() === "") {
+      return next(new AppError("text is required", 400));
+    }
+    if ([x, y, w, h].some((v) => v === undefined || v === null)) {
+      return next(new AppError("x, y, w, h are required", 400));
     }
 
     const note = await PageNote.findById(req.params.noteId);
@@ -796,7 +842,12 @@ router.put("/pages/:id/notes/:noteId", authMiddleware, requireMangaka, async (re
       return next(new AppError("Bạn chỉ có thể sửa note của mình", 403));
     }
 
-    note.content = content.trim();
+    note.text = text.trim();
+    note.x = x;
+    note.y = y;
+    note.w = w;
+    note.h = h;
+    note.taskType = taskType || note.taskType;
     await note.save();
 
     res.json({

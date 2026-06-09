@@ -6,12 +6,32 @@ const cookieParser = require("cookie-parser");
 const logger = require("morgan");
 const mongoose = require("mongoose");
 const http = require("http");
+const cors = require("cors");
 const { initSocket } = require("./config/socket");
 const swaggerUi = require("swagger-ui-express");
 const swaggerSpec = require("./config/swagger");
 
 const app = express();
 const server = http.createServer(app);
+
+// ─── CORS ─────────────────────────────────────────────────────────────────────
+const allowedOrigins = [
+  process.env.FRONTEND_DEV_URL,
+  process.env.FRONTEND_PROD_URL,
+].filter(Boolean);
+
+app.use(cors({
+  origin: (origin, callback) => {
+    if (!origin || allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error(`Origin ${origin} not allowed by CORS policy`));
+    }
+  },
+  credentials: true,
+  exposedHeaders: ["Authorization"],
+  allowedHeaders: ["Authorization", "Content-Type"],
+}));
 
 // ─── Socket.IO ────────────────────────────────────────────────────────────────
 initSocket(server);
@@ -25,7 +45,7 @@ mongoose
     const collections = [
       "users", "series", "chapters", "pages", "tasks",
       "cooperationrequests", "cooperations", "tereviews",
-      "ebevaluations", "votes", "notifications", "pagenotes",
+      "ebevaluations", "votes", "notifications", "pagenotes", "otps",
     ];
     await Promise.all(collections.map((c) => mongoose.connection.db.createCollection(c).catch(() => {})));
     console.log("Collections initialized");

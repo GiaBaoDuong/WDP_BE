@@ -7,8 +7,12 @@ const initSocket = (server) => {
 
   io = new Server(server, {
     cors: {
-      origin: "*",
+      origin: [
+        process.env.FRONTEND_DEV_URL,
+        process.env.FRONTEND_PROD_URL,
+      ].filter(Boolean),
       methods: ["GET", "POST"],
+      credentials: true,
     },
   });
 
