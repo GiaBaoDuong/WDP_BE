@@ -21,12 +21,11 @@ const allowedOrigins = [
   process.env.FRONTEND_DEV_URL,
   process.env.FRONTEND_PROD_URL,
   process.env.BACKEND_URL,
+  "https://wdp-be-a2qb.onrender.com",
 ].filter(Boolean);
 
 app.use(cors({
   origin: (origin, callback) => {
-    console.log("[CORS DEBUG] origin received:", origin);
-    console.log("[CORS DEBUG] allowedOrigins:", allowedOrigins);
     if (!origin || allowedOrigins.includes(origin)) {
       callback(null, true);
     } else {
