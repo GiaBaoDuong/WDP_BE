@@ -20,6 +20,7 @@ const allowedOrigins = [
   "http://localhost:3000",
   process.env.FRONTEND_DEV_URL,
   process.env.FRONTEND_PROD_URL,
+  process.env.BACKEND_URL,
 ].filter(Boolean);
 
 app.use(cors({
@@ -95,7 +96,12 @@ app.use(function (req, res, next) {
 });
 
 app.use(function (err, req, res, next) {
-  res.status(err.status || 500).json({
+  if (err.message && err.message.includes("not allowed by CORS")) {
+    return res.status(403).json({ success: false, message: err.message });
+  }
+  const statusCode = err.statusCode || err.status || 500;
+
+  res.status(statusCode).json({
     success: false,
     message: err.message,
     ...(process.env.NODE_ENV === "development" && { stack: err.stack }),
