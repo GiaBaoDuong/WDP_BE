@@ -31,6 +31,92 @@ const buildUserResponse = (user) => ({
   proExpiredAt: null,
 });
 
+// ─── Register (no OTP) ─────────────────────────────────────────────────────────
+
+/**
+ * @swagger
+ * /auth/register:
+ *   post:
+ *     summary: Đăng ký tài khoản mới (không cần OTP)
+ *     tags: [Auth]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [username, password, full_name, email, role]
+ *             properties:
+ *               username: { type: string }
+ *               password: { type: string }
+ *               full_name: { type: string }
+ *               email: { type: string }
+ *               role: { type: string, enum: [Mangaka, Assistant, Editor, EB, Reader] }
+ *     responses:
+ *       201: { description: Đăng ký thành công }
+ *       400: { description: Thiếu thông tin hoặc role không hợp lệ }
+ *       409: { description: Username hoặc email đã tồn tại }
+ *       500: { description: Lỗi server }
+ */
+router.post("/register", async (req, res) => {
+  try {
+    const { username, password, full_name, email, role } = req.body;
+
+    if (!username || !password || !full_name || !email || !role) {
+      return res.status(400).json({
+        success: false,
+        message: "All fields are required: username, password, full_name, email, role",
+      });
+    }
+
+    const validRoles = ["Mangaka", "Assistant", "Editor", "EB", "Reader"];
+    if (!validRoles.includes(role)) {
+      return res.status(400).json({
+        success: false,
+        message: `Role must be one of: ${validRoles.join(", ")}`,
+      });
+    }
+
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email)) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid email format",
+      });
+    }
+
+    if (password.length < 6) {
+      return res.status(400).json({
+        success: false,
+        message: "Password must be at least 6 characters",
+      });
+    }
+
+    const existingUser = await User.findOne({
+      $or: [{ username }, { email }],
+    });
+
+    if (existingUser) {
+      return res.status(409).json({
+        success: false,
+        message: "Username or email already exists",
+      });
+    }
+
+    await User.create({ username, password, full_name, email, role });
+
+    return res.status(201).json({
+      success: true,
+      message: "Đăng ký tài khoản thành công!",
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      message: error.message || "Internal server error",
+    });
+  }
+});
+
 // ─── Step 1: Send OTP ──────────────────────────────────────────────────────────
 
 /**
