@@ -16,6 +16,8 @@ const server = http.createServer(app);
 
 // ─── CORS ─────────────────────────────────────────────────────────────────────
 const allowedOrigins = [
+  "http://localhost:5173",
+  "http://localhost:3000",
   process.env.FRONTEND_DEV_URL,
   process.env.FRONTEND_PROD_URL,
 ].filter(Boolean);
