@@ -1,5 +1,6 @@
 // ─── Roles ───────────────────────────────────────────────────────────────────
 const ROLES = {
+  ADMIN: "Admin",
   MANGAKA: "Mangaka",
   ASSISTANT: "Assistant",
   EDITOR: "Editor",       // Tantou Editor
@@ -106,6 +107,9 @@ const NOTIF_TYPES = {
   SERIES_CANCELLED: "series_cancelled",   // Series bị huỷ
   RANKING_WARNING: "ranking_warning",     // Series nguy cơ bị huỷ
   VOTES_UPDATED: "votes_updated",         // Dữ liệu vote được cập nhật
+  ADMIN_USER_BANNED: "admin_user_banned",       // Admin ban user
+  ADMIN_CONTENT_REMOVED: "admin_content_removed", // Admin xoá nội dung
+  ADMIN_ROLE_CHANGED: "admin_role_changed",     // Admin đổi vai trò user
 };
 
 module.exports = {

@@ -23,10 +23,12 @@ const requireAssistant = requireRoles(ROLES.ASSISTANT);
 const requireTE = requireRoles(ROLES.EDITOR);
 const requireEB = requireRoles(ROLES.EB);
 const requireReader = requireRoles(ROLES.READER);
+const requireAdmin = requireRoles(ROLES.ADMIN);
 const requireMangakaOrAssistant = requireRoles(ROLES.MANGAKA, ROLES.ASSISTANT);
 const requireMangakaOrTE = requireRoles(ROLES.MANGAKA, ROLES.EDITOR);
 const requireTEOrEB = requireRoles(ROLES.EDITOR, ROLES.EB);
 const requireMangakaOrTEOrEB = requireRoles(ROLES.MANGAKA, ROLES.EDITOR, ROLES.EB);
+const requireAdminOrEB = requireRoles(ROLES.ADMIN, ROLES.EB);
 
 module.exports = {
   requireRoles,
@@ -35,8 +37,10 @@ module.exports = {
   requireTE,
   requireEB,
   requireReader,
+  requireAdmin,
   requireMangakaOrAssistant,
   requireMangakaOrTE,
   requireTEOrEB,
   requireMangakaOrTEOrEB,
+  requireAdminOrEB,
 };

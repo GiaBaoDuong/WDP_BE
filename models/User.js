@@ -1,7 +1,7 @@
 const mongoose = require("mongoose");
 const bcrypt = require("bcryptjs");
 
-const ROLES = ["Mangaka", "Assistant", "Editor", "EB", "Reader"];
+const ROLES = ["Admin", "Mangaka", "Assistant", "Editor", "EB", "Reader"];
 
 const userSchema = new mongoose.Schema(
   {
@@ -36,7 +36,7 @@ const userSchema = new mongoose.Schema(
       required: [true, "Role is required"],
       enum: {
         values: ROLES,
-        message: "Role must be one of: Mangaka, Assistant, Editor, EB",
+        message: "Role must be one of: Admin, Mangaka, Assistant, Editor, EB, Reader",
       },
     },
   },

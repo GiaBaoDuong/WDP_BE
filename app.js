@@ -77,6 +77,7 @@ app.use("/cooperation-requests", require("./routes/cooperations"));
 app.use("/te-reviews", require("./routes/teReviews"));
 app.use("/eb-evaluations", require("./routes/ebEvaluations"));
 app.use("/reader", require("./routes/readers"));
+app.use("/admin", require("./routes/admin"));
 
 // Health check
 app.get("/health", (req, res) => {

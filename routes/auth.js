@@ -51,7 +51,7 @@ const buildUserResponse = (user) => ({
  *               password: { type: string }
  *               full_name: { type: string }
  *               email: { type: string }
- *               role: { type: string, enum: [Mangaka, Assistant, Editor, EB, Reader] }
+ *               role: { type: string, enum: [Admin, Mangaka, Assistant, Editor, EB, Reader] }
  *     responses:
  *       201: { description: Đăng ký thành công }
  *       400: { description: Thiếu thông tin hoặc role không hợp lệ }
@@ -69,7 +69,7 @@ router.post("/register", async (req, res) => {
       });
     }
 
-    const validRoles = ["Mangaka", "Assistant", "Editor", "EB", "Reader"];
+    const validRoles = ["Admin", "Mangaka", "Assistant", "Editor", "EB", "Reader"];
     if (!validRoles.includes(role)) {
       return res.status(400).json({
         success: false,
@@ -137,7 +137,7 @@ router.post("/register", async (req, res) => {
  *               password: { type: string }
  *               full_name: { type: string }
  *               email: { type: string }
- *               role: { type: string, enum: [Mangaka, Assistant, Editor, EB, Reader] }
+ *               role: { type: string, enum: [Admin, Mangaka, Assistant, Editor, EB, Reader] }
  *     responses:
  *       200: { description: OTP đã được gửi đến email }
  *       400: { description: Thiếu thông tin hoặc role không hợp lệ }
@@ -155,7 +155,7 @@ router.post("/register/send-otp", async (req, res) => {
       });
     }
 
-    const validRoles = ["Mangaka", "Assistant", "Editor", "EB", "Reader"];
+    const validRoles = ["Admin", "Mangaka", "Assistant", "Editor", "EB", "Reader"];
     if (!validRoles.includes(role)) {
       return res.status(400).json({
         success: false,
@@ -223,7 +223,7 @@ router.post("/register/send-otp", async (req, res) => {
  *               password: { type: string }
  *               full_name: { type: string }
  *               email: { type: string }
- *               role: { type: string, enum: [Mangaka, Assistant, Editor, EB, Reader] }
+ *               role: { type: string, enum: [Admin, Mangaka, Assistant, Editor, EB, Reader] }
  *               otp: { type: string, description: 6-digit OTP code sent to email }
  *     responses:
  *       201: { description: Đăng ký thành công }
