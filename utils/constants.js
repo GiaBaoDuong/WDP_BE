@@ -97,6 +97,9 @@ const NOTIF_TYPES = {
   TASK_SUBMITTED: "task_submitted",       // Assistant nộp việc
   TASK_APPROVED: "task_approved",         // Mangaka duyệt việc
   TASK_REVISION: "task_revision",         // Mangaka yêu sửa
+  TASK_APPROVED: "task_approved",         // Mangaka duyệt việc
+  CHAPTER_ASSISTANT_WORK_COMPLETE: "chapter_assistant_work_complete", // Assistant hoàn thành chapter
+  CHAPTER_ALL_TASKS_APPROVED: "chapter_all_tasks_approved",         // Tất cả tasks đã duyệt
   CHAPTER_TO_TE: "chapter_to_TE",         // Mangaka gửi chapter cho TE
   CHAPTER_TE_APPROVED: "chapter_TE_approved", // TE duyệt
   CHAPTER_TE_REVISION: "chapter_TE_revision", // TE yêu sửa

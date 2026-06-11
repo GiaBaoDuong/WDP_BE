@@ -14,6 +14,8 @@ const {
   notifyTaskAssigned,
   notifyTaskSubmitted,
   notifyTaskRevision,
+  notifyTaskApproved,
+  notifyChapterAllTasksApproved,
 } = require("../services/notificationService");
 
 /**
@@ -413,7 +415,7 @@ router.post(
  *         description: ID của task
  *     responses:
  *       200:
- *         description: Task đã được duyệt
+ *         description: Task đã được duyệt. Gửi notification cho Assistant. Nếu tất cả tasks trong chapter đã duyệt, gửi notification cho Mangaka biết chapter sẵn sàng gửi TE.
  *         content:
  *           application/json:
  *             schema:
@@ -443,11 +445,32 @@ router.patch("/:id/approve", authMiddleware, requireMangaka, async (req, res, ne
     task.price = task.price || 0;
     await task.save();
 
+    // Notify Assistant: task đã được duyệt
+    await notifyTaskApproved(Notification, task.assigned_to, task);
+
     // Cập nhật page → approved nếu tất cả tasks đã duyệt
-    const allTasks = await Task.find({ page_id: task.page_id });
-    const allApproved = allTasks.every((t) => t.status === "approved");
-    if (allApproved) {
+    const allTasksOnPage = await Task.find({ page_id: task.page_id });
+    const allApprovedOnPage = allTasksOnPage.every((t) => t.status === "approved");
+    if (allApprovedOnPage) {
       await Page.findByIdAndUpdate(task.page_id, { status: "approved" });
+    }
+
+    // Kiểm tra xem TẤT CẢ tasks trong chapter đã được duyệt chưa
+    const allChapterTasks = await Task.find({ chapter_id: task.chapter_id });
+    const allApprovedInChapter = allChapterTasks.every((t) => t.status === "approved");
+    if (allApprovedInChapter) {
+      const chapter = await Chapter.findById(task.chapter_id).lean();
+      if (chapter) {
+        const series = await Series.findById(chapter.series_id).lean();
+        const seriesName = series ? series.name : "";
+        await notifyChapterAllTasksApproved(
+          Notification,
+          chapter.submitted_by,
+          chapter,
+          seriesName,
+          allChapterTasks.length
+        );
+      }
     }
 
     // Cập nhật stats cho Cooperation

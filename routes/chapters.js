@@ -13,6 +13,9 @@ const PageNote = require("../models/PageNote");
 const Notification = require("../models/Notification");
 const upload = require("../middleware/upload");
 const { notifyChapterAssigned } = require("../services/notificationService");
+const {
+  notifyChapterAssistantWorkComplete,
+} = require("../services/notificationService");
 
 // ─── POST /chapters ──────────────────────────────────────────────────────────
 // Mangaka tạo chapter thuộc series
@@ -622,6 +625,63 @@ router.get("/my-assignments", authMiddleware, requireAssistant, async (req, res,
     next(error);
   }
 });
+
+// ─── POST /chapters/:id/complete-assistant-work ───────────────────────────────
+// Assistant chủ động báo đã hoàn thành tất cả công việc trong chapter
+/**
+ * @swagger
+ * /chapters/{id}/complete-assistant-work:
+ *   post:
+ *     summary: Assistant chủ động báo đã hoàn thành công việc trong chapter
+ *     tags: [Chapters]
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Chapter ID
+ *     responses:
+ *       200:
+ *         description: Đã thông báo cho Mangaka
+ *       400:
+ *         description: User không phải assistant được gán hoặc chapter không ở trạng thái pending_assistant
+ *       404:
+ *         description: Chapter not found
+ */
+router.post(
+  "/:id/complete-assistant-work",
+  authMiddleware,
+  requireAssistant,
+  async (req, res, next) => {
+    try {
+      const chapter = await Chapter.findById(req.params.id).lean();
+      if (!chapter) return next(new AppError("Chapter not found", 404));
+
+      if (!chapter.assistant_id || chapter.assistant_id.toString() !== req.user.nameid) {
+        return next(new AppError("Bạn không phải assistant được gán cho chapter này", 400));
+      }
+
+      if (chapter.status !== "pending_assistant") {
+        return next(new AppError("Chapter không ở trạng thái chờ assistant", 400));
+      }
+
+      const series = await Series.findById(chapter.series_id).lean();
+      const seriesName = series ? series.name : "";
+
+      await notifyChapterAssistantWorkComplete(Notification, chapter.submitted_by, chapter, seriesName);
+
+      return res.status(200).json({
+        success: true,
+        message: "Đã thông báo cho Mangaka biết công việc đã hoàn thành",
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
 
 // ─── POST /pages/:id/notes ───────────────────────────────────────────────────
 // Mangaka gửi note cho assistant xem trên từng page

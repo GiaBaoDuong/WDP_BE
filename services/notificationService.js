@@ -59,6 +59,33 @@ const notifyTaskRevision = async (Notification, assistantId, task, note) => {
   });
 };
 
+const notifyTaskApproved = async (Notification, assistantId, task) => {
+  await notifyUser(Notification, assistantId, {
+    type: "task_approved",
+    title: "Task được duyệt",
+    message: `Mangaka đã duyệt task ${task.work_type} trên trang.`,
+    meta: { task_id: task._id, chapter_id: task.chapter_id },
+  });
+};
+
+const notifyChapterAssistantWorkComplete = async (Notification, mangakaId, chapter, seriesName) => {
+  await notifyUser(Notification, mangakaId, {
+    type: "chapter_assistant_work_complete",
+    title: "Assistant đã hoàn thành công việc",
+    message: `Chapter #${chapter.chapter_number} - "${chapter.title}" của series "${seriesName}" đã sẵn sàng gửi lên TE.`,
+    meta: { chapter_id: chapter._id, series_id: chapter.series_id },
+  });
+};
+
+const notifyChapterAllTasksApproved = async (Notification, mangakaId, chapter, seriesName, totalTasks) => {
+  await notifyUser(Notification, mangakaId, {
+    type: "chapter_all_tasks_approved",
+    title: "Tất cả tasks đã được duyệt",
+    message: `Chapter #${chapter.chapter_number} - "${chapter.title}" đã hoàn thành tất cả ${totalTasks} task(s). Hãy gửi lên TE.`,
+    meta: { chapter_id: chapter._id, series_id: chapter.series_id },
+  });
+};
+
 const notifyChapterToTE = async (Notification, teId, chapter, seriesName) => {
   await notifyUser(Notification, teId, {
     type: "chapter_to_TE",
@@ -126,6 +153,9 @@ module.exports = {
   notifyTaskAssigned,
   notifyTaskSubmitted,
   notifyTaskRevision,
+  notifyTaskApproved,
+  notifyChapterAssistantWorkComplete,
+  notifyChapterAllTasksApproved,
   notifyChapterToTE,
   notifyChapterToEB,
   notifySeriesApproved,
