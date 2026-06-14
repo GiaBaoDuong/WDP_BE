@@ -57,6 +57,27 @@ const options = {
             eb_evaluation_id: { type: "string", nullable: true },
             assistant_id: { type: "string", nullable: true },
             revision_notes: { type: "string" },
+            revision_annotations: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: {
+                  page_id: { type: "string" },
+                  region: {
+                    type: "object",
+                    properties: {
+                      x: { type: "number" },
+                      y: { type: "number" },
+                      width: { type: "number" },
+                      height: { type: "number" },
+                    },
+                  },
+                  content: { type: "string" },
+                  error_type: { type: "string", enum: ["content", "dialogue", "script", "art", "other"] },
+                },
+              },
+            },
+            revision_source: { type: "string", enum: ["TE", "EB", ""] },
             is_published: { type: "boolean" },
             published_at: { type: "string", format: "date-time", nullable: true },
             createdAt: { type: "string", format: "date-time" },

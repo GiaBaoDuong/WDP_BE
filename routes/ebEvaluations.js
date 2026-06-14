@@ -8,7 +8,7 @@ const Series = require("../models/Series");
 const EBEvaluation = require("../models/EBEvaluation");
 const Notification = require("../models/Notification");
 const Vote = require("../models/Vote");
-const { notifySeriesApproved, notifyRankingWarning } = require("../services/notificationService");
+const { notifySeriesApproved, notifyRankingWarning, notifyChapterEBRevision } = require("../services/notificationService");
 
 /**
  * @swagger
@@ -293,6 +293,9 @@ router.post("/chapter/:chapterId/evaluate", authMiddleware, requireEB, async (re
       chapter.eb_evaluation_id = evaluation._id;
       chapter.is_published = true;
       chapter.published_at = new Date();
+      chapter.revision_notes = "";
+      chapter.revision_annotations = [];
+      chapter.revision_source = "";
       await chapter.save();
 
       // Kiểm tra tất cả chapters
@@ -314,15 +317,17 @@ router.post("/chapter/:chapterId/evaluate", authMiddleware, requireEB, async (re
       chapter.status = result === "rejected" ? "rejected" : "EB_revision";
       chapter.eb_evaluation_id = evaluation._id;
       chapter.revision_notes = notes || quick_notes || "";
+      chapter.revision_annotations = [];
+      chapter.revision_source = "EB";
       await chapter.save();
 
-      await Notification.create({
-        user_id: chapter.submitted_by,
-        type: "chapter_EB_revision",
-        title: "EB yêu cầu chỉnh sửa",
-        message: `Chapter "${chapter.title}" bị EB yêu cầu chỉnh sửa.`,
-        meta: { chapter_id: chapter._id },
-      });
+      await notifyChapterEBRevision(
+        Notification,
+        chapter.submitted_by,
+        chapter,
+        series.name,
+        chapter.revision_notes
+      );
     }
 
     return res.status(201).json({ success: true, data: { chapter, evaluation } });

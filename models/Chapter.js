@@ -43,6 +43,31 @@ const chapterSchema = new mongoose.Schema(
       default: null,
     },
     revision_notes: { type: String, default: "" },
+    revision_annotations: {
+      type: [
+        {
+          page_id: { type: mongoose.Schema.Types.ObjectId, ref: "Page" },
+          region: {
+            x: { type: Number, required: true },
+            y: { type: Number, required: true },
+            width: { type: Number, required: true },
+            height: { type: Number, required: true },
+          },
+          content: { type: String, required: true },
+          error_type: {
+            type: String,
+            enum: ["content", "dialogue", "script", "art", "other"],
+            default: "other",
+          },
+        },
+      ],
+      default: [],
+    },
+    revision_source: {
+      type: String,
+      enum: ["TE", "EB", ""],
+      default: "",
+    },
     is_published: { type: Boolean, default: false },
     published_at: { type: Date, default: null },
   },

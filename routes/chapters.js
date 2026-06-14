@@ -1,7 +1,7 @@
 const express = require("express");
 const router = express.Router();
 const authMiddleware = require("../middleware/auth");
-const { requireMangaka, requireMangakaOrAssistant, requireAssistant } = require("../middleware/roles");
+const { requireMangaka, requireMangakaOrAssistant, requireAssistant, requireMangakaOrTEOrEB } = require("../middleware/roles");
 const { AppError } = require("../middleware/errorHandler");
 const Chapter = require("../models/Chapter");
 const Page = require("../models/Page");
@@ -301,10 +301,19 @@ router.post(
  *       404:
  *         description: Chapter not found
  */
-router.get("/:id/pages", authMiddleware, async (req, res, next) => {
+router.get("/:id/pages", authMiddleware, requireMangakaOrTEOrEB, async (req, res, next) => {
   try {
     const chapter = await Chapter.findById(req.params.id).lean();
     if (!chapter) return next(new AppError("Chapter not found", 404));
+
+    // Chapter chưa published → chỉ những role trên mới xem được
+    // Chapter đã published → bất kỳ user đăng nhập nào cũng xem được
+    if (!chapter.is_published) {
+      const role = req.user.role;
+      if (!["Mangaka", "Assistant", "Editor", "EB"].includes(role)) {
+        return next(new AppError("Access denied", 403));
+      }
+    }
 
     const pages = await Page.find({ chapter_id: req.params.id })
       .sort({ page_number: 1 })
@@ -339,10 +348,19 @@ router.get("/:id/pages", authMiddleware, async (req, res, next) => {
  *       404:
  *         description: Page not found
  */
-router.get("/pages/:id", authMiddleware, async (req, res, next) => {
+router.get("/pages/:id", authMiddleware, requireMangakaOrTEOrEB, async (req, res, next) => {
   try {
     const page = await Page.findById(req.params.id).lean();
     if (!page) return next(new AppError("Page not found", 404));
+
+    // Page của chapter chưa published → chỉ Mangaka/Assistant/TE/EB xem được
+    const chapter = await Chapter.findById(page.chapter_id).lean();
+    if (chapter && !chapter.is_published) {
+      const role = req.user.role;
+      if (!["Mangaka", "Assistant", "Editor", "EB"].includes(role)) {
+        return next(new AppError("Access denied", 403));
+      }
+    }
 
     const tasks = await Task.find({ page_id: page._id })
       .populate("assigned_to", "username full_name")

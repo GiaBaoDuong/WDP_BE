@@ -86,6 +86,28 @@ const notifyChapterAllTasksApproved = async (Notification, mangakaId, chapter, s
   });
 };
 
+const notifyChapterTERevision = async (Notification, mangakaId, chapter, seriesName, annotations = []) => {
+  await notifyUser(Notification, mangakaId, {
+    type: "chapter_TE_revision",
+    title: "TE yêu cầu chỉnh sửa",
+    message: `Chapter "${chapter.title}" (#${chapter.chapter_number}) cần chỉnh sửa theo góp ý của TE.`,
+    meta: {
+      chapter_id: chapter._id,
+      series_id: chapter.series_id,
+      annotation_count: annotations.length,
+    },
+  });
+};
+
+const notifyChapterEBRevision = async (Notification, mangakaId, chapter, seriesName, notes = "") => {
+  await notifyUser(Notification, mangakaId, {
+    type: "chapter_EB_revision",
+    title: "EB yêu cầu chỉnh sửa",
+    message: `Chapter "${chapter.title}" (#${chapter.chapter_number}) bị EB yêu cầu chỉnh sửa.`,
+    meta: { chapter_id: chapter._id, series_id: chapter.series_id, notes },
+  });
+};
+
 const notifyChapterToTE = async (Notification, teId, chapter, seriesName) => {
   await notifyUser(Notification, teId, {
     type: "chapter_to_TE",
@@ -156,6 +178,8 @@ module.exports = {
   notifyTaskApproved,
   notifyChapterAssistantWorkComplete,
   notifyChapterAllTasksApproved,
+  notifyChapterTERevision,
+  notifyChapterEBRevision,
   notifyChapterToTE,
   notifyChapterToEB,
   notifySeriesApproved,

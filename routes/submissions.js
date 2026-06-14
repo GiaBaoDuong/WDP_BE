@@ -86,6 +86,8 @@ router.post("/chapters/:chapterId/submit-to-te", authMiddleware, requireMangaka,
 
     chapter.status = "pending_TE";
     chapter.revision_notes = "";
+    chapter.revision_annotations = [];
+    chapter.revision_source = "";
     await chapter.save();
 
     // Lấy series name
