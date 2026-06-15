@@ -39,6 +39,11 @@ const userSchema = new mongoose.Schema(
         message: "Role must be one of: Admin, Mangaka, Assistant, Editor, EB, Reader",
       },
     },
+    status: {
+      type: String,
+      enum: ["active", "banned"],
+      default: "active",
+    },
   },
   {
     timestamps: {

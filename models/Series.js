@@ -30,7 +30,15 @@ const seriesSchema = new mongoose.Schema(
     is_public: { type: Boolean, default: false },
     average_score: { type: Number, default: 0, min: 0, max: 10 },
     total_votes: { type: Number, default: 0 },
+    views_count: { type: Number, default: 0 },
     cover_image_url: { type: String, default: "" },
+    category: { type: String, default: "" },
+    tags: { type: [String], default: [] },
+    age_rating: {
+      type: String,
+      enum: ["All ages", "Teens 13+", "Mature 17+", "Adults Only 18+", null],
+      default: "All ages",
+    },
     eb_evaluation_id: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "EBEvaluation",

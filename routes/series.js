@@ -447,6 +447,16 @@ router.post(
  *               synopsis:
  *                 type: string
  *                 description: Series synopsis
+ *               category:
+ *                 type: string
+ *                 description: Thể loại chính
+ *               tags:
+ *                 type: array
+ *                 items: { type: string }
+ *                 description: Danh sách tag (có thể gửi string CSV)
+ *               age_rating:
+ *                 type: string
+ *                 enum: [All ages, Teens 13+, Mature 17+, Adults Only 18+]
  *               cover:
  *                 type: string
  *                 format: binary
@@ -477,10 +487,17 @@ router.post(
   upload.single("cover"),
   async (req, res, next) => {
     try {
-      const { name, description, genre, target_audience, synopsis } = req.body;
+      const { name, description, genre, target_audience, synopsis, category, tags, age_rating } = req.body;
 
       if (!name) {
         return next(new AppError("Series name is required", 400));
+      }
+
+      if (age_rating !== undefined && age_rating !== "") {
+        const validAges = ["All ages", "Teens 13+", "Mature 17+", "Adults Only 18+"];
+        if (!validAges.includes(age_rating)) {
+          return next(new AppError(`age_rating must be one of: ${validAges.join(", ")}`, 400));
+        }
       }
 
       const cover_image_url = req.file
@@ -494,6 +511,9 @@ router.post(
         target_audience,
         synopsis,
         cover_image_url,
+        category: category || "",
+        tags: Array.isArray(tags) ? tags : (typeof tags === "string" && tags.length ? tags.split(",").map((t) => t.trim()) : []),
+        age_rating: age_rating || "All ages",
         author_id: req.user.nameid,
         status: "draft",
       });
@@ -581,9 +601,28 @@ router.patch("/:id", authMiddleware, requireMangaka, async (req, res, next) => {
 
     const allowedFields = [
       "name", "description", "genre", "target_audience", "synopsis", "cover_image_url",
+      "category", "tags", "age_rating",
     ];
+
+    if (req.body.age_rating !== undefined && req.body.age_rating !== "") {
+      const validAges = ["All ages", "Teens 13+", "Mature 17+", "Adults Only 18+"];
+      if (!validAges.includes(req.body.age_rating)) {
+        return next(new AppError(`age_rating must be one of: ${validAges.join(", ")}`, 400));
+      }
+    }
+
     allowedFields.forEach((field) => {
-      if (req.body[field] !== undefined) series[field] = req.body[field];
+      if (req.body[field] !== undefined) {
+        if (field === "tags") {
+          series.tags = Array.isArray(req.body.tags)
+            ? req.body.tags
+            : (typeof req.body.tags === "string" && req.body.tags.length
+                ? req.body.tags.split(",").map((t) => t.trim())
+                : []);
+        } else {
+          series[field] = req.body[field];
+        }
+      }
     });
 
     await series.save();
