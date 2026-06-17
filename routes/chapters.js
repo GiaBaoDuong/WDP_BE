@@ -1,5 +1,6 @@
 const express = require("express");
 const router = express.Router();
+const mongoose = require("mongoose");
 const authMiddleware = require("../middleware/auth");
 const { requireMangaka, requireMangakaOrAssistant, requireAssistant, requireMangakaOrTEOrEB } = require("../middleware/roles");
 const { AppError } = require("../middleware/errorHandler");
@@ -757,9 +758,6 @@ router.post(
 router.post("/pages/:id/notes", authMiddleware, requireMangaka, async (req, res, next) => {
   try {
     const { text, x, y, w, h, taskType } = req.body;
-    if (!text || text.trim() === "") {
-      return next(new AppError("text is required", 400));
-    }
     if ([x, y, w, h].some((v) => v === undefined || v === null)) {
       return next(new AppError("x, y, w, h are required", 400));
     }
@@ -904,13 +902,24 @@ router.get("/pages/:id/notes", authMiddleware, requireMangakaOrAssistant, async 
 router.put("/pages/:id/notes/:noteId", authMiddleware, requireMangaka, async (req, res, next) => {
   try {
     const { text, x, y, w, h, taskType } = req.body;
-    if (!text || text.trim() === "") {
-      return next(new AppError("text is required", 400));
-    }
     if ([x, y, w, h].some((v) => v === undefined || v === null)) {
       return next(new AppError("x, y, w, h are required", 400));
     }
 
+    const isClientId = !mongoose.Types.ObjectId.isValid(req.params.noteId);
+    if (isClientId) {
+      const note = await PageNote.create({
+        page_id: req.params.id,
+        author_id: req.user.nameid,
+        text: (text || '').trim(),
+        x,
+        y,
+        w,
+        h,
+        taskType: taskType || "other",
+      });
+      return res.status(200).json({ success: true, message: "Note đã được tạo từ client ID", data: note });
+    }
     const note = await PageNote.findById(req.params.noteId);
     if (!note || note.page_id.toString() !== req.params.id) {
       return next(new AppError("Note not found", 404));
@@ -920,7 +929,7 @@ router.put("/pages/:id/notes/:noteId", authMiddleware, requireMangaka, async (re
       return next(new AppError("Bạn chỉ có thể sửa note của mình", 403));
     }
 
-    note.text = text.trim();
+    note.text = (text || '').trim();
     note.x = x;
     note.y = y;
     note.w = w;
@@ -965,6 +974,10 @@ router.put("/pages/:id/notes/:noteId", authMiddleware, requireMangaka, async (re
  */
 router.delete("/pages/:id/notes/:noteId", authMiddleware, requireMangaka, async (req, res, next) => {
   try {
+    // Validate ObjectId trước để tránh CastError khi frontend gửi client-side ID
+    if (!mongoose.Types.ObjectId.isValid(req.params.noteId)) {
+      return res.json({ success: true, message: "Note đã được gỡ (client-side)" });
+    }
     const note = await PageNote.findById(req.params.noteId);
     if (!note || note.page_id.toString() !== req.params.id) {
       return next(new AppError("Note not found", 404));
