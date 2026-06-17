@@ -93,10 +93,16 @@ router.post("/", authMiddleware, requireMangaka, async (req, res, next) => {
     }
 
     // Chỉ Assistant đã ký hợp tác mới được giao việc
+    // Lưu ý: Cooperation schema dùng agreed_at (không có field status),
+    // và series_id=null nghĩa là hợp tác toàn cục (áp dụng mọi series).
     const cooperation = await Cooperation.findOne({
       mangaka_id: req.user.nameid,
       assistant_id: assigned_to,
-      status: "accepted",
+      agreed_at: { $ne: null },
+      $or: [
+        { series_id: chapter.series_id },
+        { series_id: null },
+      ],
     });
     if (!cooperation) {
       return next(

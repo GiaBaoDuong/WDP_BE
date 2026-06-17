@@ -444,6 +444,11 @@ router.post("/:id/assign", authMiddleware, requireMangaka, async (req, res, next
     const cooperation = await Cooperation.findOne({
       mangaka_id: req.user.nameid,
       assistant_id,
+      agreed_at: { $ne: null },
+      $or: [
+        { series_id: chapter.series_id },
+        { series_id: null },
+      ],
     });
     if (!cooperation) {
       return next(new AppError("Assistant chưa ký hợp đồng hợp tác với bạn", 403));
