@@ -129,9 +129,15 @@ router.get("/:id", authMiddleware, async (req, res, next) => {
       return next(new AppError("Chapter not found", 404));
     }
 
+    // Load pages để Assistant/Mangaka thấy ảnh gốc + result
+    const pages = await Page.find({ chapter_id: chapter._id })
+      .sort({ page_number: 1, createdAt: 1 })
+      .select("_id chapter_id page_number original_image_url result_image_url status current_version")
+      .lean();
+
     return res.status(200).json({
       success: true,
-      data: chapter,
+      data: { ...chapter, pages },
       seriesName: chapter.series_id ? chapter.series_id.name : "",
     });
   } catch (error) {
