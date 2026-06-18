@@ -428,6 +428,7 @@ router.get("/pages/:id/final", authMiddleware, requireMangakaOrAssistant, async 
         status: page.status,
         current_version: page.current_version,
         result_image_url: page.result_image_url || "",
+        final_image_url: page.result_image_url || "",
         layers: latestSnapshot ? latestSnapshot.layers : [],
       },
     });
@@ -960,7 +961,18 @@ router.get("/pages/:id/notes", authMiddleware, requireMangakaOrAssistant, async 
 
     res.json({
       success: true,
-      data: notes,
+      data: {
+        page: {
+          _id: page._id,
+          chapter_id: page.chapter_id,
+          page_number: page.page_number,
+          original_image_url: page.original_image_url,
+          result_image_url: page.result_image_url,
+          status: page.status,
+          current_version: page.current_version,
+        },
+        notes,
+      },
     });
   } catch (error) {
     next(error);
