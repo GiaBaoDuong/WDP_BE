@@ -979,6 +979,59 @@ router.get("/pages/:id/notes", authMiddleware, requireMangakaOrAssistant, async 
   }
 });
 
+// ─── GET /pages/:id/layers ───────────────────────────────────────────────────
+// Assistant/Mangaka lấy danh sách layer ảnh của page (do Mangaka hoặc Assistant tạo)
+/**
+ * @swagger
+ * /chapters/pages/{id}/layers:
+ *   get:
+ *     summary: Lấy danh sách layer ảnh của page
+ *     tags: [Chapters]
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Danh sách layer (image_url, position, opacity, blend_mode…)
+ *       404:
+ *         description: Page not found
+ */
+router.get("/pages/:id/layers", authMiddleware, requireMangakaOrAssistant, async (req, res, next) => {
+  try {
+    const page = await Page.findById(req.params.id).lean();
+    if (!page) return next(new AppError("Page not found", 404));
+
+    const chapter = await Chapter.findById(page.chapter_id).lean();
+    if (chapter && !chapter.is_published) {
+      const role = req.user.role;
+      if (!["Mangaka", "Assistant", "Editor", "EB"].includes(role)) {
+        return next(new AppError("Access denied", 403));
+      }
+    }
+
+    const layers = await PageLayer.find({ page_id: page._id })
+      .sort({ z_order: 1, createdAt: 1 })
+      .lean();
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        page_id: page._id,
+        original_image_url: page.original_image_url,
+        result_image_url: page.result_image_url,
+        layers,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 // ─── PUT /pages/:id/notes/:noteId ──────────────────────────────────────────
 // Mangaka chỉnh sửa note của mình
 /**
