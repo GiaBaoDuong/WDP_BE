@@ -46,6 +46,7 @@ const {
  *                 description: ID của Assistant được giao việc
  *               work_type:
  *                 type: string
+ *                 enum: [background, shading, effects, details, other]
  *               region:
  *                 type: object
  *                 properties:
@@ -60,9 +61,6 @@ const {
  *               description:
  *                 type: string
  *                 description: Mô tả chi tiết công việc
- *               price:
- *                 type: number
- *                 description: Giá tiền cho công việc
  *     responses:
  *       201:
  *         description: Task được tạo thành công
@@ -75,7 +73,7 @@ const {
  */
 router.post("/", authMiddleware, requireMangaka, async (req, res, next) => {
   try {
-    const { page_id, assigned_to, work_type, region, description, price } = req.body;
+    const { page_id, assigned_to, work_type, region, description } = req.body;
 
     if (!page_id || !assigned_to || !work_type || !region) {
       return next(new AppError("page_id, assigned_to, work_type, region are required", 400));
@@ -118,7 +116,6 @@ router.post("/", authMiddleware, requireMangaka, async (req, res, next) => {
       work_type,
       region,
       description: description || "",
-      price: price || 0,
       status: "pending",
     });
 
@@ -261,6 +258,55 @@ router.get("/chapter/:chapterId", authMiddleware, requireMangaka, async (req, re
       .populate("page_id", "page_number original_image_url result_image_url status")
       .populate("assigned_to", "username full_name phoneNumber")
       .sort({ "page_id.page_number": 1, createdAt: 1 })
+      .lean();
+
+    return res.status(200).json({ success: true, data: tasks });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * @swagger
+ * /pages/{pageId}/tasks:
+ *   get:
+ *     summary: Lấy tất cả tasks của một page (Mangaka hoặc Assistant được gán)
+ *     tags: [Tasks]
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: pageId
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Page ID
+ *     responses:
+ *       200:
+ *         description: Danh sách tasks của page
+ *       403:
+ *         description: Không có quyền truy cập
+ *       404:
+ *         description: Page not found
+ */
+router.get("/page/:pageId", authMiddleware, async (req, res, next) => {
+  try {
+    const page = await Page.findById(req.params.pageId).lean();
+    if (!page) return next(new AppError("Page not found", 404));
+
+    const chapter = await Chapter.findById(page.chapter_id).lean();
+    if (!chapter) return next(new AppError("Chapter not found", 404));
+
+    const isMangaka = chapter.submitted_by.toString() === req.user.nameid;
+    const isAssigned = chapter.assistant_id?.toString() === req.user.nameid;
+
+    if (!isMangaka && !isAssigned) {
+      return next(new AppError("Không có quyền xem tasks của page này", 403));
+    }
+
+    const tasks = await Task.find({ page_id: page._id })
+      .populate("assigned_by", "username full_name phoneNumber")
+      .sort({ createdAt: 1 })
       .lean();
 
     return res.status(200).json({ success: true, data: tasks });
@@ -448,7 +494,6 @@ router.patch("/:id/approve", authMiddleware, requireMangaka, async (req, res, ne
     }
 
     task.status = "approved";
-    task.price = task.price || 0;
     await task.save();
 
     // Notify Assistant: task đã được duyệt
@@ -482,9 +527,7 @@ router.patch("/:id/approve", authMiddleware, requireMangaka, async (req, res, ne
     // Cập nhật stats cho Cooperation
     await Cooperation.findOneAndUpdate(
       { mangaka_id: req.user.nameid, assistant_id: task.assigned_to },
-      {
-        $inc: { total_approved_tasks: 1, total_earnings: task.price || 0 },
-      }
+      { $inc: { total_approved_tasks: 1 } }
     );
 
     return res.status(200).json({ success: true, data: task });
@@ -566,7 +609,7 @@ router.patch("/:id/revision", authMiddleware, requireMangaka, async (req, res, n
  * @swagger
  * /tasks/stats:
  *   get:
- *     summary: Lấy thống kê công việc và thu nhập (Assistant)
+ *     summary: Lấy thống kê công việc (Assistant)
  *     tags: [Tasks]
  *     security:
  *       - BearerAuth: []
@@ -597,15 +640,9 @@ router.patch("/:id/revision", authMiddleware, requireMangaka, async (req, res, n
  *                     approvedTasksThisMonth:
  *                       type: integer
  *                       description: Số task đã duyệt trong tháng
- *                     earningsThisMonth:
- *                       type: number
- *                       description: Thu nhập trong tháng
  *                     totalApprovedTasks:
  *                       type: integer
  *                       description: Tổng số task đã duyệt
- *                     totalEarnings:
- *                       type: number
- *                       description: Tổng thu nhập
  *                     period:
  *                       type: string
  *                       description: Tháng/năm thống kê (YYYY-MM)
@@ -626,7 +663,7 @@ router.get("/stats", authMiddleware, requireAssistant, async (req, res, next) =>
       updatedAt: { $gte: startDate, $lte: endDate },
     };
 
-    const [approvedTasks, earningsData] = await Promise.all([
+    const [approvedTasks, statsData] = await Promise.all([
       Task.find(filter).lean(),
       Cooperation.aggregate([
         { $match: { assistant_id: require("mongoose").Types.ObjectId(req.user.nameid) } },
@@ -634,21 +671,16 @@ router.get("/stats", authMiddleware, requireAssistant, async (req, res, next) =>
           $group: {
             _id: null,
             totalTasks: { $sum: "$total_approved_tasks" },
-            totalEarnings: { $sum: "$total_earnings" },
           },
         },
       ]),
     ]);
 
-    const earnings = approvedTasks.reduce((sum, t) => sum + (t.price || 0), 0);
-
     return res.status(200).json({
       success: true,
       data: {
         approvedTasksThisMonth: approvedTasks.length,
-        earningsThisMonth: earnings,
-        totalApprovedTasks: earningsData[0]?.totalTasks || 0,
-        totalEarnings: earningsData[0]?.totalEarnings || 0,
+        totalApprovedTasks: statsData[0]?.totalTasks || 0,
         period: `${targetYear}-${String(targetMonth).padStart(2, "0")}`,
       },
     });

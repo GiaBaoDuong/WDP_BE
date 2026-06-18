@@ -367,7 +367,8 @@ router.get("/pages/:id", authMiddleware, requireMangakaOrTEOrEB, async (req, res
     const tasks = await Task.find({ page_id: page._id })
         .populate("assigned_to", "username full_name phoneNumber")
         .populate("assigned_by", "username full_name phoneNumber")
-      .lean();
+        .sort({ createdAt: 1 })
+        .lean();
 
     return res.status(200).json({
       success: true,
@@ -385,7 +386,7 @@ router.get("/pages/:id", authMiddleware, requireMangakaOrTEOrEB, async (req, res
  * @swagger
  * /chapters/{id}/assign:
  *   post:
- *     summary: Gán 1 assistant cho cả chapter
+ *     summary: Gán assistant và gửi tasks cho cả chapter
  *     tags: [Chapters]
  *     security:
  *       - BearerAuth: []
@@ -408,6 +409,22 @@ router.get("/pages/:id", authMiddleware, requireMangakaOrTEOrEB, async (req, res
  *               assistant_id:
  *                 type: string
  *                 description: Assistant user ID
+ *               notes:
+ *                 type: array
+ *                 description: Mảng 2 chiều — notes[pageIndex] = [{x,y,w,h,taskType,text},...]
+ *                 items:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       x: { type: number }
+ *                       y: { type: number }
+ *                       w: { type: number }
+ *                       h: { type: number }
+ *                       taskType:
+ *                         type: string
+ *                         enum: [background, shading, effects, details, other]
+ *                       text: { type: string }
  *     responses:
  *       200:
  *         description: Gán thành công
@@ -420,7 +437,7 @@ router.get("/pages/:id", authMiddleware, requireMangakaOrTEOrEB, async (req, res
  */
 router.post("/:id/assign", authMiddleware, requireMangaka, async (req, res, next) => {
   try {
-    const { assistant_id } = req.body;
+    const { assistant_id, notes = [] } = req.body;
     if (!assistant_id) {
       return next(new AppError("assistant_id is required", 400));
     }
@@ -463,27 +480,70 @@ router.post("/:id/assign", authMiddleware, requireMangaka, async (req, res, next
     chapter.status = "pending_assistant";
     await chapter.save();
 
-    // Lấy tất cả pages chưa có task, tạo task cho mỗi page
-    const pages = await Page.find({ chapter_id: chapter._id }).lean();
+    // Lấy tất cả pages của chapter theo đúng thứ tự page_number
+    const pages = await Page.find({ chapter_id: chapter._id }).sort({ page_number: 1 }).lean();
+
+    // Lấy các page đã có task (để tránh tạo trùng khi re-assign)
     const existingTaskPageIds = (
-      await Task.find({ chapter_id: chapter._id }).distinct("page_id")
+      await Task.find({ chapter_id: chapter._id, assigned_to: assistant_id }).distinct("page_id")
     ).map((id) => id.toString());
 
+    // Xây map: pageIndex → page doc (FE gửi notes theo thứ tự upload = page_number)
+    const pageIndexMap = {};
+    pages.forEach((p, idx) => { pageIndexMap[idx] = p; });
+
     const newTasks = [];
-    for (const page of pages) {
-      if (!existingTaskPageIds.includes(page._id.toString())) {
+
+    // Duyệt từng page, tạo task cho mỗi note
+    for (let pageIdx = 0; pageIdx < notes.length; pageIdx++) {
+      const pageNotes = notes[pageIdx];
+      const page = pageIndexMap[pageIdx];
+
+      if (!page) continue; // FE gửi dư pageIndex so với số pages thực tế
+
+      const hasExistingTask = existingTaskPageIds.includes(page._id.toString());
+
+      if (!pageNotes || pageNotes.length === 0) {
+        // Page không có note: tạo 1 task placeholder nếu chưa có task nào cho page này
+        if (!hasExistingTask) {
+          const task = await Task.create({
+            page_id: page._id,
+            chapter_id: chapter._id,
+            assigned_by: req.user.nameid,
+            assigned_to: assistant_id,
+            work_type: "other",
+            region: { x: 0, y: 0, width: 100, height: 100 },
+            description: `Task cho trang ${page.page_number} - chapter #${chapter.chapter_number}`,
+            status: "pending",
+          });
+          newTasks.push(task);
+          await Page.findByIdAndUpdate(page._id, { status: "has_task" });
+        }
+        continue;
+      }
+
+      // Mỗi note = 1 task riêng
+      for (const note of pageNotes) {
         const task = await Task.create({
           page_id: page._id,
           chapter_id: chapter._id,
           assigned_by: req.user.nameid,
           assigned_to: assistant_id,
-          work_type: "other",
-          region: { x: 0, y: 0, width: 100, height: 100 },
-          description: `Task cho page ${page.page_number} - chapter #${chapter.chapter_number}`,
-          price: 0,
+          work_type: note.taskType || "other",
+          region: {
+            x: note.x,
+            y: note.y,
+            width: note.w,
+            height: note.h,
+          },
+          description: (note.text || "").trim(),
           status: "pending",
         });
         newTasks.push(task);
+      }
+
+      // Cập nhật page status → has_task
+      if (!existingTaskPageIds.includes(page._id.toString())) {
         await Page.findByIdAndUpdate(page._id, { status: "has_task" });
       }
     }
@@ -492,7 +552,7 @@ router.post("/:id/assign", authMiddleware, requireMangaka, async (req, res, next
 
     return res.status(200).json({
       success: true,
-      message: `Đã gán assistant cho chapter. Đã tạo ${newTasks.length} task(s).`,
+      message: `Đã gán assistant và tạo ${newTasks.length} task(s) cho chapter.`,
       data: {
         chapter,
         tasks_created: newTasks.length,

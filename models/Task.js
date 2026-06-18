@@ -41,7 +41,6 @@ const taskSchema = new mongoose.Schema(
       default: "pending",
     },
     result_image_url: { type: String, default: "" },
-    price: { type: Number, default: 0 },
   },
   { timestamps: true }
 );
