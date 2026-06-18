@@ -378,6 +378,64 @@ router.get("/pages/:id", authMiddleware, requireMangakaOrTEOrEB, async (req, res
   }
 });
 
+// Lấy ảnh kết quả cuối cùng của page (cho Assistant/Mangaka hiển thị final result)
+/**
+ * @swagger
+ * /pages/{id}/final:
+ *   get:
+ *     summary: Lấy ảnh kết quả cuối (final) của page
+ *     tags: [Chapters]
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Page ID
+ *     responses:
+ *       200:
+ *         description: Trả về result_image_url + status
+ *       404:
+ *         description: Page not found
+ */
+router.get("/pages/:id/final", authMiddleware, requireMangakaOrAssistant, async (req, res, next) => {
+  try {
+    const page = await Page.findById(req.params.id)
+      .select("result_image_url status chapter_id current_version snapshots")
+      .lean();
+    if (!page) return next(new AppError("Page not found", 404));
+
+    // Chapter chưa published → check role
+    const chapter = await Chapter.findById(page.chapter_id).select("is_published").lean();
+    if (chapter && !chapter.is_published) {
+      const role = req.user.role;
+      if (!["Mangaka", "Assistant", "Editor", "EB"].includes(role)) {
+        return next(new AppError("Access denied", 403));
+      }
+    }
+
+    // Nếu có snapshot mới nhất → ưu tiên trả về layers từ snapshot (assistant render realtime)
+    const latestSnapshot = page.snapshots && page.snapshots.length
+      ? page.snapshots[page.snapshots.length - 1]
+      : null;
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        page_id: page._id,
+        status: page.status,
+        current_version: page.current_version,
+        result_image_url: page.result_image_url || "",
+        layers: latestSnapshot ? latestSnapshot.layers : [],
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 // ─── POST /chapters/:id/assign ────────────────────────────────────────────────
 // Mangaka gán 1 assistant cho cả chapter
 // Body: { assistant_id }
