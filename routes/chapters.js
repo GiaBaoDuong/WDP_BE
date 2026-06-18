@@ -367,6 +367,7 @@ router.get("/pages/:id", authMiddleware, requireMangakaOrTEOrEB, async (req, res
     const tasks = await Task.find({ page_id: page._id })
         .populate("assigned_to", "username full_name phoneNumber")
         .populate("assigned_by", "username full_name phoneNumber")
+        .populate("note_ids")
         .sort({ createdAt: 1 })
         .lean();
 
@@ -409,22 +410,6 @@ router.get("/pages/:id", authMiddleware, requireMangakaOrTEOrEB, async (req, res
  *               assistant_id:
  *                 type: string
  *                 description: Assistant user ID
- *               notes:
- *                 type: array
- *                 description: Mảng 2 chiều — notes[pageIndex] = [{x,y,w,h,taskType,text},...]
- *                 items:
- *                   type: array
- *                   items:
- *                     type: object
- *                     properties:
- *                       x: { type: number }
- *                       y: { type: number }
- *                       w: { type: number }
- *                       h: { type: number }
- *                       taskType:
- *                         type: string
- *                         enum: [background, shading, effects, details, other]
- *                       text: { type: string }
  *     responses:
  *       200:
  *         description: Gán thành công
@@ -437,7 +422,7 @@ router.get("/pages/:id", authMiddleware, requireMangakaOrTEOrEB, async (req, res
  */
 router.post("/:id/assign", authMiddleware, requireMangaka, async (req, res, next) => {
   try {
-    const { assistant_id, notes = [] } = req.body;
+    const { assistant_id } = req.body;
     if (!assistant_id) {
       return next(new AppError("assistant_id is required", 400));
     }
@@ -475,7 +460,6 @@ router.post("/:id/assign", authMiddleware, requireMangaka, async (req, res, next
     const series = await Series.findById(chapter.series_id).lean();
     const seriesName = series ? series.name : "";
 
-    // Gán assistant vào chapter
     chapter.assistant_id = assistant_id;
     chapter.status = "pending_assistant";
     await chapter.save();
@@ -483,27 +467,31 @@ router.post("/:id/assign", authMiddleware, requireMangaka, async (req, res, next
     // Lấy tất cả pages của chapter theo đúng thứ tự page_number
     const pages = await Page.find({ chapter_id: chapter._id }).sort({ page_number: 1 }).lean();
 
-    // Lấy các page đã có task (để tránh tạo trùng khi re-assign)
+    // Lấy tất cả PageNotes của chapter từ DB
+    const pageIds = pages.map((p) => p._id);
+    const allNotes = await PageNote.find({ page_id: { $in: pageIds } }).lean();
+
+    // Nhóm notes theo page_id
+    const notesByPageId = {};
+    for (const note of allNotes) {
+      const pid = note.page_id.toString();
+      if (!notesByPageId[pid]) notesByPageId[pid] = [];
+      notesByPageId[pid].push(note);
+    }
+
+    // Lấy các page đã có task (tránh tạo trùng khi re-assign)
     const existingTaskPageIds = (
       await Task.find({ chapter_id: chapter._id, assigned_to: assistant_id }).distinct("page_id")
     ).map((id) => id.toString());
 
-    // Xây map: pageIndex → page doc (FE gửi notes theo thứ tự upload = page_number)
-    const pageIndexMap = {};
-    pages.forEach((p, idx) => { pageIndexMap[idx] = p; });
-
     const newTasks = [];
+    const usedNoteIds = [];
 
-    // Duyệt từng page, tạo task cho mỗi note
-    for (let pageIdx = 0; pageIdx < notes.length; pageIdx++) {
-      const pageNotes = notes[pageIdx];
-      const page = pageIndexMap[pageIdx];
-
-      if (!page) continue; // FE gửi dư pageIndex so với số pages thực tế
-
+    for (const page of pages) {
+      const pageNotes = notesByPageId[page._id.toString()] || [];
       const hasExistingTask = existingTaskPageIds.includes(page._id.toString());
 
-      if (!pageNotes || pageNotes.length === 0) {
+      if (pageNotes.length === 0) {
         // Page không có note: tạo 1 task placeholder nếu chưa có task nào cho page này
         if (!hasExistingTask) {
           const task = await Task.create({
@@ -522,7 +510,7 @@ router.post("/:id/assign", authMiddleware, requireMangaka, async (req, res, next
         continue;
       }
 
-      // Mỗi note = 1 task riêng
+      // Mỗi note = 1 task, link đến note qua note_ids
       for (const note of pageNotes) {
         const task = await Task.create({
           page_id: page._id,
@@ -537,15 +525,24 @@ router.post("/:id/assign", authMiddleware, requireMangaka, async (req, res, next
             height: note.h,
           },
           description: (note.text || "").trim(),
+          note_ids: [note._id],
           status: "pending",
         });
         newTasks.push(task);
+        usedNoteIds.push(note._id);
       }
 
-      // Cập nhật page status → has_task
-      if (!existingTaskPageIds.includes(page._id.toString())) {
+      if (!hasExistingTask) {
         await Page.findByIdAndUpdate(page._id, { status: "has_task" });
       }
+    }
+
+    // Đánh dấu các note đã được dùng trong task
+    if (usedNoteIds.length > 0) {
+      await PageNote.updateMany(
+        { _id: { $in: usedNoteIds } },
+        { $set: { status: "used_in_task" } }
+      );
     }
 
     await notifyChapterAssigned(Notification, assistant_id, chapter, seriesName);

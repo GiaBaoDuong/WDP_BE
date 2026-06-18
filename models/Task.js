@@ -41,6 +41,10 @@ const taskSchema = new mongoose.Schema(
       default: "pending",
     },
     result_image_url: { type: String, default: "" },
+    note_ids: [{
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "PageNote",
+    }],
   },
   { timestamps: true }
 );

@@ -45,6 +45,11 @@ const pageNoteSchema = new mongoose.Schema(
       enum: ["background", "shading", "fx", "other"],
       default: "other",
     },
+    status: {
+      type: String,
+      enum: ["active", "used_in_task"],
+      default: "active",
+    },
   },
   { timestamps: true }
 );

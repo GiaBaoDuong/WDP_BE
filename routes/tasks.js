@@ -197,6 +197,7 @@ router.get("/my-assignments", authMiddleware, requireAssistant, async (req, res,
         .populate("page_id", "page_number original_image_url chapter_id")
         .populate("chapter_id", "chapter_number title series_id")
         .populate("assigned_by", "username full_name phoneNumber")
+        .populate("note_ids")
         .sort({ createdAt: -1 })
         .skip((page - 1) * limit)
         .limit(parseInt(limit))
@@ -257,6 +258,7 @@ router.get("/chapter/:chapterId", authMiddleware, requireMangaka, async (req, re
     const tasks = await Task.find({ chapter_id: chapter._id })
       .populate("page_id", "page_number original_image_url result_image_url status")
       .populate("assigned_to", "username full_name phoneNumber")
+      .populate("note_ids")
       .sort({ "page_id.page_number": 1, createdAt: 1 })
       .lean();
 
@@ -306,6 +308,7 @@ router.get("/page/:pageId", authMiddleware, async (req, res, next) => {
 
     const tasks = await Task.find({ page_id: page._id })
       .populate("assigned_by", "username full_name phoneNumber")
+      .populate("note_ids")
       .sort({ createdAt: 1 })
       .lean();
 
