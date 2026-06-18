@@ -42,7 +42,7 @@ const { notifySeriesApproved, notifyRankingWarning, notifyChapterEBRevision } = 
 router.get("/pending", authMiddleware, requireEB, async (req, res, next) => {
   try {
     const chapters = await Chapter.find({ status: "pending_EB" })
-      .populate("submitted_by", "username full_name")
+      .populate("submitted_by", "username full_name phoneNumber")
       .populate("series_id", "name status")
       .sort({ updatedAt: 1 })
       .lean();
@@ -371,7 +371,7 @@ router.post("/chapter/:chapterId/evaluate", authMiddleware, requireEB, async (re
 router.get("/series/:seriesId", authMiddleware, requireEB, async (req, res, next) => {
   try {
     const evaluations = await EBEvaluation.find({ series_id: req.params.seriesId })
-      .populate("evaluated_by", "username full_name")
+      .populate("evaluated_by", "username full_name phoneNumber")
       .sort({ createdAt: -1 })
       .lean();
 

@@ -75,7 +75,7 @@ router.get("/series", authMiddleware, requireReader, async (req, res, next) => {
 
     const [series, total] = await Promise.all([
       Series.find(filter)
-        .populate("author_id", "username full_name")
+        .populate("author_id", "username full_name phoneNumber")
         .sort({ [sort]: -1 })
         .skip((page - 1) * limit)
         .limit(parseInt(limit))
@@ -132,7 +132,7 @@ router.get("/series/:id", authMiddleware, requireReader, async (req, res, next) 
       is_public: true,
       status: "published",
     })
-      .populate("author_id", "username full_name")
+      .populate("author_id", "username full_name phoneNumber")
       .lean();
 
     if (!series) return next(new AppError("Series not found", 404));
@@ -192,7 +192,7 @@ router.get("/series/:id/chapters", authMiddleware, requireReader, async (req, re
       series_id: req.params.id,
       is_published: true,
     })
-      .populate("submitted_by", "username full_name")
+      .populate("submitted_by", "username full_name phoneNumber")
       .sort({ chapter_number: 1 })
       .lean();
 

@@ -225,7 +225,7 @@ router.get("/mangaka", authMiddleware, requireMangaka, async (req, res, next) =>
 router.get("/te", authMiddleware, requireTE, async (req, res, next) => {
   try {
     const chapters = await Chapter.find({ status: "pending_TE" })
-      .populate("submitted_by", "username full_name")
+      .populate("submitted_by", "username full_name phoneNumber")
       .populate("series_id", "name")
       .sort({ updatedAt: 1 })
       .lean();
@@ -285,7 +285,7 @@ router.get("/te", authMiddleware, requireTE, async (req, res, next) => {
 router.get("/eb", authMiddleware, requireEB, async (req, res, next) => {
   try {
     const chapters = await Chapter.find({ status: "pending_EB" })
-      .populate("submitted_by", "username full_name")
+      .populate("submitted_by", "username full_name phoneNumber")
       .populate("series_id", "name")
       .sort({ updatedAt: 1 })
       .lean();

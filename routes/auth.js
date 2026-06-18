@@ -24,6 +24,7 @@ const buildUserResponse = (user) => ({
   accountId: user._id,
   username: user.username,
   email: user.email,
+  phoneNumber: user.phoneNumber || "",
   fullName: user.full_name,
   role: user.role,
   isProMember: false,
@@ -45,12 +46,13 @@ const buildUserResponse = (user) => ({
  *         application/json:
  *           schema:
  *             type: object
- *             required: [username, password, full_name, email, role]
+ *             required: [username, password, full_name, email, phoneNumber, role]
  *             properties:
  *               username: { type: string }
  *               password: { type: string }
  *               full_name: { type: string }
  *               email: { type: string }
+ *               phoneNumber: { type: string }
  *               role: { type: string, enum: [Admin, Mangaka, Assistant, Editor, EB, Reader] }
  *     responses:
  *       201: { description: Đăng ký thành công }
@@ -60,12 +62,12 @@ const buildUserResponse = (user) => ({
  */
 router.post("/register", async (req, res) => {
   try {
-    const { username, password, full_name, email, role } = req.body;
+    const { username, password, full_name, email, phoneNumber, role } = req.body;
 
-    if (!username || !password || !full_name || !email || !role) {
+    if (!username || !password || !full_name || !email || !phoneNumber || !role) {
       return res.status(400).json({
         success: false,
-        message: "All fields are required: username, password, full_name, email, role",
+        message: "All fields are required: username, password, full_name, email, phoneNumber, role",
       });
     }
 
@@ -103,7 +105,7 @@ router.post("/register", async (req, res) => {
       });
     }
 
-    await User.create({ username, password, full_name, email, role });
+    await User.create({ username, password, full_name, email, phoneNumber, role });
 
     return res.status(201).json({
       success: true,
@@ -131,12 +133,13 @@ router.post("/register", async (req, res) => {
  *         application/json:
  *           schema:
  *             type: object
- *             required: [username, password, full_name, email, role]
+ *             required: [username, password, full_name, email, phoneNumber, role]
  *             properties:
  *               username: { type: string }
  *               password: { type: string }
  *               full_name: { type: string }
  *               email: { type: string }
+ *               phoneNumber: { type: string }
  *               role: { type: string, enum: [Admin, Mangaka, Assistant, Editor, EB, Reader] }
  *     responses:
  *       200: { description: OTP đã được gửi đến email }
@@ -146,12 +149,12 @@ router.post("/register", async (req, res) => {
  */
 router.post("/register/send-otp", async (req, res) => {
   try {
-    const { username, password, full_name, email, role } = req.body;
+    const { username, password, full_name, email, phoneNumber, role } = req.body;
 
-    if (!username || !password || !full_name || !email || !role) {
+    if (!username || !password || !full_name || !email || !phoneNumber || !role) {
       return res.status(400).json({
         success: false,
-        message: "All fields are required: username, password, full_name, email, role",
+        message: "All fields are required: username, password, full_name, email, phoneNumber, role",
       });
     }
 
@@ -217,12 +220,13 @@ router.post("/register/send-otp", async (req, res) => {
  *         application/json:
  *           schema:
  *             type: object
- *             required: [username, password, full_name, email, role, otp]
+ *             required: [username, password, full_name, email, phoneNumber, role, otp]
  *             properties:
  *               username: { type: string }
  *               password: { type: string }
  *               full_name: { type: string }
  *               email: { type: string }
+ *               phoneNumber: { type: string }
  *               role: { type: string, enum: [Admin, Mangaka, Assistant, Editor, EB, Reader] }
  *               otp: { type: string, description: 6-digit OTP code sent to email }
  *     responses:
@@ -233,9 +237,9 @@ router.post("/register/send-otp", async (req, res) => {
  */
 router.post("/register/verify-otp", async (req, res) => {
   try {
-    const { username, password, full_name, email, role, otp } = req.body;
+    const { username, password, full_name, email, phoneNumber, role, otp } = req.body;
 
-    if (!username || !password || !full_name || !email || !role || !otp) {
+    if (!username || !password || !full_name || !email || !phoneNumber || !role || !otp) {
       return res.status(400).json({
         success: false,
         message: "All fields including otp are required",
@@ -262,7 +266,7 @@ router.post("/register/verify-otp", async (req, res) => {
       });
     }
 
-    await User.create({ username, password, full_name, email, role });
+    await User.create({ username, password, full_name, email, phoneNumber, role });
 
     return res.status(201).json({
       success: true,
@@ -372,6 +376,97 @@ router.get("/me", authMiddleware, async (req, res) => {
 
     return res.status(200).json({
       success: true,
+      user: buildUserResponse(user),
+    });
+  } catch (error) {
+    return res.status(500).json({
+      success: false,
+      message: "Internal server error",
+      error: error.message,
+    });
+  }
+});
+
+// ─── Update current user profile ───────────────────────────────────────────────
+
+/**
+ * @swagger
+ * /auth/me:
+ *   put:
+ *     summary: Cập nhật thông tin cá nhân của user hiện tại
+ *     tags: [Auth]
+ *     security:
+ *       - BearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               full_name: { type: string }
+ *               email: { type: string }
+ *               phoneNumber: { type: string }
+ *     responses:
+ *       200: { description: Cập nhật thành công }
+ *       400: { description: Invalid input }
+ *       404: { description: User not found }
+ */
+router.put("/me", authMiddleware, async (req, res) => {
+  try {
+    const { full_name, email, phoneNumber } = req.body;
+    const user = await User.findById(req.user.nameid);
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: "User not found",
+      });
+    }
+
+    if (full_name !== undefined) {
+      if (typeof full_name !== "string" || full_name.trim().length === 0) {
+        return res.status(400).json({
+          success: false,
+          message: "full_name không được để trống",
+        });
+      }
+      if (full_name.length > 100) {
+        return res.status(400).json({
+          success: false,
+          message: "full_name không được vượt quá 100 ký tự",
+        });
+      }
+      user.full_name = full_name.trim();
+    }
+
+    if (email !== undefined) {
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (!emailRegex.test(email)) {
+        return res.status(400).json({
+          success: false,
+          message: "Định dạng email không hợp lệ",
+        });
+      }
+      const existing = await User.findOne({ email, _id: { $ne: user._id } });
+      if (existing) {
+        return res.status(409).json({
+          success: false,
+          message: "Email đã được sử dụng bởi tài khoản khác",
+        });
+      }
+      user.email = email.toLowerCase().trim();
+    }
+
+    if (phoneNumber !== undefined) {
+      user.phoneNumber = String(phoneNumber).trim();
+    }
+
+    await user.save();
+
+    return res.status(200).json({
+      success: true,
+      message: "Cập nhật thông tin thành công",
       user: buildUserResponse(user),
     });
   } catch (error) {

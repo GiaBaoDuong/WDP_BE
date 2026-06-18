@@ -71,6 +71,7 @@ app.use("/auth", require("./routes/auth"));
 app.use("/notifications", require("./routes/notifications"));
 app.use("/series", require("./routes/series"));
 app.use("/chapters", require("./routes/chapters"));
+app.use("/chapters", require("./routes/pageLayers"));
 app.use("/tasks", require("./routes/tasks"));
 app.use("/submissions", require("./routes/submissions"));
 app.use("/cooperation-requests", require("./routes/cooperations"));

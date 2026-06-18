@@ -104,7 +104,7 @@ router.get("/", authMiddleware, async (req, res, next) => {
 
     const [series, total] = await Promise.all([
       Series.find(filter)
-        .populate("author_id", "username full_name")
+        .populate("author_id", "username full_name phoneNumber")
         .sort(sortObj)
         .skip((page - 1) * limit)
         .limit(parseInt(limit))
@@ -181,7 +181,7 @@ router.get("/ranking", authMiddleware, async (req, res, next) => {
     if (period) filter.release_period = period;
 
     const ranking = await Series.find(filter)
-      .populate("author_id", "username full_name")
+      .populate("author_id", "username full_name phoneNumber")
       .sort({ average_score: -1, total_votes: -1 })
       .limit(50)
       .lean();
@@ -301,7 +301,7 @@ router.get("/mine", authMiddleware, requireMangaka, async (req, res, next) => {
 router.get("/:id", authMiddleware, async (req, res, next) => {
   try {
     const series = await Series.findById(req.params.id)
-      .populate("author_id", "username full_name")
+      .populate("author_id", "username full_name phoneNumber")
       .lean();
 
     if (!series) {
@@ -686,8 +686,8 @@ router.get("/:id/chapters", authMiddleware, async (req, res, next) => {
     }
 
     const chapters = await Chapter.find(filter)
-      .populate("submitted_by", "username full_name")
-      .populate("assistant_id", "username full_name")
+      .populate("submitted_by", "username full_name phoneNumber")
+      .populate("assistant_id", "username full_name phoneNumber")
       .select("+assistant_id")
       .sort({ chapter_number: 1 })
       .lean();

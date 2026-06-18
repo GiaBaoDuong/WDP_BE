@@ -31,6 +31,11 @@ const userSchema = new mongoose.Schema(
       lowercase: true,
       maxlength: [100, "Email cannot exceed 100 characters"],
     },
+    phoneNumber: {
+      type: String,
+      default: "",
+      trim: true,
+    },
     role: {
       type: String,
       required: [true, "Role is required"],

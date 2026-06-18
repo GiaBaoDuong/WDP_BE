@@ -218,7 +218,7 @@ router.get("/assistants", authMiddleware, requireMangaka, async (req, res, next)
 router.get("/requests/mine", authMiddleware, requireMangaka, async (req, res, next) => {
   try {
     const requests = await CooperationRequest.find({ mangaka_id: req.user.nameid })
-      .populate("assistant_id", "username full_name email")
+      .populate("assistant_id", "username full_name email phoneNumber")
       .populate("series_id", "name")
       .sort({ createdAt: -1 })
       .lean();
@@ -271,7 +271,7 @@ router.get("/requests/mine", authMiddleware, requireMangaka, async (req, res, ne
 router.get("/requests/incoming", authMiddleware, requireAssistant, async (req, res, next) => {
   try {
     const requests = await CooperationRequest.find({ assistant_id: req.user.nameid })
-      .populate("mangaka_id", "username full_name email")
+      .populate("mangaka_id", "username full_name email phoneNumber")
       .populate("series_id", "name")
       .sort({ createdAt: -1 })
       .lean();
@@ -551,7 +551,7 @@ router.post("/requests/:id/decline-cooperation", authMiddleware, requireAssistan
 router.get("/mine", authMiddleware, requireMangaka, async (req, res, next) => {
   try {
     const cooperations = await Cooperation.find({ mangaka_id: req.user.nameid })
-      .populate("assistant_id", "username full_name email")
+      .populate("assistant_id", "username full_name email phoneNumber")
       .populate("series_id", "name")
       .lean();
 
@@ -599,7 +599,7 @@ router.get("/mine", authMiddleware, requireMangaka, async (req, res, next) => {
 router.get("/assistant/mine", authMiddleware, requireAssistant, async (req, res, next) => {
   try {
     const cooperations = await Cooperation.find({ assistant_id: req.user.nameid })
-      .populate("mangaka_id", "username full_name email")
+      .populate("mangaka_id", "username full_name email phoneNumber")
       .populate("series_id", "name")
       .lean();
 

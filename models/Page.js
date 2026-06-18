@@ -20,6 +20,20 @@ const pageSchema = new mongoose.Schema(
       ref: "User",
       required: true,
     },
+    current_version: { type: Number, default: 0 },
+    is_locked: { type: Boolean, default: false },
+    snapshots: {
+      type: [
+        {
+          version: { type: Number, required: true },
+          layers: { type: Array, default: [] },
+          created_by: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+          created_at: { type: Date, default: Date.now },
+          note: { type: String, default: "" },
+        },
+      ],
+      default: [],
+    },
   },
   { timestamps: true }
 );

@@ -6,6 +6,7 @@ const { requireMangaka, requireMangakaOrAssistant, requireAssistant, requireMang
 const { AppError } = require("../middleware/errorHandler");
 const Chapter = require("../models/Chapter");
 const Page = require("../models/Page");
+const PageLayer = require("../models/PageLayer");
 const Series = require("../models/Series");
 const Task = require("../models/Task");
 const User = require("../models/User");
@@ -364,8 +365,8 @@ router.get("/pages/:id", authMiddleware, requireMangakaOrTEOrEB, async (req, res
     }
 
     const tasks = await Task.find({ page_id: page._id })
-      .populate("assigned_to", "username full_name")
-      .populate("assigned_by", "username full_name")
+        .populate("assigned_to", "username full_name phoneNumber")
+        .populate("assigned_by", "username full_name phoneNumber")
       .lean();
 
     return res.status(200).json({
@@ -601,7 +602,7 @@ router.get("/my-assignments", authMiddleware, requireAssistant, async (req, res,
     const [chapters, total] = await Promise.all([
       Chapter.find(filter)
         .populate("series_id", "name cover_image_url")
-        .populate("submitted_by", "username full_name")
+        .populate("submitted_by", "username full_name phoneNumber")
         .sort({ createdAt: -1 })
         .skip((parseInt(page) - 1) * parseInt(limit))
         .limit(parseInt(limit))
@@ -840,7 +841,7 @@ router.get("/pages/:id/notes", authMiddleware, requireMangakaOrAssistant, async 
     }
 
     const notes = await PageNote.find({ page_id: page._id })
-      .populate("author_id", "username full_name")
+      .populate("author_id", "username full_name phoneNumber")
       .sort({ createdAt: 1 })
       .lean();
 
@@ -1001,6 +1002,161 @@ router.delete("/pages/:id/notes/:noteId", authMiddleware, requireMangaka, async 
   } catch (error) {
     next(error);
   }
+});
+
+// POST /chapters/pages/:pageId/snapshots
+router.post("/pages/:pageId/snapshots", authMiddleware, requireMangakaOrAssistant, async (req, res, next) => {
+  try {
+    const { pageId } = req.params;
+    const { note } = req.body;
+
+    const page = await Page.findById(pageId).lean();
+    if (!page) return next(new AppError("Page not found", 404));
+
+    const chapter = await Chapter.findById(page.chapter_id).lean();
+    if (!chapter) return next(new AppError("Chapter not found", 404));
+
+    const series = await Series.findById(chapter.series_id).lean();
+    if (!series) return next(new AppError("Series not found", 404));
+
+    const isAuthor = series.author_id.toString() === req.user.nameid;
+    const isAssigned = chapter.assistant_id?.toString() === req.user.nameid;
+    if (!isAuthor && !isAssigned) {
+      return next(new AppError("Khong co quyen tao snapshot", 403));
+    }
+
+    const currentLayers = await PageLayer.find({ page_id: pageId }).sort({ z_order: 1 }).lean();
+    const layersSnapshot = currentLayers.map((l) => ({
+      _id: l._id,
+      name: l.name,
+      image_url: l.image_url,
+      blend_mode: l.blend_mode,
+      opacity: l.opacity,
+      visible: l.visible,
+      z_order: l.z_order,
+      x: l.x,
+      y: l.y,
+      width: l.width,
+      height: l.height,
+      rotation: l.rotation,
+      scale: l.scale,
+      locked: l.locked,
+    }));
+
+    const newVersion = (page.current_version || 0) + 1;
+
+    await Page.findByIdAndUpdate(pageId, {
+      $push: {
+        snapshots: {
+          $each: [{
+            version: newVersion,
+            layers: layersSnapshot,
+            created_by: req.user.nameid,
+            created_at: new Date(),
+            note: note || "",
+          }],
+          $position: 0,
+        },
+      },
+      $inc: { current_version: 1 },
+    });
+
+    res.status(201).json({
+      success: true,
+      data: {
+        version: newVersion,
+        layer_count: layersSnapshot.length,
+        note: note || "",
+      },
+    });
+  } catch (err) { next(err); }
+});
+
+// GET /chapters/pages/:pageId/snapshots
+router.get("/pages/:pageId/snapshots", authMiddleware, requireMangakaOrAssistant, async (req, res, next) => {
+  try {
+    const { pageId } = req.params;
+
+    const page = await Page.findById(pageId).lean();
+    if (!page) return next(new AppError("Page not found", 404));
+
+    const chapter = await Chapter.findById(page.chapter_id).lean();
+    if (!chapter) return next(new AppError("Chapter not found", 404));
+
+    const series = await Series.findById(chapter.series_id).lean();
+    if (!series) return next(new AppError("Series not found", 404));
+
+    const isAuthor = series.author_id.toString() === req.user.nameid;
+    const isAssigned = chapter.assistant_id?.toString() === req.user.nameid;
+    if (!isAuthor && !isAssigned) {
+      return next(new AppError("Khong co quyen xem snapshot", 403));
+    }
+
+    const snapshots = (page.snapshots || []).map((s) => ({
+      version: s.version,
+      note: s.note,
+      created_by: s.created_by,
+      created_at: s.created_at,
+      layer_count: s.layers?.length || 0,
+    }));
+
+    res.status(200).json({ success: true, data: snapshots });
+  } catch (err) { next(err); }
+});
+
+// POST /chapters/pages/:pageId/snapshots/:version/restore
+router.post("/pages/:pageId/snapshots/:version/restore", authMiddleware, requireMangakaOrAssistant, async (req, res, next) => {
+  try {
+    const { pageId, version } = req.params;
+
+    const page = await Page.findById(pageId).lean();
+    if (!page) return next(new AppError("Page not found", 404));
+
+    const chapter = await Chapter.findById(page.chapter_id).lean();
+    if (!chapter) return next(new AppError("Chapter not found", 404));
+
+    const series = await Series.findById(chapter.series_id).lean();
+    if (!series) return next(new AppError("Series not found", 404));
+
+    const isAuthor = series.author_id.toString() === req.user.nameid;
+    const isAssigned = chapter.assistant_id?.toString() === req.user.nameid;
+    if (!isAuthor && !isAssigned) {
+      return next(new AppError("Khong co quyen khoi phuc snapshot", 403));
+    }
+
+    const snapshot = (page.snapshots || []).find((s) => s.version === Number(version));
+    if (!snapshot) return next(new AppError("Snapshot version not found", 404));
+
+    await PageLayer.deleteMany({ page_id: pageId });
+
+    if (snapshot.layers && snapshot.layers.length > 0) {
+      const layersToRestore = snapshot.layers.map((l) => ({
+        page_id: pageId,
+        name: l.name,
+        image_url: l.image_url,
+        blend_mode: l.blend_mode,
+        opacity: l.opacity,
+        visible: l.visible,
+        z_order: l.z_order,
+        x: l.x,
+        y: l.y,
+        width: l.width,
+        height: l.height,
+        rotation: l.rotation,
+        scale: l.scale,
+        locked: l.locked,
+      }));
+      await PageLayer.insertMany(layersToRestore);
+    }
+
+    const restoredLayers = await PageLayer.find({ page_id: pageId }).sort({ z_order: 1 }).lean();
+
+    res.status(200).json({
+      success: true,
+      message: `Da khoi phuc ve version ${version}`,
+      data: restoredLayers,
+    });
+  } catch (err) { next(err); }
 });
 
 module.exports = router;

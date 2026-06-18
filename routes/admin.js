@@ -74,7 +74,7 @@ router.get("/dashboard", async (req, res, next) => {
     const recentActivity = await Notification.find()
       .sort({ createdAt: -1 })
       .limit(10)
-      .populate("user_id", "username full_name")
+      .populate("user_id", "username full_name phoneNumber")
       .lean();
 
     const formattedActivity = recentActivity.map((n) => ({
@@ -198,7 +198,7 @@ router.get("/manga", async (req, res, next) => {
     const skip = (parseInt(page) - 1) * parseInt(limit);
     const [data, total] = await Promise.all([
       Series.find(filter)
-        .populate("author_id", "username full_name")
+        .populate("author_id", "username full_name phoneNumber")
         .sort({ createdAt: -1 })
         .skip(skip)
         .limit(parseInt(limit))
@@ -254,7 +254,7 @@ router.get("/manga", async (req, res, next) => {
 router.get("/manga/:id", async (req, res, next) => {
   try {
     const series = await Series.findById(req.params.id)
-      .populate("author_id", "username full_name")
+      .populate("author_id", "username full_name phoneNumber")
       .lean();
 
     if (!series) return next(new AppError("Manga not found", 404));
@@ -544,7 +544,7 @@ router.get("/manga/:mangaId/chapters", async (req, res, next) => {
     const skip = (parseInt(page) - 1) * parseInt(limit);
     const [chapters, total, pageCounts] = await Promise.all([
       Chapter.find({ series_id: mangaId })
-        .populate("submitted_by", "username full_name")
+        .populate("submitted_by", "username full_name phoneNumber")
         .sort({ chapter_number: 1 })
         .skip(skip)
         .limit(parseInt(limit))
@@ -795,6 +795,7 @@ router.get("/users/:id", async (req, res, next) => {
         name: user.full_name || user.username,
         username: user.username,
         email: user.email,
+        phoneNumber: user.phoneNumber || "",
         role: user.role,
         status: user.status || "active",
         createdAt: user.created_at,
@@ -869,6 +870,7 @@ router.put("/users/:id/status", async (req, res, next) => {
         id: user._id,
         name: user.full_name || user.username,
         email: user.email,
+        phoneNumber: user.phoneNumber || "",
         role: user.role,
         status: user.status,
         createdAt: user.created_at,
@@ -908,6 +910,7 @@ router.get("/profile", async (req, res, next) => {
         id: user._id,
         name: user.full_name || user.username,
         email: user.email,
+        phoneNumber: user.phoneNumber || "",
         role: user.role,
         status: user.status || "active",
         initials: getInitials(user.full_name || user.username),
@@ -937,6 +940,7 @@ router.get("/profile", async (req, res, next) => {
  *             properties:
  *               name: { type: string, description: "Full name mới" }
  *               email: { type: string }
+ *               phoneNumber: { type: string }
  *     responses:
  *       200: { description: Profile updated }
  *       400: { description: Invalid input }
@@ -945,7 +949,7 @@ router.get("/profile", async (req, res, next) => {
  */
 router.put("/profile", async (req, res, next) => {
   try {
-    const { name, email } = req.body;
+    const { name, email, phoneNumber } = req.body;
     const user = await User.findById(req.user.nameid);
     if (!user) return next(new AppError("Admin not found", 404));
 
@@ -957,6 +961,7 @@ router.put("/profile", async (req, res, next) => {
       if (existing) return next(new AppError("Email already in use", 409));
       user.email = email;
     }
+    if (phoneNumber !== undefined) user.phoneNumber = phoneNumber;
 
     await user.save();
 
@@ -967,6 +972,7 @@ router.put("/profile", async (req, res, next) => {
         id: user._id,
         name: user.full_name || user.username,
         email: user.email,
+        phoneNumber: user.phoneNumber || "",
         role: user.role,
         status: user.status || "active",
         initials: getInitials(user.full_name || user.username),
@@ -1198,7 +1204,7 @@ router.get("/series", async (req, res, next) => {
     if (search) filter.name = { $regex: search, $options: "i" };
     const skip = (parseInt(page) - 1) * parseInt(limit);
     const [series, total] = await Promise.all([
-      Series.find(filter).populate("author_id", "username full_name role").sort({ createdAt: -1 }).skip(skip).limit(parseInt(limit)),
+      Series.find(filter).populate("author_id", "username full_name phoneNumber role").sort({ createdAt: -1 }).skip(skip).limit(parseInt(limit)),
       Series.countDocuments(filter),
     ]);
     res.json({
@@ -1255,7 +1261,7 @@ router.get("/chapters-legacy", async (req, res, next) => {
     const [chapters, total] = await Promise.all([
       Chapter.find(filter)
         .populate("series_id", "name")
-        .populate("submitted_by", "username")
+        .populate("submitted_by", "username full_name phoneNumber")
         .sort({ createdAt: -1 })
         .skip(skip)
         .limit(parseInt(limit)),

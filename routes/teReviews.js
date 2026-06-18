@@ -43,7 +43,7 @@ const { notifyChapterToTE, notifyChapterToEB, notifyChapterTERevision } = requir
 router.get("/pending", authMiddleware, requireTE, async (req, res, next) => {
   try {
     const chapters = await Chapter.find({ status: "pending_TE" })
-      .populate("submitted_by", "username full_name")
+      .populate("submitted_by", "username full_name phoneNumber")
       .populate("series_id", "name")
       .sort({ updatedAt: 1 })
       .lean();
@@ -224,7 +224,7 @@ router.post("/chapter/:chapterId/review", authMiddleware, requireTE, async (req,
 router.get("/chapter/:chapterId", authMiddleware, requireTE, async (req, res, next) => {
   try {
     const review = await TEReview.findOne({ chapter_id: req.params.chapterId })
-      .populate("reviewed_by", "username full_name")
+      .populate("reviewed_by", "username full_name phoneNumber")
       .lean();
 
     if (!review) return next(new AppError("Review not found", 404));
@@ -370,7 +370,7 @@ router.get("/dashboard", authMiddleware, requireTE, async (req, res, next) => {
     const pendingChapters = await Chapter.find({ status: "pending_TE" })
       .select("_id series_id chapter_number title submitted_by updatedAt")
       .populate("series_id", "name publication_schedule")
-      .populate("submitted_by", "username full_name")
+      .populate("submitted_by", "username full_name phoneNumber")
       .lean();
 
     const inRevisionChapters = await Chapter.find({ status: "TE_revision" })
@@ -503,7 +503,7 @@ router.get("/studio-progress", authMiddleware, requireMangakaOrTEOrEB, async (re
 
     const seriesList = await Series.find(seriesFilter)
       .select("_id name status author_id")
-      .populate("author_id", "username full_name")
+      .populate("author_id", "username full_name phoneNumber")
       .lean();
 
     const result = [];
