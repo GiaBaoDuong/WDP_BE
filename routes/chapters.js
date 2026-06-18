@@ -303,13 +303,11 @@ router.post(
  *       404:
  *         description: Chapter not found
  */
-router.get("/:id/pages", authMiddleware, requireMangakaOrTEOrEB, async (req, res, next) => {
+router.get("/:id/pages", authMiddleware, requireMangakaOrAssistant, async (req, res, next) => {
   try {
     const chapter = await Chapter.findById(req.params.id).lean();
     if (!chapter) return next(new AppError("Chapter not found", 404));
 
-    // Chapter chưa published → chỉ những role trên mới xem được
-    // Chapter đã published → bất kỳ user đăng nhập nào cũng xem được
     if (!chapter.is_published) {
       const role = req.user.role;
       if (!["Mangaka", "Assistant", "Editor", "EB"].includes(role)) {
