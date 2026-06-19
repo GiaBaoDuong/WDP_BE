@@ -19,7 +19,7 @@ const TE_CRITERIA_KEYS = [
   TE_CRITERIA.VISUAL_ART_WRITING,
   TE_CRITERIA.LAYOUT_STORYBOARD,
   TE_CRITERIA.LOCALIZATION_TECHNICAL,
-};
+];
 
 const teAnnotationSchema = new mongoose.Schema(
   {
