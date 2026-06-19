@@ -312,8 +312,58 @@ router.patch("/:id", authMiddleware, requireMangaka, async (req, res, next) => {
       return next(new AppError("Cannot edit published chapter", 400));
     }
 
-    if (req.body.title !== undefined) chapter.title = req.body.title;
-    if (req.body.revision_notes !== undefined) chapter.revision_notes = req.body.revision_notes;
+    const { title, revision_notes, action } = req.body;
+
+    // ─── "Gửi cả chapter" ───────────────────────────────────────────────────
+    if (action === "submit") {
+      const pages = await Page.find({ chapter_id: chapter._id }).lean();
+
+      if (pages.length === 0) {
+        return next(new AppError("No pages to submit", 400));
+      }
+
+      // Tạo task cho mỗi page (nếu chưa có task)
+      const createdTasks = [];
+      for (const page of pages) {
+        const existingTask = await Task.findOne({ page_id: page._id });
+        if (existingTask) continue;
+
+        const note = await PageNote.findOne({ page_id: page._id }).lean();
+        const assignedTo = req.body.assigned_to || null;
+
+        const task = await Task.create({
+          page_id: page._id,
+          chapter_id: chapter._id,
+          assigned_by: req.user.nameid,
+          assigned_to: assignedTo,
+          work_type: note?.taskType || "other",
+          region: {
+            x: note?.x ?? 0,
+            y: note?.y ?? 0,
+            width: note?.w ?? 100,
+            height: note?.h ?? 100,
+          },
+          description: note?.text || "",
+          note_ids: note ? [note._id] : [],
+          status: "pending",
+        });
+        createdTasks.push(task);
+      }
+
+      chapter.status = "pending_assistant";
+      if (revision_notes !== undefined) chapter.revision_notes = revision_notes;
+      await chapter.save();
+
+      return res.status(200).json({
+        success: true,
+        message: "Chapter submitted to assistant",
+        data: { chapter, tasks_created: createdTasks.length },
+      });
+    }
+
+    // ─── Chỉnh sửa thường ──────────────────────────────────────────────────
+    if (title !== undefined) chapter.title = title;
+    if (revision_notes !== undefined) chapter.revision_notes = revision_notes;
 
     await chapter.save();
     return res.status(200).json({ success: true, data: chapter });
@@ -323,8 +373,13 @@ router.patch("/:id", authMiddleware, requireMangaka, async (req, res, next) => {
 });
 
 // ─── POST /chapters/:id/pages ─────────────────────────────────────────────────
-// Mangaka upload trang truyện (1 ảnh hoặc nhiều)
-// Body: files (multipart/form-data, fieldname: "images")
+// Mangaka upload từng page lên Cloudinary, kèm note + tọa độ (lưu ngay vào DB)
+// Body: multipart/form-data
+//   - page         (file, 1 ảnh)
+//   - note         (text, optional)
+//   - work_type    (text, optional: background|shading|effects|details|other)
+//   - assigned_to  (text, optional, user_id của assistant)
+//   - x, y, w, h   (number, 0-100, optional)
 /**
  * @swagger
  * /chapters/{id}/pages:
@@ -365,7 +420,7 @@ router.post(
   "/:id/pages",
   authMiddleware,
   requireMangaka,
-  upload.array("pages", 50),
+  upload.single("page"),
   async (req, res, next) => {
     try {
       const chapter = await Chapter.findOne({
@@ -374,34 +429,125 @@ router.post(
       });
       if (!chapter) return next(new AppError("Chapter not found or unauthorized", 404));
 
-      if (!req.files || req.files.length === 0) {
-        return next(new AppError("No images uploaded", 400));
+      if (!req.file) {
+        return next(new AppError("No image uploaded", 400));
       }
+
+      // Upload lên Cloudinary
+      const uploadResult = await cloudinary.uploader.upload(req.file.path, {
+        folder: `wdp/chapters/${chapter.series_id}/${chapter._id}`,
+        resource_type: "image",
+      });
+
+      // Lấy metadata từ body
+      const noteText = req.body.note || "";
+      const workType = req.body.work_type || "other";
+      const x = Number(req.body.x ?? 0);
+      const y = Number(req.body.y ?? 0);
+      const w = Number(req.body.w ?? 100);
+      const h = Number(req.body.h ?? 100);
+      const assignedTo = req.body.assigned_to || null;
 
       const existingPages = await Page.countDocuments({ chapter_id: chapter._id });
 
-      const pages = await Promise.all(
-        req.files.map((file, index) =>
-          Page.create({
-            chapter_id: chapter._id,
-            page_number: existingPages + index + 1,
-            original_image_url: `/uploads/chapters/${file.filename}`,
-            uploaded_by: req.user.nameid,
-            status: "raw",
-          })
-        )
-      );
+      const page = await Page.create({
+        chapter_id: chapter._id,
+        page_number: existingPages + 1,
+        original_image_url: uploadResult.secure_url,
+        uploaded_by: req.user.nameid,
+        status: "has_task",
+      });
+
+      let note = null;
+      if (noteText || true) {
+        note = await PageNote.create({
+          page_id: page._id,
+          author_id: req.user.nameid,
+          text: noteText,
+          x,
+          y,
+          w,
+          h,
+          taskType: workType,
+          status: assignedTo ? "used_in_task" : "active",
+        });
+      }
+
+      let task = null;
+      if (assignedTo) {
+        task = await Task.create({
+          page_id: page._id,
+          chapter_id: chapter._id,
+          assigned_by: req.user.nameid,
+          assigned_to: assignedTo,
+          work_type: workType,
+          region: { x, y, width: w, height: h },
+          description: noteText,
+          note_ids: note ? [note._id] : [],
+          status: "pending",
+        });
+      }
 
       return res.status(201).json({
         success: true,
-        message: `${pages.length} page(s) uploaded`,
-        data: pages,
+        data: { page, note, task },
       });
     } catch (error) {
       next(error);
     }
   }
 );
+
+// ─── DELETE /chapters/pages/:pageId ────────────────────────────────────────
+// Xóa 1 page: xóa ảnh trên Cloudinary, xóa PageNote, xóa Task, xóa Page
+router.delete("/pages/:pageId", authMiddleware, requireMangaka, async (req, res, next) => {
+  try {
+    const page = await Page.findById(req.params.pageId);
+    if (!page) return next(new AppError("Page not found", 404));
+
+    const chapter = await Chapter.findById(page.chapter_id);
+    if (!chapter || chapter.submitted_by.toString() !== req.user.nameid) {
+      return next(new AppError("Unauthorized", 403));
+    }
+
+    // Xóa ảnh trên Cloudinary
+    const url = page.original_image_url || "";
+    if (url.includes("res.cloudinary.com")) {
+      try {
+        const parts = url.split("/upload/");
+        if (parts[1]) {
+          const segments = parts[1].split("/");
+          segments.pop(); // bỏ extension
+          const publicId = segments.join("/").replace(/^v\d+\//, "");
+          await cloudinary.uploader.destroy(publicId);
+        }
+      } catch (err) {
+        console.warn("[Cloudinary] delete page image failed:", err.message);
+      }
+    }
+
+    // Xóa PageNote liên quan
+    await PageNote.deleteMany({ page_id: page._id });
+
+    // Xóa Task liên quan
+    await Task.deleteMany({ page_id: page._id });
+
+    // Xóa Page
+    await Page.deleteOne({ _id: page._id });
+
+    // Đánh lại page_number cho các page còn lại
+    const remaining = await Page.find({ chapter_id: chapter._id }).sort({ page_number: 1 });
+    await Promise.all(
+      remaining.map((p, idx) =>
+        Page.updateOne({ _id: p._id }, { page_number: idx + 1 })
+      )
+    );
+
+    return res.status(200).json({ success: true, message: "Page deleted" });
+  } catch (error) {
+    next(error);
+  }
+});
 
 // ─── GET /chapters/:id/pages ─────────────────────────────────────────────────
 // Lấy tất cả pages của chapter
