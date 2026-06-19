@@ -8,6 +8,8 @@ const Series = require("../models/Series");
 const Task = require("../models/Task");
 const Notification = require("../models/Notification");
 const User = require("../models/User");
+const { CHAPTER_STATUS } = require("../utils/constants");
+const { ROLES } = require("../utils/constants");
 const { notifyChapterToTE } = require("../services/notificationService");
 
 // ─── POST /submissions/chapters/:chapterId/submit-to-te ───────────────────────
@@ -62,7 +64,7 @@ router.post("/chapters/:chapterId/submit-to-te", authMiddleware, requireMangaka,
     if (!chapter) return next(new AppError("Chapter not found or unauthorized", 404));
 
     // Kiểm tra chapter đang ở trạng thái draft hoặc TE_revision
-    if (!["draft", "TE_revision", "pending_assistant"].includes(chapter.status)) {
+    if (![CHAPTER_STATUS.DRAFT, CHAPTER_STATUS.TE_REVISION, CHAPTER_STATUS.PENDING_ASSISTANT].includes(chapter.status)) {
       return next(new AppError("Chapter cannot be submitted in current status", 400));
     }
 
@@ -84,7 +86,7 @@ router.post("/chapters/:chapterId/submit-to-te", authMiddleware, requireMangaka,
       );
     }
 
-    chapter.status = "pending_TE";
+    chapter.status = CHAPTER_STATUS.PENDING_TE;
     chapter.revision_notes = "";
     chapter.revision_annotations = [];
     chapter.revision_source = "";
@@ -95,7 +97,7 @@ router.post("/chapters/:chapterId/submit-to-te", authMiddleware, requireMangaka,
     const seriesName = series ? series.name : "";
 
     // Notify TE
-    const teUsers = await User.find({ role: "Editor" }).lean();
+    const teUsers = await User.find({ role: ROLES.EDITOR }).lean();
     for (const te of teUsers) {
       await notifyChapterToTE(Notification, te._id, chapter, seriesName);
     }
@@ -224,7 +226,8 @@ router.get("/mangaka", authMiddleware, requireMangaka, async (req, res, next) =>
  */
 router.get("/te", authMiddleware, requireTE, async (req, res, next) => {
   try {
-    const chapters = await Chapter.find({ status: "pending_TE" })
+<<<<<<< HEAD
+    const chapters = await Chapter.find({ status: CHAPTER_STATUS.PENDING_TE })
       .populate("submitted_by", "username full_name phoneNumber")
       .populate("series_id", "name")
       .sort({ updatedAt: 1 })
@@ -284,7 +287,8 @@ router.get("/te", authMiddleware, requireTE, async (req, res, next) => {
  */
 router.get("/eb", authMiddleware, requireEB, async (req, res, next) => {
   try {
-    const chapters = await Chapter.find({ status: "pending_EB" })
+<<<<<<< HEAD
+    const chapters = await Chapter.find({ status: CHAPTER_STATUS.PENDING_EB })
       .populate("submitted_by", "username full_name phoneNumber")
       .populate("series_id", "name")
       .sort({ updatedAt: 1 })

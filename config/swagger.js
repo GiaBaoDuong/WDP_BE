@@ -129,7 +129,7 @@ const options = {
             _id: { type: "string" },
             chapter_id: { type: "string" },
             reviewed_by: { type: "string" },
-            decision: { type: "string", enum: ["approved", "revision"] },
+            decision: { type: "string", enum: ["draft", "revision", "approved", "rejected", "approved_publish"] },
             annotations: {
               type: "array",
               items: {
@@ -143,8 +143,19 @@ const options = {
                 },
               },
             },
+            scores: {
+              type: "object",
+              properties: {
+                pacing_content: { type: "integer", minimum: 0, maximum: 5 },
+                visual_art_writing: { type: "integer", minimum: 0, maximum: 5 },
+                layout_storyboard: { type: "integer", minimum: 0, maximum: 5 },
+                localization_technical: { type: "integer", minimum: 0, maximum: 5 },
+              },
+            },
+            average_score: { type: "number", nullable: true },
             feedback: { type: "string" },
             revision_feedback: { type: "string" },
+            quick_notes: { type: "string" },
             createdAt: { type: "string", format: "date-time" },
             updatedAt: { type: "string", format: "date-time" },
           },
@@ -156,6 +167,9 @@ const options = {
             series_id: { type: "string" },
             chapter_id: { type: "string", nullable: true },
             evaluated_by: { type: "string" },
+            story_type: { type: "string" },
+            preview_images: { type: "array", items: { type: "string" } },
+            status: { type: "string", enum: ["scoring", "saved", "locked"] },
             first_review: { type: "boolean" },
             member_scores: {
               type: "array",
@@ -163,12 +177,31 @@ const options = {
                 type: "object",
                 properties: {
                   member_name: { type: "string" },
-                  content_script: { type: "number" },
-                  art: { type: "number" },
-                  characters: { type: "number" },
-                  commercial_potential: { type: "number" },
-                  publisher_fit: { type: "number" },
+                  member_id: { type: "string", nullable: true },
+                  scores: {
+                    type: "object",
+                    properties: {
+                      story_dialogue: { type: "number" },
+                      art_design: { type: "number" },
+                      panel_camera: { type: "number" },
+                      pacing_climax: { type: "number" },
+                      color: { type: "number" },
+                    },
+                  },
+                  comments: {
+                    type: "object",
+                    properties: {
+                      story_dialogue: { type: "string" },
+                      art_design: { type: "string" },
+                      panel_camera: { type: "string" },
+                      pacing_climax: { type: "string" },
+                      color: { type: "string" },
+                    },
+                  },
+                  overall_comment: { type: "string" },
+                  average: { type: "number" },
                   total_score: { type: "number" },
+                  saved_at: { type: "string", format: "date-time" },
                   notes: { type: "string" },
                 },
               },
@@ -180,6 +213,64 @@ const options = {
             notes: { type: "string" },
             createdAt: { type: "string", format: "date-time" },
             updatedAt: { type: "string", format: "date-time" },
+          },
+        },
+        EBScoreSummary: {
+          type: "object",
+          properties: {
+            chapter_id: { type: "string" },
+            series_id: { type: "string" },
+            series_name: { type: "string" },
+            evaluation_id: { type: "string", nullable: true },
+            evaluation_status: { type: "string", enum: ["scoring", "saved", "locked"] },
+            story_type: { type: "string" },
+            member_stats: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: {
+                  member_name: { type: "string" },
+                  scores: {
+                    type: "object",
+                    properties: {
+                      story_dialogue: { type: "number" },
+                      art_design: { type: "number" },
+                      panel_camera: { type: "number" },
+                      pacing_climax: { type: "number" },
+                      color: { type: "number" },
+                    },
+                  },
+                  average: { type: "number" },
+                  overall_comment: { type: "string" },
+                  saved_at: { type: "string", format: "date-time" },
+                },
+              },
+            },
+            aggregate: {
+              type: "object",
+              nullable: true,
+              properties: {
+                scores_per_criteria: {
+                  type: "object",
+                  properties: {
+                    story_dialogue: { type: "number" },
+                    art_design: { type: "number" },
+                    panel_camera: { type: "number" },
+                    pacing_climax: { type: "number" },
+                    color: { type: "number" },
+                  },
+                },
+                council_average: { type: "number" },
+                total_score: { type: "number" },
+                label_code: { type: "string", enum: ["khong_dat", "dat", "tot", "xuat_sac"] },
+                label_text: { type: "string", enum: ["Không đạt", "Đạt", "Tốt", "Xuất sắc"] },
+                member_count: { type: "integer" },
+              },
+            },
+            criteria_labels: {
+              type: "object",
+              additionalProperties: { type: "string" },
+            },
           },
         },
         Notification: {

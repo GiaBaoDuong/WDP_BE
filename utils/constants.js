@@ -68,8 +68,11 @@ const COOP_STATUS = {
 
 // ─── TE Review Decision ──────────────────────────────────────────────────────
 const TE_DECISION = {
-  APPROVED: "approved",
-  REVISION: "revision",
+  DRAFT: "draft",               // Lưu nháp, chưa quyết định
+  REVISION: "revision",          // Yêu cầu chỉnh sửa
+  APPROVED: "approved",          // Duyệt, gửi lên EB
+  REJECTED: "rejected",          // Từ chối
+  APPROVED_PUBLISH: "approved_publish", // Duyệt & xuất bản trực tiếp
 };
 
 // ─── EB Evaluation Result ────────────────────────────────────────────────────
@@ -97,15 +100,17 @@ const NOTIF_TYPES = {
   TASK_SUBMITTED: "task_submitted",       // Assistant nộp việc
   TASK_APPROVED: "task_approved",         // Mangaka duyệt việc
   TASK_REVISION: "task_revision",         // Mangaka yêu sửa
-  TASK_APPROVED: "task_approved",         // Mangaka duyệt việc
   CHAPTER_ASSISTANT_WORK_COMPLETE: "chapter_assistant_work_complete", // Assistant hoàn thành chapter
   CHAPTER_ALL_TASKS_APPROVED: "chapter_all_tasks_approved",         // Tất cả tasks đã duyệt
-  CHAPTER_TO_TE: "chapter_to_TE",         // Mangaka gửi chapter cho TE
-  CHAPTER_TE_APPROVED: "chapter_TE_approved", // TE duyệt
-  CHAPTER_TE_REVISION: "chapter_TE_revision", // TE yêu sửa
+  CHAPTER_TO_TE: "chapter_to_TE",             // Mangaka gửi chapter cho TE
+  CHAPTER_TE_APPROVED: "chapter_TE_approved",    // TE duyệt, gửi lên EB
+  CHAPTER_TE_REVISION: "chapter_TE_revision",   // TE yêu cửa chỉnh sửa
+  CHAPTER_TE_REJECTED: "chapter_TE_rejected",    // TE từ chối
+  CHAPTER_TE_PUBLISHED: "chapter_TE_published", // TE duyệt & xuất bản
   CHAPTER_TO_EB: "chapter_to_EB",         // TE gửi lên EB
   CHAPTER_EB_APPROVED: "chapter_EB_approved", // EB duyệt
   CHAPTER_EB_REVISION: "chapter_EB_revision", // EB yêu sửa
+  EB_SCORE_SAVED: "eb_score_saved",       // EB lưu điểm chấm cho chapter
   SERIES_APPROVED: "series_approved",     // Series được xuất bản
   SERIES_CANCELLED: "series_cancelled",   // Series bị huỷ
   RANKING_WARNING: "ranking_warning",     // Series nguy cơ bị huỷ
@@ -114,6 +119,64 @@ const NOTIF_TYPES = {
   ADMIN_CONTENT_REMOVED: "admin_content_removed", // Admin xoá nội dung
   ADMIN_ROLE_CHANGED: "admin_role_changed",     // Admin đổi vai trò user
 };
+
+// ─── EB Scoring ───────────────────────────────────────────────────────────────
+// 5 tiêu chí chấm điểm (key dùng trong DB / API)
+const EB_CRITERIA = {
+  STORY_DIALOGUE: "story_dialogue",   // 1. cốt truyện & lời thoại
+  ART_DESIGN: "art_design",           // 2. nét vẽ & tạo hình nhân vật
+  PANEL_CAMERA: "panel_camera",       // 3. phân khung & góc máy
+  PACING_CLIMAX: "pacing_climax",     // 4. nhịp độ & cao trào
+  COLOR: "color",                     // 5. đổ màu & phối màu
+};
+
+const EB_CRITERIA_LABELS = {
+  story_dialogue: "Cốt truyện & lời thoại",
+  art_design: "Nét vẽ & tạo hình nhân vật",
+  panel_camera: "Phân khung & góc máy",
+  pacing_climax: "Nhịp độ & cao trào",
+  color: "Đổ màu & phối màu",
+};
+
+const EB_CRITERIA_KEYS = [
+  EB_CRITERIA.STORY_DIALOGUE,
+  EB_CRITERIA.ART_DESIGN,
+  EB_CRITERIA.PANEL_CAMERA,
+  EB_CRITERIA.PACING_CLIMAX,
+  EB_CRITERIA.COLOR,
+];
+
+const EB_SCORE_MIN = 0;
+const EB_SCORE_MAX = 5;
+const EB_SCORE_STEP = 0.5;
+
+// Phân loại điểm tổng hợp hội đồng (0–5)
+//  < 2.5        : không đạt
+//  2.5 – < 3.5  : đạt
+//  3.5 – < 4.25 : tốt
+//  4.25 – 5     : xuất sắc
+const EB_RESULT_LABELS = {
+  NOT_PASS: "khong_dat",
+  PASS: "dat",
+  GOOD: "tot",
+  EXCELLENT: "xuat_sac",
+};
+
+const EB_RESULT_LABEL_TEXT = {
+  khong_dat: "Không đạt",
+  dat: "Đạt",
+  tot: "Tốt",
+  xuat_sac: "Xuất sắc",
+};
+
+const EB_EVALUATION_STATUS = {
+  SCORING: "scoring",
+  SAVED: "saved",
+  LOCKED: "locked",
+};
+
+// Thời gian cho phép chỉnh sửa sau khi lưu (giờ)
+const EB_EDIT_WINDOW_HOURS = 24;
 
 module.exports = {
   ROLES,
@@ -127,4 +190,14 @@ module.exports = {
   EB_RESULT,
   PUBLICATION_SCHEDULE,
   NOTIF_TYPES,
+  EB_CRITERIA,
+  EB_CRITERIA_LABELS,
+  EB_CRITERIA_KEYS,
+  EB_SCORE_MIN,
+  EB_SCORE_MAX,
+  EB_SCORE_STEP,
+  EB_RESULT_LABELS,
+  EB_RESULT_LABEL_TEXT,
+  EB_EVALUATION_STATUS,
+  EB_EDIT_WINDOW_HOURS,
 };

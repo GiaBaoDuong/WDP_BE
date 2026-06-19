@@ -15,6 +15,7 @@ const Cooperation = require("../models/Cooperation");
 const PageNote = require("../models/PageNote");
 const Notification = require("../models/Notification");
 const upload = require("../middleware/upload");
+const { ROLES } = require("../utils/constants");
 const { notifyChapterAssigned } = require("../services/notificationService");
 const {
   notifyChapterAssistantWorkComplete,
@@ -432,7 +433,7 @@ router.get("/:id/pages", authMiddleware, requireMangakaOrAssistant, async (req, 
 
     if (!chapter.is_published) {
       const role = req.user.role;
-      if (!["Mangaka", "Assistant", "Editor", "EB"].includes(role)) {
+      if (![ROLES.MANGAKA, ROLES.ASSISTANT, ROLES.EDITOR, ROLES.EB].includes(role)) {
         return next(new AppError("Access denied", 403));
       }
     }
@@ -479,7 +480,7 @@ router.get("/pages/:id", authMiddleware, requireMangakaOrTEOrEB, async (req, res
     const chapter = await Chapter.findById(page.chapter_id).lean();
     if (chapter && !chapter.is_published) {
       const role = req.user.role;
-      if (!["Mangaka", "Assistant", "Editor", "EB"].includes(role)) {
+      if (![ROLES.MANGAKA, ROLES.ASSISTANT, ROLES.EDITOR, ROLES.EB].includes(role)) {
         return next(new AppError("Access denied", 403));
       }
     }

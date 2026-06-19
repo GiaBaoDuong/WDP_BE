@@ -49,6 +49,11 @@ const userSchema = new mongoose.Schema(
       enum: ["active", "banned"],
       default: "active",
     },
+    // EB đại diện: chỉ user này mới có quyền nhập/lưu điểm chấm hội đồng
+    is_eb_representative: {
+      type: Boolean,
+      default: false,
+    },
   },
   {
     timestamps: {

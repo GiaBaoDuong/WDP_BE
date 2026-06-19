@@ -1354,4 +1354,153 @@ router.patch("/manga/chapters/:id/status", async (req, res, next) => {
 });
 
 
+// ════════════════════════════════════════════════════════════════════════════
+// 6. EB REPRESENTATIVE (chỉ định tài khoản đại diện duy nhất của EB)
+// ════════════════════════════════════════════════════════════════════════════
+
+/**
+ * @swagger
+ * /admin/eb-representative/candidates:
+ *   get:
+ *     summary: Danh sách user có role EB (để admin chọn đại diện) (Admin only)
+ *     tags: [Admin - EB Representative]
+ *     security:
+ *       - BearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Danh sách EB user kèm trạng thái đại diện hiện tại
+ *       401: { description: Unauthorized }
+ *       403: { description: Forbidden }
+ */
+router.get("/eb-representative/candidates", async (req, res, next) => {
+  try {
+    const ebs = await User.find({ role: "EB" })
+      .select("username full_name email status is_eb_representative")
+      .sort({ is_eb_representative: -1, full_name: 1 })
+      .lean();
+
+    res.json({
+      success: true,
+      data: ebs.map((u) => ({
+        id: u._id,
+        username: u.username,
+        name: u.full_name || u.username,
+        email: u.email,
+        status: u.status || "active",
+        is_eb_representative: !!u.is_eb_representative,
+      })),
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+
+/**
+ * @swagger
+ * /admin/eb-representative/{userId}:
+ *   patch:
+ *     summary: Chỉ định user làm đại diện EB duy nhất (Admin only)
+ *     description: |
+ *       Tự động bỏ cờ is_eb_representative của mọi EB user khác
+ *       rồi set cờ cho user được chỉ định. Chỉ áp dụng với user có role = EB.
+ *     tags: [Admin - EB Representative]
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: userId
+ *         required: true
+ *         schema: { type: string }
+ *     responses:
+ *       200: { description: Đã set đại diện }
+ *       400: { description: User không phải role EB }
+ *       404: { description: User not found }
+ *       401: { description: Unauthorized }
+ *       403: { description: Forbidden }
+ */
+router.patch("/eb-representative/:userId", async (req, res, next) => {
+  try {
+    const target = await User.findById(req.params.userId);
+    if (!target) return next(new AppError("User not found", 404));
+
+    if (target.role !== "EB") {
+      return next(
+        new AppError("Chỉ user có role 'EB' mới được chỉ định làm đại diện", 400)
+      );
+    }
+
+    if (target.status === "banned") {
+      return next(new AppError("User đang bị banned, không thể chỉ định", 400));
+    }
+
+    // Bỏ cờ ở tất cả EB user khác
+    await User.updateMany(
+      { role: "EB", _id: { $ne: target._id } },
+      { $set: { is_eb_representative: false } }
+    );
+
+    // Set cờ cho user được chỉ định
+    target.is_eb_representative = true;
+    await target.save();
+
+    // Gửi notification cho user
+    await Notification.create({
+      user_id: target._id,
+      type: "admin_role_changed",
+      title: "Bạn đã được chỉ định làm đại diện EB",
+      message: "Bạn hiện là tài khoản đại diện duy nhất được phép lưu điểm chấm cho hội đồng EB.",
+      is_read: false,
+    });
+
+    res.json({
+      success: true,
+      message: `Đã chỉ định "${target.full_name || target.username}" làm đại diện EB`,
+      data: {
+        id: target._id,
+        username: target.username,
+        name: target.full_name || target.username,
+        email: target.email,
+        role: target.role,
+        status: target.status,
+        is_eb_representative: true,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+
+/**
+ * @swagger
+ * /admin/eb-representative:
+ *   delete:
+ *     summary: Bỏ chỉ định đại diện EB hiện tại (Admin only)
+ *     tags: [Admin - EB Representative]
+ *     security:
+ *       - BearerAuth: []
+ *     responses:
+ *       200: { description: Đã bỏ chỉ định }
+ *       401: { description: Unauthorized }
+ *       403: { description: Forbidden }
+ */
+router.delete("/eb-representative", async (req, res, next) => {
+  try {
+    const result = await User.updateMany(
+      { role: "EB", is_eb_representative: true },
+      { $set: { is_eb_representative: false } }
+    );
+
+    res.json({
+      success: true,
+      message: "Đã bỏ chỉ định đại diện EB",
+      data: { cleared_count: result.modifiedCount || 0 },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+
 module.exports = router;
