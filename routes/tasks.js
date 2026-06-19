@@ -669,7 +669,7 @@ router.get("/stats", authMiddleware, requireAssistant, async (req, res, next) =>
     const [approvedTasks, statsData] = await Promise.all([
       Task.find(filter).lean(),
       Cooperation.aggregate([
-        { $match: { assistant_id: require("mongoose").Types.ObjectId(req.user.nameid) } },
+        { $match: { assistant_id: new (require("mongoose").Types.ObjectId)(req.user.nameid) } },
         {
           $group: {
             _id: null,

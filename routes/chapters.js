@@ -8,6 +8,7 @@ const Chapter = require("../models/Chapter");
 const Page = require("../models/Page");
 const PageLayer = require("../models/PageLayer");
 const Series = require("../models/Series");
+const { uploadLayer, cloudinary } = require("../middleware/uploadCloudinary");
 const Task = require("../models/Task");
 const User = require("../models/User");
 const Cooperation = require("../models/Cooperation");
@@ -1037,6 +1038,157 @@ router.get("/pages/:id/layers", authMiddleware, requireMangakaOrAssistant, async
     next(error);
   }
 });
+
+// ─── POST /pages/:id/layers ──────────────────────────────────────────────────
+// Assistant hoặc Mangaka upload layer mới cho page
+/**
+ * @swagger
+ * /chapters/pages/{id}/layers:
+ *   post:
+ *     summary: Upload layer mới cho page
+ *     tags: [Chapters]
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         multipart/form-data:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               image:
+ *                 type: string
+ *                 format: binary
+ *                 description: File ảnh layer (PNG/JPG/WebP, max 10MB)
+ *               index:
+ *                 type: integer
+ *                 description: Vị trí z_order mong muốn (mặc định append cuối)
+ *     responses:
+ *       201:
+ *         description: Layer đã được tạo
+ *       400:
+ *         description: Thiếu file image
+ *       404:
+ *         description: Page not found
+ */
+router.post(
+  "/pages/:id/layers",
+  authMiddleware,
+  requireMangakaOrAssistant,
+  uploadLayer.single("image"),
+  async (req, res, next) => {
+    try {
+      if (!req.file) {
+        return next(new AppError("Image is required", 400));
+      }
+
+      const page = await Page.findById(req.params.id);
+      if (!page) return next(new AppError("Page not found", 404));
+
+      const layerCount = await PageLayer.countDocuments({ page_id: page._id });
+
+      let zOrder;
+      if (req.body.index !== undefined && req.body.index !== null && req.body.index !== "") {
+        const parsed = parseInt(req.body.index, 10);
+        zOrder = Number.isFinite(parsed) && parsed >= 0 ? parsed : layerCount;
+      } else {
+        zOrder = layerCount;
+      }
+
+      const imageUrl = req.file.path || req.file.secure_url;
+
+      const layer = await PageLayer.create({
+        page_id: page._id,
+        name: `Layer ${zOrder + 1}`,
+        image_url: imageUrl,
+        x: 0,
+        y: 0,
+        width: 0,
+        height: 0,
+        opacity: 100,
+        visible: true,
+        blend_mode: "normal",
+        z_order: zOrder,
+        locked: false,
+      });
+
+      return res.status(201).json({
+        success: true,
+        data: layer,
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+// ─── DELETE /pages/layers/:layerId ───────────────────────────────────────────
+// Assistant hoặc Mangaka xóa layer (đồng thời xóa file trên Cloudinary)
+/**
+ * @swagger
+ * /chapters/pages/layers/{layerId}:
+ *   delete:
+ *     summary: Xóa layer
+ *     tags: [Chapters]
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: layerId
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Xóa thành công
+ *       404:
+ *         description: Layer not found
+ */
+router.delete(
+  "/pages/layers/:layerId",
+  authMiddleware,
+  requireMangakaOrAssistant,
+  async (req, res, next) => {
+    try {
+      const layer = await PageLayer.findById(req.params.layerId);
+      if (!layer) return next(new AppError("Layer not found", 404));
+
+      // Xóa file trên Cloudinary (nếu là URL Cloudinary)
+      const url = layer.image_url || "";
+      if (url.includes("res.cloudinary.com")) {
+        try {
+          const parts = url.split("/upload/");
+          if (parts[1]) {
+            const after = parts[1].split(".");
+            after.pop(); // bỏ extension
+            // bỏ version v123... nếu có
+            const segments = after.join(".").split("/").filter(s => !/^v\d+$/.test(s));
+            const publicId = segments.join("/");
+            await cloudinary.uploader.destroy(publicId);
+          }
+        } catch (err) {
+          console.warn("[Cloudinary] delete layer failed:", err.message);
+          // không fail request — vẫn xóa DB
+        }
+      }
+
+      await PageLayer.deleteOne({ _id: layer._id });
+
+      return res.status(200).json({
+        success: true,
+        message: "Layer deleted",
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
 
 // ─── PUT /pages/:id/notes/:noteId ──────────────────────────────────────────
 // Mangaka chỉnh sửa note của mình
