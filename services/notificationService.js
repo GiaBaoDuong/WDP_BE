@@ -162,6 +162,15 @@ const notifyRankingWarning = async (Notification, mangakaId, seriesName, rank) =
   });
 };
 
+const notifySeriesRevision = async (Notification, mangakaId, series, feedback) => {
+  await notifyUser(Notification, mangakaId, {
+    type: "series_TE_revision",
+    title: "Series cần chỉnh sửa",
+    message: `Series "${series.name}" cần chỉnh sửa theo góp ý của TE.`,
+    meta: { series_id: series._id, feedback },
+  });
+};
+
 const notifyAssistantResponse = async (Notification, mangakaId, type, assistantName) => {
   const messages = {
     rejected: `${assistantName} đã từ chối gặp mặt.`,
@@ -204,6 +213,7 @@ module.exports = {
   notifyChapterToEB,
   notifySeriesApproved,
   notifyRankingWarning,
+  notifySeriesRevision,
   notifyAssistantResponse,
   notifyChapterAssigned,
 };

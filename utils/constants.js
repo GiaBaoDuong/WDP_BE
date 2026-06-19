@@ -112,6 +112,7 @@ const NOTIF_TYPES = {
   CHAPTER_EB_REVISION: "chapter_EB_revision", // EB yêu sửa
   EB_SCORE_SAVED: "eb_score_saved",       // EB lưu điểm chấm cho chapter
   SERIES_APPROVED: "series_approved",     // Series được xuất bản
+  SERIES_TE_REVISION: "series_TE_revision", // Series cần chỉnh sửa theo TE
   SERIES_CANCELLED: "series_cancelled",   // Series bị huỷ
   RANKING_WARNING: "ranking_warning",     // Series nguy cơ bị huỷ
   VOTES_UPDATED: "votes_updated",         // Dữ liệu vote được cập nhật
