@@ -1,4 +1,6 @@
 require("dotenv").config();
+const dns = require("dns");
+dns.setServers(["8.8.8.8", "1.1.1.1", "8.8.4.4"]);
 const createError = require("http-errors");
 const express = require("express");
 const path = require("path");
@@ -42,7 +44,7 @@ initSocket(server);
 
 // ─── MongoDB ─────────────────────────────────────────────────────────────────
 mongoose
-  .connect(process.env.MONGODB_URI)
+  .connect(process.env.MONGODB_URI, { serverSelectionTimeoutMS: 10000 })
   .then(async () => {
     console.log("MongoDB connected to Atlas cluster");
 

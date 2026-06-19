@@ -1,5 +1,6 @@
 const express = require("express");
 const router = express.Router();
+const mongoose = require("mongoose");
 const authMiddleware = require("../middleware/auth");
 const { requireMangaka, requireAssistant } = require("../middleware/roles");
 const { AppError } = require("../middleware/errorHandler");
@@ -194,10 +195,10 @@ router.get("/my-assignments", authMiddleware, requireAssistant, async (req, res,
 
     const [tasks, total] = await Promise.all([
       Task.find(filter)
-        .populate("page_id", "page_number original_image_url chapter_id")
+        .populate("page_id", "page_number original_image_url chapter_id result_image_url status")
         .populate("chapter_id", "chapter_number title series_id")
         .populate("assigned_by", "username full_name phoneNumber")
-        .populate("note_ids")
+        .populate({ path: "note_ids", select: "text x y w h taskType" })
         .sort({ createdAt: -1 })
         .skip((page - 1) * limit)
         .limit(parseInt(limit))
@@ -210,6 +211,27 @@ router.get("/my-assignments", authMiddleware, requireAssistant, async (req, res,
       data: tasks,
       pagination: { total, page: parseInt(page), limit: parseInt(limit) },
     });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ─── GET /tasks/:id ──────────────────────────────────────────────────────────
+// Lấy full detail 1 task (ảnh gốc, tọa độ, note) — FE dùng khi mở chi tiết task
+router.get("/:id", authMiddleware, async (req, res, next) => {
+  try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+      return next(new AppError("Invalid task id", 400));
+    }
+    const task = await Task.findById(req.params.id)
+      .populate("page_id", "page_number original_image_url result_image_url status chapter_id")
+      .populate("chapter_id", "chapter_number title series_id")
+      .populate("assigned_by", "username full_name")
+      .populate("assigned_to", "username full_name")
+      .populate({ path: "note_ids", select: "text x y w h taskType status createdAt" })
+      .lean();
+    if (!task) return next(new AppError("Task not found", 404));
+    return res.status(200).json({ success: true, data: task });
   } catch (error) {
     next(error);
   }
