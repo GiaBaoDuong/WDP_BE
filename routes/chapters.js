@@ -78,15 +78,23 @@ router.post("/", authMiddleware, requireMangaka, upload.array("pages", 50), asyn
     if (!seriesId || chapterNumber === undefined) {
       return next(new AppError("series_id and chapter_number are required", 400));
     }
-    if (!req.files || req.files.length === 0) {
-      return next(new AppError("At least one page image is required (field: pages)", 400));
-    }
 
     const series = await Series.findOne({ _id: seriesId, author_id: req.user.nameid });
     if (!series) return next(new AppError("Series not found or unauthorized", 404));
 
     const dup = await Chapter.findOne({ series_id: seriesId, chapter_number: Number(chapterNumber) });
     if (dup) return next(new AppError("Chapter number already exists", 409));
+
+    if (!req.files || req.files.length === 0) {
+      const chapter = await Chapter.create({
+        series_id: seriesId,
+        chapter_number: Number(chapterNumber),
+        title,
+        submitted_by: req.user.nameid,
+        status: "draft",
+      });
+      return res.status(201).json({ success: true, data: chapter, pages: [], tasks: [] });
+    }
 
     // Upload tất cả ảnh page lên Cloudinary song song
     const uploadResults = await Promise.all(
@@ -356,7 +364,7 @@ router.post(
   "/:id/pages",
   authMiddleware,
   requireMangaka,
-  upload.array("images", 50),
+  upload.array("pages", 50),
   async (req, res, next) => {
     try {
       const chapter = await Chapter.findOne({
