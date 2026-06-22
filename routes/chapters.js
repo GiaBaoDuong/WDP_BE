@@ -20,6 +20,42 @@ const { notifyChapterAssigned } = require("../services/notificationService");
 const {
   notifyChapterAssistantWorkComplete,
 } = require("../services/notificationService");
+const sharp = require("sharp");
+const path = require("path");
+const fs = require("fs");
+
+async function getImageDimensions(url) {
+  if (!url) return { width: 0, height: 0 };
+  try {
+    if (url.includes("cloudinary.com")) {
+      const publicIdMatch = url.match(/\/upload\/(.+?)\.(jpg|jpeg|png|webp)/i);
+      if (publicIdMatch) {
+        try {
+          const resource = await new Promise((resolve, reject) => {
+            cloudinary.api.resource(publicIdMatch[1], { resource_type: "image" }, (err, res) => {
+              if (err) reject(err);
+              else resolve(res);
+            });
+          });
+          return { width: resource.width, height: resource.height };
+        } catch {}
+      }
+    }
+    if (url.startsWith("/uploads/")) {
+      const localPath = path.join(__dirname, "..", "public", url);
+      if (fs.existsSync(localPath)) {
+        const buf = await sharp(localPath).metadata();
+        return { width: buf.width || 0, height: buf.height || 0 };
+      }
+    }
+    const resp = await fetch(url);
+    const arr = await resp.arrayBuffer();
+    const { width, height } = await sharp(Buffer.from(arr)).metadata();
+    return { width: width || 0, height: height || 0 };
+  } catch {
+    return { width: 0, height: 0 };
+  }
+}
 
 // ─── POST /chapters ──────────────────────────────────────────────────────────
 // Mangaka tạo chapter thuộc series
@@ -137,6 +173,8 @@ router.post("/", authMiddleware, requireMangaka, upload.array("pages", 50), asyn
         chapter_id: chapter._id,
         page_number: i + 1,
         original_image_url: u.secure_url,
+        width: u.width || 0,
+        height: u.height || 0,
         uploaded_by: req.user.nameid,
         status: "has_task",
       });
@@ -454,6 +492,8 @@ router.post(
         chapter_id: chapter._id,
         page_number: existingPages + 1,
         original_image_url: uploadResult.secure_url,
+        width: uploadResult.width || 0,
+        height: uploadResult.height || 0,
         uploaded_by: req.user.nameid,
         status: "has_task",
       });
@@ -588,7 +628,21 @@ router.get("/:id/pages", authMiddleware, requireMangakaOrAssistant, async (req, 
       .sort({ page_number: 1 })
       .lean();
 
-    return res.status(200).json({ success: true, data: pages });
+    const pagesWithDims = await Promise.all(pages.map(async (p) => {
+      let width = p.width;
+      let height = p.height;
+      if ((!width || !height) && p.original_image_url) {
+        const dims = await getImageDimensions(p.original_image_url);
+        width = dims.width;
+        height = dims.height;
+        if (width || height) {
+          await Page.findByIdAndUpdate(p._id, { width, height });
+        }
+      }
+      return { ...p, width: width || 0, height: height || 0 };
+    }));
+
+    return res.status(200).json({ success: true, data: pagesWithDims });
   } catch (error) {
     next(error);
   }
@@ -638,9 +692,26 @@ router.get("/pages/:id", authMiddleware, requireMangakaOrTEOrEB, async (req, res
         .sort({ createdAt: 1 })
         .lean();
 
+    let width = page.width;
+    let height = page.height;
+    if ((!width || !height) && page.original_image_url) {
+      const dims = await getImageDimensions(page.original_image_url);
+      width = dims.width;
+      height = dims.height;
+      if (width || height) {
+        await Page.findByIdAndUpdate(page._id, { width, height });
+      }
+    }
+
     return res.status(200).json({
       success: true,
-      data: { ...page, tasks },
+      _id: page._id,
+      chapter_id: page.chapter_id,
+      original_image_url: page.original_image_url || "",
+      page_number: page.page_number,
+      width: width || 0,
+      height: height || 0,
+      status: page.status,
     });
   } catch (error) {
     next(error);
@@ -692,14 +763,10 @@ router.get("/pages/:id/final", authMiddleware, requireMangakaOrAssistant, async 
 
     return res.status(200).json({
       success: true,
-      data: {
-        page_id: page._id,
-        status: page.status,
-        current_version: page.current_version,
-        result_image_url: page.result_image_url || "",
-        final_image_url: page.result_image_url || "",
-        layers: latestSnapshot ? latestSnapshot.layers : [],
-      },
+      final_image_url: page.result_image_url || "",
+      page_id: page._id,
+      status: page.status,
+      current_version: page.current_version,
     });
   } catch (error) {
     next(error);
@@ -1289,12 +1356,7 @@ router.get("/pages/:id/layers", authMiddleware, requireMangakaOrAssistant, async
 
     return res.status(200).json({
       success: true,
-      data: {
-        page_id: page._id,
-        original_image_url: page.original_image_url,
-        result_image_url: page.result_image_url,
-        layers,
-      },
+      layers,
     });
   } catch (error) {
     next(error);
@@ -1343,7 +1405,7 @@ router.post(
   "/pages/:id/layers",
   authMiddleware,
   requireMangakaOrAssistant,
-  uploadLayer.single("image"),
+  uploadLayer.single("file"),
   async (req, res, next) => {
     try {
       if (!req.file) {
@@ -1352,6 +1414,18 @@ router.post(
 
       const page = await Page.findById(req.params.id);
       if (!page) return next(new AppError("Page not found", 404));
+
+      const chapter = await Chapter.findById(page.chapter_id).lean();
+      if (!chapter) return next(new AppError("Chapter not found", 404));
+
+      const series = await Series.findById(chapter.series_id).lean();
+      if (!series) return next(new AppError("Series not found", 404));
+
+      const isAuthor = series.author_id.toString() === req.user.nameid;
+      const isAssigned = chapter.assistant_id?.toString() === req.user.nameid;
+      if (!isAuthor && !isAssigned) {
+        return next(new AppError("Khong co quyen truy cap chapter nay", 403));
+      }
 
       const layerCount = await PageLayer.countDocuments({ page_id: page._id });
 
@@ -1375,14 +1449,17 @@ router.post(
         height: 0,
         opacity: 100,
         visible: true,
-        blend_mode: "normal",
+        blend_mode: "source-over",
         z_order: zOrder,
         locked: false,
+        created_by: req.user.nameid,
+        note: req.body.note || "",
+        version: 1,
       });
 
       return res.status(201).json({
         success: true,
-        data: layer,
+        layer,
       });
     } catch (error) {
       next(error);
@@ -1756,5 +1833,77 @@ router.post("/pages/:pageId/snapshots/:version/restore", authMiddleware, require
     });
   } catch (err) { next(err); }
 });
+
+// ─── POST /chapters/:chapterId/submit-all ──────────────────────────────────────
+// Assistant nộp toàn bộ chapter (nhiều pages) cho Mangaka duyệt
+// files[0] = trang 1, files[1] = trang 2...
+const { uploadResult } = require("../middleware/uploadResult");
+router.post(
+  "/:chapterId/submit-all",
+  authMiddleware,
+  requireAssistant,
+  uploadResult.fields([{ name: "files", maxCount: 100 }]),
+  async (req, res, next) => {
+    try {
+      const { chapterId } = req.params;
+      const chapter = await Chapter.findById(chapterId).lean();
+      if (!chapter) return next(new AppError("Chapter not found", 404));
+      if (chapter.assistant_id?.toString() !== req.user.nameid) {
+        return next(new AppError("Khong co quyen truy cap chapter nay", 403));
+      }
+
+      const files = req.files?.files || [];
+      if (files.length === 0) {
+        return next(new AppError("files is required", 400));
+      }
+
+      const pages = await Page.find({ chapter_id: chapterId })
+        .sort({ page_number: 1 })
+        .lean();
+
+      const result_image_urls = [];
+
+      for (let i = 0; i < files.length; i++) {
+        const file = files[i];
+        const page = pages[i];
+        if (!page) continue;
+
+        // CloudinaryStorage puts the secure URL on file.path
+        const imageUrl = file.path;
+        await Page.findByIdAndUpdate(page._id, {
+          result_image_url: imageUrl,
+          status: "submitted",
+        });
+        result_image_urls.push(imageUrl);
+      }
+
+      // Cập nhật chapter status
+      chapter.status = "submitted_by_assistant";
+      chapter.revision_history.push({
+        at: new Date(),
+        by: req.user.nameid,
+        note: "Assistant submitted",
+      });
+      await chapter.save();
+
+      // Notify Mangaka (submitted_by)
+      await notifyTaskSubmitted(
+        require("../models/Notification"),
+        chapter.submitted_by,
+        { chapter_id: chapterId, page_count: files.length }
+      );
+
+      return res.status(200).json({
+        success: true,
+        _id: chapterId,
+        status: "submitted_to_mangaka",
+        submitted_at: new Date().toISOString(),
+        result_image_urls,
+        chapter_id: chapterId,
+        submitted_by: req.user.nameid,
+      });
+    } catch (err) { next(err); }
+  }
+);
 
 module.exports = router;

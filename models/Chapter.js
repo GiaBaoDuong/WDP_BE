@@ -70,6 +70,14 @@ const chapterSchema = new mongoose.Schema(
     },
     is_published: { type: Boolean, default: false },
     published_at: { type: Date, default: null },
+    revision_history: {
+      type: [{
+        at: { type: Date, default: Date.now },
+        by: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
+        note: { type: String, default: "" },
+      }],
+      default: [],
+    },
   },
   { timestamps: true }
 );
