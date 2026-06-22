@@ -42,11 +42,25 @@ const notifyTaskAssigned = async (Notification, assistantId, task, page) => {
 };
 
 const notifyTaskSubmitted = async (Notification, mangakaId, task) => {
+  // task có thể là:
+  //   - Task object (có _id, work_type, chapter_id) — dùng cho /tasks/:id/submit
+  //   - Submission object (có chapter_id, page_count, new_uploads, reused) — dùng cho /chapters/:id/submit-all
+  const workType = task.work_type || `${task.page_count || 0} trang`;
+  const message = task.work_type
+    ? `Task ${task.work_type} đã hoàn thành, cần kiểm duyệt.`
+    : `Assistant đã nộp chapter (${workType}). Có ${task.new_uploads || 0} ảnh mới, ${task.reused || 0} ảnh dùng lại.`;
+
   await notifyUser(Notification, mangakaId, {
     type: "task_submitted",
-    title: "Assistant đã nộp kết quả",
-    message: `Task ${task.work_type} đã hoàn thành, cần kiểm duyệt.`,
-    meta: { task_id: task._id, chapter_id: task.chapter_id },
+    title: task.work_type ? "Assistant đã nộp task" : "Assistant đã nộp kết quả",
+    message,
+    meta: {
+      task_id: task._id,
+      chapter_id: task.chapter_id,
+      page_count: task.page_count,
+      new_uploads: task.new_uploads,
+      reused: task.reused,
+    },
   });
 };
 

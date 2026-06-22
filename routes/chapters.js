@@ -19,6 +19,7 @@ const { ROLES } = require("../utils/constants");
 const { notifyChapterAssigned } = require("../services/notificationService");
 const {
   notifyChapterAssistantWorkComplete,
+  notifyTaskSubmitted,
 } = require("../services/notificationService");
 const sharp = require("sharp");
 const path = require("path");

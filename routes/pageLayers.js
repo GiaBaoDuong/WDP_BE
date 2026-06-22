@@ -289,10 +289,11 @@ router.post("/pages/:pageId/finalize", authMiddleware, requireMangakaOrAssistant
 
           const baseBuffer = await composite.png().toBuffer();
 
-          // Nếu blendMode là null → bỏ field blend để sharp dùng mặc định
+          // Bỏ gravity — layer dùng tọa độ tuyệt đối (x, y) đã resize sẵn.
+          // sharp không hỗ trợ gravity "top", các gravity hợp lệ: north/south/east/west/center/...
           const compositeEntry = blendMode
-            ? { input: processedBuffer, blend: blendMode, gravity: "top" }
-            : { input: processedBuffer, gravity: "top" };
+            ? { input: processedBuffer, blend: blendMode, top: layer.y ?? 0, left: layer.x ?? 0 }
+            : { input: processedBuffer, top: layer.y ?? 0, left: layer.x ?? 0 };
 
           composite = sharp(baseBuffer).composite([compositeEntry]).png();
         } catch (err) {
