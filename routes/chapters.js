@@ -1835,8 +1835,13 @@ router.post("/pages/:pageId/snapshots/:version/restore", authMiddleware, require
 });
 
 // ─── POST /chapters/:chapterId/submit-all ──────────────────────────────────────
-// Assistant nộp toàn bộ chapter (nhiều pages) cho Mangaka duyệt
-// files[0] = trang 1, files[1] = trang 2...
+// Assistant nộp TOÀN BỘ chapter (tất cả pages) cho Mangaka duyệt.
+// Với mỗi page trong chapter, lấy ảnh theo thứ tự ưu tiên:
+//   1. File upload mới (multipart files[i])   → upload lên Cloudinary
+//   2. page.result_image_url (đã qua /finalize) → dùng luôn
+//   3. Không có gì                              → giữ nguyên ảnh hiện tại, vẫn mark "submitted"
+//
+// Sau khi submit: chapter.status = "submitted_by_assistant", notify Mangaka.
 const { uploadResult } = require("../middleware/uploadResult");
 router.post(
   "/:chapterId/submit-all",
@@ -1853,44 +1858,83 @@ router.post(
       }
 
       const files = req.files?.files || [];
-      if (files.length === 0) {
-        return next(new AppError("files is required", 400));
-      }
-
       const pages = await Page.find({ chapter_id: chapterId })
         .sort({ page_number: 1 })
         .lean();
 
-      const result_image_urls = [];
-
-      for (let i = 0; i < files.length; i++) {
-        const file = files[i];
-        const page = pages[i];
-        if (!page) continue;
-
-        // CloudinaryStorage puts the secure URL on file.path
-        const imageUrl = file.path;
-        await Page.findByIdAndUpdate(page._id, {
-          result_image_url: imageUrl,
-          status: "submitted",
-        });
-        result_image_urls.push(imageUrl);
+      if (pages.length === 0) {
+        return next(new AppError("Chapter has no pages", 400));
       }
 
+      const pageUpdates = [];
+      const result_image_urls = [];
+      const newFiles = [];
+      const reused = [];
+
+      for (let i = 0; i < pages.length; i++) {
+        const page = pages[i];
+        let imageUrl = "";
+        let source = "";
+
+        // 1) File mới (nếu có)
+        if (files[i]) {
+          imageUrl = files[i].path;
+          source = "new_upload";
+        }
+        // 2) Ảnh đã finalize từ trước
+        else if (page.result_image_url) {
+          imageUrl = page.result_image_url;
+          source = "finalize_reuse";
+        }
+        // 3) Không có gì → giữ nguyên ảnh gốc (original_image_url)
+        else if (page.original_image_url) {
+          imageUrl = page.original_image_url;
+          source = "original_fallback";
+        }
+        else {
+          console.warn(`[submit-all] Page ${page._id} (page_number=${page.page_number}) has no image at all — skipping`);
+          continue;
+        }
+
+        pageUpdates.push(
+          Page.findByIdAndUpdate(page._id, {
+            result_image_url: imageUrl,
+            status: "submitted",
+          }).then(() => {
+            result_image_urls.push(imageUrl);
+            if (source === "new_upload") newFiles.push({ page_number: page.page_number, url: imageUrl });
+            else if (source === "finalize_reuse") reused.push({ page_number: page.page_number, url: imageUrl });
+          })
+        );
+      }
+
+      if (pageUpdates.length === 0) {
+        return next(new AppError("Khong co anh de submit (cac page chua co original_image_url, result_image_url va khong co file upload)", 400));
+      }
+
+      await Promise.all(pageUpdates);
+
       // Cập nhật chapter status
-      chapter.status = "submitted_by_assistant";
-      chapter.revision_history.push({
-        at: new Date(),
-        by: req.user.nameid,
-        note: "Assistant submitted",
-      });
-      await chapter.save();
+      const updatedChapter = await Chapter.findByIdAndUpdate(
+        chapterId,
+        {
+          status: "submitted_by_assistant",
+          $push: {
+            revision_history: {
+              at: new Date(),
+              by: req.user.nameid,
+              note: "Assistant submitted",
+            },
+          },
+        },
+        { new: true }
+      ).lean();
 
       // Notify Mangaka (submitted_by)
       await notifyTaskSubmitted(
-        require("../models/Notification"),
+        Notification,
         chapter.submitted_by,
-        { chapter_id: chapterId, page_count: files.length }
+        { chapter_id: chapterId, page_count: pages.length, new_uploads: newFiles.length, reused: reused.length }
       );
 
       return res.status(200).json({
@@ -1899,8 +1943,12 @@ router.post(
         status: "submitted_to_mangaka",
         submitted_at: new Date().toISOString(),
         result_image_urls,
+        page_count: pages.length,
+        new_uploads: newFiles,
+        reused_from_finalize: reused,
         chapter_id: chapterId,
         submitted_by: req.user.nameid,
+        chapter: updatedChapter,
       });
     } catch (err) { next(err); }
   }

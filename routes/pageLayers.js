@@ -35,9 +35,21 @@ function mapBlendMode(blendMode) {
   // Sharp hỗ trợ: clear, source, over, in, out, atop, dest, dest-over, dest-in,
   // dest-out, dest-atop, xor, add, saturate, multiply, screen, overlay, darken,
   // lighten, colour-dodge, colour-burn, hard-light, soft-light, difference, exclusion
-  // FE/DB lưu "source-over" / "normal" → map sang "over"
-  if (!blendMode || blendMode === "source-over" || blendMode === "normal") return "over";
+  // FE/DB lưu "source-over" / "normal" → trả về null để sharp dùng mặc định (over)
+  if (blendMode == null) return null;
+  if (typeof blendMode !== "string") return null;
+  const v = blendMode.trim().toLowerCase();
+  if (v === "" || v === "normal" || v === "source-over") return null;
   return blendMode;
+}
+
+function normalizeBlendModeInput(value) {
+  // Ép input từ FE về chuẩn: "normal" / "" / undefined → null
+  if (value == null) return null;
+  if (typeof value !== "string") return null;
+  const v = value.trim().toLowerCase();
+  if (v === "" || v === "normal" || v === "source-over") return null;
+  return value;
 }
 
 async function applyOpacity(buffer, opacity) {
@@ -95,7 +107,9 @@ router.post("/pages/:pageId/layers", authMiddleware, requireMangakaOrAssistant, 
 
     const layer = await PageLayer.create({
       page_id: pageId,
-      name, image_url, blend_mode, opacity, visible,
+      name, image_url,
+      blend_mode: normalizeBlendModeInput(blend_mode),
+      opacity, visible,
       z_order: order, x, y, width, height, rotation, scale, locked,
     });
 
@@ -125,6 +139,10 @@ router.put("/layers/:id", authMiddleware, requireMangakaOrAssistant, async (req,
 
     await checkChapterAccess(req.user.nameid, layer.page_id.toString());
 
+    if (req.body.blend_mode !== undefined) {
+      req.body.blend_mode = normalizeBlendModeInput(req.body.blend_mode);
+    }
+
     const updated = await PageLayer.findByIdAndUpdate(
       req.params.id, req.body, { new: true, runValidators: true }
     );
@@ -148,6 +166,9 @@ async function patchLayerHandler(req, res, next) {
     const updates = {};
     for (const key of allowed) {
       if (req.body[key] !== undefined) updates[key] = req.body[key];
+    }
+    if (req.body.blend_mode !== undefined) {
+      updates.blend_mode = normalizeBlendModeInput(req.body.blend_mode);
     }
     if (Object.keys(updates).length === 0) {
       return next(new AppError("Khong co truong hop hop le de cap nhat", 400));
@@ -268,13 +289,14 @@ router.post("/pages/:pageId/finalize", authMiddleware, requireMangakaOrAssistant
 
           const baseBuffer = await composite.png().toBuffer();
 
-          composite = sharp(baseBuffer).composite([{
-            input: processedBuffer,
-            blend: blendMode,
-            gravity: "top",
-          }]).png();
+          // Nếu blendMode là null → bỏ field blend để sharp dùng mặc định
+          const compositeEntry = blendMode
+            ? { input: processedBuffer, blend: blendMode, gravity: "top" }
+            : { input: processedBuffer, gravity: "top" };
+
+          composite = sharp(baseBuffer).composite([compositeEntry]).png();
         } catch (err) {
-          console.warn(`[finalize] Skip layer ${layer._id} due to error:`, err.message);
+          console.warn(`[finalize] Skip layer ${layer._id} (blend=${layer.blend_mode}) due to error:`, err.message);
           continue;
         }
       }
