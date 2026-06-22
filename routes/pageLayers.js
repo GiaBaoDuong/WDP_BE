@@ -32,7 +32,12 @@ async function checkChapterAccess(userId, pageId) {
 }
 
 function mapBlendMode(blendMode) {
-  return blendMode || "over";
+  // Sharp hỗ trợ: clear, source, over, in, out, atop, dest, dest-over, dest-in,
+  // dest-out, dest-atop, xor, add, saturate, multiply, screen, overlay, darken,
+  // lighten, colour-dodge, colour-burn, hard-light, soft-light, difference, exclusion
+  // FE/DB lưu "source-over" / "normal" → map sang "over"
+  if (!blendMode || blendMode === "source-over" || blendMode === "normal") return "over";
+  return blendMode;
 }
 
 async function applyOpacity(buffer, opacity) {
@@ -129,7 +134,7 @@ router.put("/layers/:id", authMiddleware, requireMangakaOrAssistant, async (req,
 });
 
 // PATCH /chapters/layers/:id
-router.patch("/layers/:id", authMiddleware, requireMangakaOrAssistant, async (req, res, next) => {
+async function patchLayerHandler(req, res, next) {
   try {
     const layer = await PageLayer.findById(req.params.id).lean();
     if (!layer) return next(new AppError("Layer not found", 404));
@@ -154,10 +159,11 @@ router.patch("/layers/:id", authMiddleware, requireMangakaOrAssistant, async (re
 
     return res.status(200).json({ success: true, data: updated });
   } catch (err) { next(err); }
-});
+}
+router.patch("/layers/:id", authMiddleware, requireMangakaOrAssistant, patchLayerHandler);
 
 // DELETE /chapters/layers/:id
-router.delete("/layers/:id", authMiddleware, requireMangakaOrAssistant, async (req, res, next) => {
+async function deleteLayerHandler(req, res, next) {
   try {
     const layer = await PageLayer.findById(req.params.id).lean();
     if (!layer) return next(new AppError("Layer not found", 404));
@@ -167,7 +173,29 @@ router.delete("/layers/:id", authMiddleware, requireMangakaOrAssistant, async (r
     await PageLayer.findByIdAndDelete(req.params.id);
     return res.status(200).json({ success: true, message: "Layer deleted" });
   } catch (err) { next(err); }
-});
+}
+router.delete("/layers/:id", authMiddleware, requireMangakaOrAssistant, deleteLayerHandler);
+
+// ─── Aliases ──────────────────────────────────────────────────────────────────
+// FE đang gọi path có prefix /pages/:pageId/, nhưng route chính chỉ có /layers/:id.
+// Các alias này chỉ là wrapper, ignore :pageId (handler chính tự resolve từ layer id).
+
+// PATCH /chapters/pages/:pageId/layers/:id
+router.patch(
+  "/pages/:pageId/layers/:id",
+  authMiddleware, requireMangakaOrAssistant,
+  async (req, res, next) => {
+    req.params.id = req.params.id;
+    return patchLayerHandler(req, res, next);
+  }
+);
+
+// DELETE /chapters/pages/:pageId/layers/:id
+router.delete(
+  "/pages/:pageId/layers/:id",
+  authMiddleware, requireMangakaOrAssistant,
+  deleteLayerHandler
+);
 
 // ─── POST /pages/:pageId/finalize ─────────────────────────────────────────────
 // Gộp tất cả layers của 1 page thành ảnh final (PNG, giữ alpha channel)
@@ -181,6 +209,11 @@ router.post("/pages/:pageId/finalize", authMiddleware, requireMangakaOrAssistant
       .sort({ z_order: 1 })
       .lean();
 
+    // Lấy metadata của page để biết kích thước canvas
+    const pageMeta = await Page.findById(pageId).select("width height").lean();
+    const canvasWidth = pageMeta?.width || 1920;
+    const canvasHeight = pageMeta?.height || 1080;
+
     let finalImageBuffer;
 
     if (layers.length === 0) {
@@ -189,30 +222,64 @@ router.post("/pages/:pageId/finalize", authMiddleware, requireMangakaOrAssistant
         return next(new AppError("Page does not have an original image", 400));
       }
       const origBuffer = await downloadImage(page.original_image_url);
-      finalImageBuffer = origBuffer;
+      finalImageBuffer = await sharp(origBuffer)
+        .resize(canvasWidth, canvasHeight, { fit: "contain", background: { r: 0, g: 0, b: 0, alpha: 0 } })
+        .png()
+        .toBuffer();
     } else {
-      // Dùng layer dưới cùng làm base, đè các layer khác lên
-      const baseBuffer = await downloadImage(layers[0].image_url);
-      let compositeInput = await sharp(baseBuffer).ensureAlpha().png().toBuffer();
+      // Bước 1: Tạo canvas trong suốt với kích thước cố định
+      let composite = sharp({
+        create: {
+          width: canvasWidth,
+          height: canvasHeight,
+          channels: 4,
+          background: { r: 0, g: 0, b: 0, alpha: 0 },
+        },
+      }).png();
 
-      for (let i = 1; i < layers.length; i++) {
-        const layer = layers[i];
-        const overlayBuffer = await downloadImage(layer.image_url);
-        const processedOverlay = await applyOpacity(overlayBuffer, layer.opacity / 100);
-        const blendMode = mapBlendMode(layer.blend_mode);
-
-        compositeInput = await sharp(compositeInput)
-          .composite([{
-            input: processedOverlay,
-            blend: blendMode,
-            gravity: "top",
-          }])
-          .ensureAlpha()
-          .png()
-          .toBuffer();
+      // Bước 2: Lấy ảnh gốc làm base (nếu có) → tránh lỗi khi layer Assistant trong suốt
+      if (page.original_image_url) {
+        try {
+          const origBuffer = await downloadImage(page.original_image_url);
+          const resizedOrig = await sharp(origBuffer)
+            .resize(canvasWidth, canvasHeight, { fit: "contain", background: { r: 0, g: 0, b: 0, alpha: 0 } })
+            .png()
+            .toBuffer();
+          composite = sharp(resizedOrig);
+        } catch (err) {
+          console.warn("[finalize] Cannot load original image, continue with transparent base:", err.message);
+          composite = sharp({
+            create: {
+              width: canvasWidth,
+              height: canvasHeight,
+              channels: 4,
+              background: { r: 0, g: 0, b: 0, alpha: 0 },
+            },
+          }).png();
+        }
       }
 
-      finalImageBuffer = compositeInput;
+      // Bước 3: Đè từng layer lên theo z_order
+      for (const layer of layers) {
+        try {
+          const layerBuffer = await downloadImage(layer.image_url);
+          const processedBuffer = await applyOpacity(layerBuffer, (layer.opacity ?? 100) / 100);
+          const blendMode = mapBlendMode(layer.blend_mode);
+
+          const baseBuffer = await composite.png().toBuffer();
+
+          composite = sharp(baseBuffer).composite([{
+            input: processedBuffer,
+            blend: blendMode,
+            gravity: "top",
+          }]).png();
+        } catch (err) {
+          console.warn(`[finalize] Skip layer ${layer._id} due to error:`, err.message);
+          continue;
+        }
+      }
+
+      finalImageBuffer = await composite.png().toBuffer();
     }
 
     // Upload lên Cloudinary
@@ -224,7 +291,16 @@ router.post("/pages/:pageId/finalize", authMiddleware, requireMangakaOrAssistant
         invalidate: true,
       },
       (err, result) => {
-        if (err) return next(new AppError("Upload to Cloudinary failed: " + err.message, 500));
+        if (err) {
+          console.error("[finalize] Cloudinary upload failed:", err);
+          return next(new AppError("Upload to Cloudinary failed: " + err.message, 500));
+        }
+
+        // Cập nhật page.result_image_url
+        Page.findByIdAndUpdate(pageId, { result_image_url: result.secure_url }).catch((e) =>
+          console.warn("[finalize] Failed to update page result_image_url:", e.message)
+        );
+
         return res.status(200).json({
           success: true,
           final_image_url: result.secure_url,
@@ -235,7 +311,10 @@ router.post("/pages/:pageId/finalize", authMiddleware, requireMangakaOrAssistant
     );
 
     uploadStream.end(finalImageBuffer);
-  } catch (err) { next(err); }
+  } catch (err) {
+    console.error("[finalize] Unexpected error:", err);
+    next(err);
+  }
 });
 
 module.exports = router;
