@@ -283,14 +283,28 @@ router.post("/pages/:pageId/finalize", authMiddleware, requireMangakaOrAssistant
       // Bước 3: Đè từng layer lên theo z_order
       for (const layer of layers) {
         try {
-          const layerBuffer = await downloadImage(layer.image_url);
+          let layerBuffer = await downloadImage(layer.image_url);
+          const layerMeta = await sharp(layerBuffer).metadata();
+
+          // Resize layer xuống còn <= canvas (sharp không tự resize, composite yêu cầu vậy).
+          // Nếu layer đã nhỏ hơn thì giữ nguyên.
+          if (layerMeta.width > canvasWidth || layerMeta.height > canvasHeight) {
+            layerBuffer = await sharp(layerBuffer)
+              .resize({
+                width: canvasWidth,
+                height: canvasHeight,
+                fit: "inside",
+                withoutEnlargement: true,
+              })
+              .toBuffer();
+          }
+
           const processedBuffer = await applyOpacity(layerBuffer, (layer.opacity ?? 100) / 100);
           const blendMode = mapBlendMode(layer.blend_mode);
 
           const baseBuffer = await composite.png().toBuffer();
 
-          // Bỏ gravity — layer dùng tọa độ tuyệt đối (x, y) đã resize sẵn.
-          // sharp không hỗ trợ gravity "top", các gravity hợp lệ: north/south/east/west/center/...
+          // Đặt layer theo tọa độ tuyệt đối (top, left) — sharp không hỗ trợ gravity "top".
           const compositeEntry = blendMode
             ? { input: processedBuffer, blend: blendMode, top: layer.y ?? 0, left: layer.x ?? 0 }
             : { input: processedBuffer, top: layer.y ?? 0, left: layer.x ?? 0 };
