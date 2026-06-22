@@ -16,6 +16,7 @@ const {
   notifyTaskSubmitted,
   notifyTaskRevision,
   notifyTaskApproved,
+  notifyTaskAcknowledged,
   notifyChapterAllTasksApproved,
 } = require("../services/notificationService");
 
@@ -503,7 +504,7 @@ router.post(
  *                 data:
  *                   $ref: '#/components/schemas/Task'
  *       400:
- *         description: Task phải đang ở trạng thái submitted
+ *         description: Task phải đang ở trạng thái submitted hoặc in_review
  *       404:
  *         description: Task không tìm thấy
  */
@@ -514,8 +515,8 @@ router.patch("/:id/approve", authMiddleware, requireMangaka, async (req, res, ne
       assigned_by: req.user.nameid,
     });
     if (!task) return next(new AppError("Task not found", 404));
-    if (task.status !== "submitted") {
-      return next(new AppError("Task must be submitted to approve", 400));
+    if (task.status !== "submitted" && task.status !== "in_review") {
+      return next(new AppError("Task must be submitted or in_review to approve", 400));
     }
 
     task.status = "approved";
@@ -599,7 +600,7 @@ router.patch("/:id/approve", authMiddleware, requireMangaka, async (req, res, ne
  *                 data:
  *                   $ref: '#/components/schemas/Task'
  *       400:
- *         description: Task phải đang ở trạng thái submitted
+ *         description: Task phải đang ở trạng thái submitted hoặc in_review
  *       404:
  *         description: Task không tìm thấy
  */
@@ -611,8 +612,8 @@ router.patch("/:id/revision", authMiddleware, requireMangaka, async (req, res, n
       assigned_by: req.user.nameid,
     });
     if (!task) return next(new AppError("Task not found", 404));
-    if (task.status !== "submitted") {
-      return next(new AppError("Task must be submitted to request revision", 400));
+    if (task.status !== "submitted" && task.status !== "in_review") {
+      return next(new AppError("Task must be submitted or in_review to request revision", 400));
     }
 
     task.status = "revision";
@@ -708,6 +709,73 @@ router.get("/stats", authMiddleware, requireAssistant, async (req, res, next) =>
         totalApprovedTasks: statsData[0]?.totalTasks || 0,
         period: `${targetYear}-${String(targetMonth).padStart(2, "0")}`,
       },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ─── PATCH /tasks/:id/acknowledge ────────────────────────────────────────────
+// Mangaka nhận (acknowledge) task đã submit → status: in_review
+// Bước trung gian trước khi approve/revision.
+router.patch("/:id/acknowledge", authMiddleware, requireMangaka, async (req, res, next) => {
+  try {
+    const task = await Task.findOne({
+      _id: req.params.id,
+      assigned_by: req.user.nameid,
+    });
+    if (!task) return next(new AppError("Task not found", 404));
+    if (task.status !== "submitted" && task.status !== "in_review") {
+      return next(new AppError("Chỉ acknowledge task đang submitted hoặc in_review", 400));
+    }
+
+    const wasInReview = task.status === "in_review";
+    task.status = "in_review";
+    await task.save();
+
+    // Cập nhật page → in_review (chỉ lần đầu tiên)
+    if (!wasInReview) {
+      await Page.findByIdAndUpdate(task.page_id, { status: "in_review" });
+    }
+
+    // Notify Assistant
+    if (!wasInReview) {
+      await notifyTaskAcknowledged(Notification, task.assigned_to, task);
+    }
+
+    return res.status(200).json({ success: true, data: task });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ─── GET /tasks/pending-review ────────────────────────────────────────────────
+// Mangaka xem danh sách task đang chờ kiểm duyệt (submitted + in_review)
+router.get("/pending-review", authMiddleware, requireMangaka, async (req, res, next) => {
+  try {
+    const { chapter_id, page = 1, limit = 20 } = req.query;
+    const filter = {
+      assigned_by: req.user.nameid,
+      status: { $in: ["submitted", "in_review"] },
+    };
+    if (chapter_id) filter.chapter_id = chapter_id;
+
+    const [tasks, total] = await Promise.all([
+      Task.find(filter)
+        .populate("page_id", "page_number original_image_url result_image_url status chapter_id")
+        .populate("chapter_id", "chapter_number title series_id")
+        .populate("assigned_to", "username full_name phoneNumber")
+        .sort({ updatedAt: -1 })
+        .skip((page - 1) * limit)
+        .limit(parseInt(limit))
+        .lean(),
+      Task.countDocuments(filter),
+    ]);
+
+    return res.status(200).json({
+      success: true,
+      data: tasks,
+      pagination: { total, page: parseInt(page), limit: parseInt(limit) },
     });
   } catch (error) {
     next(error);

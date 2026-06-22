@@ -82,6 +82,15 @@ const notifyTaskApproved = async (Notification, assistantId, task) => {
   });
 };
 
+const notifyTaskAcknowledged = async (Notification, assistantId, task) => {
+  await notifyUser(Notification, assistantId, {
+    type: "task_acknowledged",
+    title: "Mangaka đã nhận task",
+    message: `Mangaka đã nhận task ${task.work_type} của bạn và đang kiểm duyệt.`,
+    meta: { task_id: task._id, chapter_id: task.chapter_id },
+  });
+};
+
 const notifyChapterAssistantWorkComplete = async (Notification, mangakaId, chapter, seriesName) => {
   await notifyUser(Notification, mangakaId, {
     type: "chapter_assistant_work_complete",
@@ -217,6 +226,7 @@ module.exports = {
   notifyTaskSubmitted,
   notifyTaskRevision,
   notifyTaskApproved,
+  notifyTaskAcknowledged,
   notifyChapterAssistantWorkComplete,
   notifyChapterAllTasksApproved,
   notifyChapterTERevision,

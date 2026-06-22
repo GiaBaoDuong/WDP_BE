@@ -14,7 +14,7 @@ const pageSchema = new mongoose.Schema(
     height: { type: Number, default: 0 },
     status: {
       type: String,
-      enum: ["raw", "has_task", "submitted", "approved", "revision"],
+      enum: ["raw", "has_task", "submitted", "in_review", "approved", "revision"],
       default: "raw",
     },
     uploaded_by: {
