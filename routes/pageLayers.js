@@ -144,7 +144,7 @@ router.put("/layers/:id", authMiddleware, requireMangakaOrAssistant, async (req,
     }
 
     const updated = await PageLayer.findByIdAndUpdate(
-      req.params.id, req.body, { new: true, runValidators: true }
+      req.params.id, req.body, { returnDocument: "after", runValidators: true }
     );
 
     return res.status(200).json({ success: true, data: updated });
@@ -175,7 +175,7 @@ async function patchLayerHandler(req, res, next) {
     }
 
     const updated = await PageLayer.findByIdAndUpdate(
-      req.params.id, updates, { new: true, runValidators: true }
+      req.params.id, updates, { returnDocument: "after", runValidators: true }
     );
 
     return res.status(200).json({ success: true, data: updated });

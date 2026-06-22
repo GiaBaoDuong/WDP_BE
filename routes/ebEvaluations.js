@@ -525,7 +525,7 @@ router.post("/votes/confirm", authMiddleware, requireEB, async (req, res, next) 
         Vote.findOneAndUpdate(
           { series_id, reader_id: v.reader_id, release_period },
           { score: v.score, comment: v.comment || "" },
-          { upsert: true, new: true }
+          { upsert: true, returnDocument: "after" }
         )
       )
     );

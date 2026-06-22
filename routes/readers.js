@@ -332,7 +332,7 @@ router.post("/votes", authMiddleware, requireReader, async (req, res, next) => {
     const vote = await Vote.findOneAndUpdate(
       { series_id, reader_id: req.user.nameid, release_period },
       { score, comment: comment || "", release_period },
-      { upsert: true, new: true }
+      { upsert: true, returnDocument: "after" }
     );
 
     // Tính lại average

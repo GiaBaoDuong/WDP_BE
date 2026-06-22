@@ -1928,7 +1928,7 @@ router.post(
             },
           },
         },
-        { new: true }
+        { returnDocument: "after" }
       ).lean();
 
       // Notify Mangaka (submitted_by)

@@ -129,7 +129,7 @@ router.patch("/:id/read", authMiddleware, async (req, res) => {
     const notif = await Notification.findOneAndUpdate(
       { _id: req.params.id, user_id: req.user.nameid },
       { is_read: true },
-      { new: true }
+      { returnDocument: "after" }
     );
     if (!notif) {
       return res.status(404).json({ success: false, message: "Notification not found" });
