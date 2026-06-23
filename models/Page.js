@@ -10,6 +10,7 @@ const pageSchema = new mongoose.Schema(
     page_number: { type: Number, required: true },
     original_image_url: { type: String, default: "" },
     result_image_url: { type: String, default: "" },
+    final_image_url: { type: String, default: "" },
     width: { type: Number, default: 0 },
     height: { type: Number, default: 0 },
     status: {

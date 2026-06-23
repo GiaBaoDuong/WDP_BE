@@ -451,4 +451,55 @@ router.get("/eb", authMiddleware, requireEB, async (req, res, next) => {
   }
 });
 
+// ─── PATCH /submissions/chapters/:id/approve ──────────────────────────────────
+/**
+ * @swagger
+ * /submissions/chapters/{id}/approve:
+ *   patch:
+ *     summary: Mangaka approve chapter (chuyển sang trạng thái review)
+ *     tags: [Submissions]
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: ID của chapter
+ *     responses:
+ *       200:
+ *         description: Approve thành công
+ *       400:
+ *         description: Không thể approve ở trạng thái hiện tại
+ *       404:
+ *         description: Chapter không tìm thấy
+ */
+router.patch("/chapters/:id/approve", authMiddleware, requireMangaka, async (req, res, next) => {
+  try {
+    const chapter = await Chapter.findOne({
+      _id: req.params.id,
+      submitted_by: req.user.nameid,
+    });
+    if (!chapter) return next(new AppError("Chapter not found or unauthorized", 404));
+
+    const VALID_APPROVE_STATUSES = [
+      CHAPTER_STATUS.DRAFT,
+      CHAPTER_STATUS.PENDING_ASSISTANT,
+      CHAPTER_STATUS.TE_REVISION,
+      CHAPTER_STATUS.REVIEW,
+    ];
+    if (!VALID_APPROVE_STATUSES.includes(chapter.status)) {
+      return next(new AppError(`Không thể approve ở trạng thái "${chapter.status}"`, 400));
+    }
+
+    chapter.status = CHAPTER_STATUS.REVIEW;
+    await chapter.save();
+
+    return res.status(200).json({ success: true, data: chapter });
+  } catch (error) {
+    next(error);
+  }
+});
+
 module.exports = router;

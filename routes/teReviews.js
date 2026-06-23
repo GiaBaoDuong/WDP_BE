@@ -662,7 +662,7 @@ router.get("/chapter/:chapterId/pages", authMiddleware, requireTE, async (req, r
     return res.status(200).json({
       success: true,
       data: {
-        page: { _id: page._id, page_number: page.page_number, original_image_url: page.original_image_url, result_image_url: page.result_image_url, status: page.status },
+        page: { _id: page._id, page_number: page.page_number, original_image_url: page.original_image_url, result_image_url: page.result_image_url, final_image_url: page.final_image_url || "", status: page.status },
         pages: allPages.map((p) => ({ _id: p._id, page_number: p.page_number, annotation_count: pageAnnotationCounts[String(p._id)] || 0 })),
         pagination: { page: safePage, limit: 1, total: totalPages, has_prev: safePage > 1, has_next: safePage < totalPages, prev_page: safePage > 1 ? safePage - 1 : null, next_page: safePage < totalPages ? safePage + 1 : null },
         annotations: pageAnnotations,
@@ -798,6 +798,183 @@ router.delete("/chapter/:chapterId/annotations/:annotationId", authMiddleware, r
 
     await review.save();
     return res.status(200).json({ success: true, message: "Annotation deleted" });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ─── GET /te-reviews/chapter/:chapterId/annotations ─────────────────────────
+/**
+ * @swagger
+ * /te-reviews/chapter/{chapterId}/annotations:
+ *   get:
+ *     summary: Lấy tất cả annotations của chapter
+ *     tags: [TE Reviews]
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: chapterId
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Danh sách annotations
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 data:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       _id: { type: string }
+ *                       page_id: { type: string }
+ *                       x: { type: number }
+ *                       y: { type: number }
+ *                       w: { type: number }
+ *                       h: { type: number }
+ *                       content: { type: string }
+ *                       annotation_type: { type: string }
+ *                       createdAt: { type: string }
+ */
+router.get("/chapter/:chapterId/annotations", authMiddleware, requireTE, async (req, res, next) => {
+  try {
+    const { chapterId } = req.params;
+
+    const chapter = await Chapter.findById(chapterId).lean();
+    if (!chapter) return next(new AppError("Chapter not found", 404));
+
+    const review = await TEReview.findOne({ chapter_id: chapterId }).lean();
+    if (!review || review.annotations.length === 0) {
+      return res.status(200).json({ success: true, data: [] });
+    }
+
+    const annotations = review.annotations
+      .sort((a, b) => (a.order || 0) - (b.order || 0))
+      .map((a) => ({
+        _id: a._id,
+        page_id: a.page_id,
+        x: a.region.x,
+        y: a.region.y,
+        w: a.region.width,
+        h: a.region.height,
+        content: a.content,
+        annotation_type: a.error_type,
+        createdAt: a._id ? review.createdAt : null,
+      }));
+
+    return res.status(200).json({ success: true, data: annotations });
+  } catch (error) {
+    next(error);
+  }
+});
+// ─── POST /te-reviews/chapter/:chapterId/te-action ──────────────────────────
+/**
+ * @swagger
+ * /te-reviews/chapter/{chapterId}/te-action:
+ *   post:
+ *     summary: TE thực hiện hành động với chapter (forward EB hoặc yêu cầu revision)
+ *     tags: [TE Reviews]
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: chapterId
+ *         required: true
+ *         schema:
+ *           type: string
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [action]
+ *             properties:
+ *               action:
+ *                 type: string
+ *                 enum: [forward_eb, request_revision]
+ *                 description: "forward_eb = gửi EB duyệt, request_revision = yêu cầu Mangaka sửa"
+ *               notes:
+ *                 type: array
+ *                 items:
+ *                   type: string
+ *                 description: Ghi chú revision (khi action = request_revision)
+ *     responses:
+ *       200:
+ *         description: Hành động thực hiện thành công
+ *       400:
+ *         description: action không hợp lệ
+ *       403:
+ *         description: Không có quyền
+ */
+router.post("/chapter/:chapterId/te-action", authMiddleware, requireTE, async (req, res, next) => {
+  try {
+    const { chapterId } = req.params;
+    const { action, notes } = req.body;
+
+    if (!action || !["forward_eb", "request_revision"].includes(action)) {
+      return next(new AppError("action is required and must be 'forward_eb' or 'request_revision'", 400));
+    }
+
+    const chapter = await Chapter.findById(chapterId);
+    if (!chapter) return next(new AppError("Chapter not found", 404));
+
+    if (!chapter.te_id || String(chapter.te_id) !== String(req.user.nameid)) {
+      return next(new AppError("Bạn không được gán cho chapter này", 403));
+    }
+
+    if (action === "forward_eb") {
+      chapter.status = CHAPTER_STATUS.PENDING_EB;
+      chapter.revision_notes = "";
+      chapter.revision_annotations = [];
+      chapter.revision_source = "";
+      await chapter.save();
+
+      const review = await TEReview.findOne({ chapter_id: chapterId });
+      if (review) {
+        review.decision = TE_DECISION.APPROVED;
+        await review.save();
+      }
+
+      const ebUsers = await require("../models/User").find({ role: ROLES.EB }).lean();
+      const series = await Series.findById(chapter.series_id).lean();
+      for (const eb of ebUsers) {
+        await notifyChapterToEB(Notification, eb._id, chapter, series ? series.name : "");
+      }
+
+      return res.status(200).json({
+        success: true,
+        message: "Chapter đã được gửi lên EB.",
+        data: chapter,
+      });
+    } else {
+      chapter.status = CHAPTER_STATUS.TE_REVISION;
+      chapter.revision_notes = Array.isArray(notes) ? notes.join("\n") : (notes || "");
+      chapter.revision_source = "TE";
+      await chapter.save();
+
+      const review = await TEReview.findOne({ chapter_id: chapterId });
+      if (review) {
+        review.decision = TE_DECISION.REVISION;
+        review.revision_feedback = Array.isArray(notes) ? notes.join("\n") : (notes || "");
+        await review.save();
+      }
+
+      await notifyChapterTERevision(Notification, chapter.submitted_by, chapter, chapter.revision_notes);
+
+      return res.status(200).json({
+        success: true,
+        message: "Đã yêu cầu Mangaka chỉnh sửa chapter.",
+        data: chapter,
+      });
+    }
   } catch (error) {
     next(error);
   }
