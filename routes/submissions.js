@@ -13,7 +13,34 @@ const { ROLES } = require("../utils/constants");
 const { notifyChapterToTE } = require("../services/notificationService");
 
 // ─── GET /submissions/te-users ────────────────────────────────────────────────
-// Mangaka xem danh sách TE (Editor) để chọn gán cho chapter
+/**
+ * @swagger
+ * /submissions/te-users:
+ *   get:
+ *     summary: Lấy danh sách TE (Editor) đang active
+ *     tags: [Submissions]
+ *     security:
+ *       - BearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Danh sách TE
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 data:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       _id: { type: string }
+ *                       username: { type: string }
+ *                       full_name: { type: string }
+ *                       email: { type: string }
+ */
 router.get("/te-users", authMiddleware, requireMangaka, async (req, res, next) => {
   try {
     const teUsers = await User.find({ role: { $in: ["editor", "te"] }, status: "active" })
@@ -27,7 +54,40 @@ router.get("/te-users", authMiddleware, requireMangaka, async (req, res, next) =
 });
 
 // ─── POST /submissions/chapters/:chapterId/assign-te ────────────────────────
-// Mangaka gán TE cụ thể cho chapter (sau khi đã approve hết tasks)
+/**
+ * @swagger
+ * /submissions/chapters/{chapterId}/assign-te:
+ *   post:
+ *     summary: Gán TE cụ thể cho chapter
+ *     tags: [Submissions]
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: chapterId
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: ID của chapter
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [te_id]
+ *             properties:
+ *               te_id:
+ *                 type: string
+ *                 description: ObjectId của TE được gán
+ *     responses:
+ *       200:
+ *         description: Gán TE thành công
+ *       400:
+ *         description: te_id không hợp lệ hoặc chapter không ở trạng thái cho phép
+ *       404:
+ *         description: Chapter không tìm thấy
+ */
 router.post("/chapters/:chapterId/assign-te", authMiddleware, requireMangaka, async (req, res, next) => {
   try {
     const { te_id } = req.body;
@@ -73,8 +133,30 @@ router.post("/chapters/:chapterId/assign-te", authMiddleware, requireMangaka, as
   }
 });
 
-// ─── POST /submissions/chapters/:chapterId/remove-te ────────────────────────
-// Mangaka gỡ TE khỏi chapter
+// ─── DELETE /submissions/chapters/:chapterId/remove-te ──────────────────────
+/**
+ * @swagger
+ * /submissions/chapters/{chapterId}/remove-te:
+ *   delete:
+ *     summary: Gỡ TE khỏi chapter
+ *     tags: [Submissions]
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: chapterId
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: ID của chapter
+ *     responses:
+ *       200:
+ *         description: Gỡ TE thành công
+ *       400:
+ *         description: Chapter chưa được gán TE
+ *       404:
+ *         description: Chapter không tìm thấy
+ */
 router.delete("/chapters/:chapterId/remove-te", authMiddleware, requireMangaka, async (req, res, next) => {
   try {
     const chapter = await Chapter.findOne({
