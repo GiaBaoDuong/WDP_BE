@@ -37,6 +37,12 @@ const chapterSchema = new mongoose.Schema(
       ref: "EBEvaluation",
       default: null,
     },
+    te_id: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      default: null,
+    },
+    te_assigned_at: { type: Date, default: null },
     assistant_id: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",

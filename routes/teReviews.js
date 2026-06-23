@@ -24,12 +24,19 @@ const {
 } = require("../services/notificationService");
 
 // ─── GET /te-reviews/pending ─────────────────────────────────────────────────
+// TE chỉ thấy chapter được gán cho mình HOẶC chưa ai gán
 router.get("/pending", authMiddleware, requireTE, async (req, res, next) => {
   try {
-    const chapters = await Chapter.find({ status: CHAPTER_STATUS.PENDING_TE })
+    const chapters = await Chapter.find({
+      status: CHAPTER_STATUS.PENDING_TE,
+      $or: [
+        { te_id: req.user.nameid },
+        { te_id: null },
+      ],
+    })
       .populate("submitted_by", "username full_name phoneNumber")
       .populate("series_id", "name")
-      .sort({ updatedAt: 1 })
+      .sort({ te_assigned_at: 1, updatedAt: 1 })
       .lean();
 
     return res.status(200).json({ success: true, data: chapters });
@@ -103,13 +110,19 @@ router.get("/dashboard", authMiddleware, requireTE, async (req, res, next) => {
     const now = new Date();
     const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
 
-    const pendingChapters = await Chapter.find({ status: CHAPTER_STATUS.PENDING_TE })
-      .select("_id series_id chapter_number title submitted_by updatedAt")
+    const pendingChapters = await Chapter.find({
+      status: CHAPTER_STATUS.PENDING_TE,
+      $or: [{ te_id: req.user.nameid }, { te_id: null }],
+    })
+      .select("_id series_id chapter_number title submitted_by updatedAt te_assigned_at")
       .populate("series_id", "name publication_schedule")
       .populate("submitted_by", "username full_name phoneNumber")
       .lean();
 
-    const inRevisionChapters = await Chapter.find({ status: CHAPTER_STATUS.TE_REVISION })
+    const inRevisionChapters = await Chapter.find({
+      status: CHAPTER_STATUS.TE_REVISION,
+      $or: [{ te_id: req.user.nameid }, { te_id: null }],
+    })
       .select("_id series_id chapter_number title updatedAt")
       .populate("series_id", "name publication_schedule")
       .lean();
@@ -415,13 +428,14 @@ router.post("/series-review/:seriesId/submit", authMiddleware, requireTE, async 
 
     // ── Quyết định route theo avg_score ──────────────────────────────────────
     if (avgScore !== null && avgScore >= 3.5) {
-      // avg >= 3.5 → gửi EB: chuyển TẤT CẢ chapters pending_TE của series → pending_EB
+      // avg >= 3.5 → gửi EB: chỉ chuyển chapters được gán cho TE này → pending_EB
       review.decision = "approved";
       await review.save();
 
       const chaptersToEB = await Chapter.find({
         series_id: seriesId,
         status: CHAPTER_STATUS.PENDING_TE,
+        te_id: req.user.nameid,
       }).lean();
 
       for (const ch of chaptersToEB) {
@@ -506,6 +520,7 @@ router.get("/series-review/:seriesId/next-chapter", authMiddleware, requireTE, a
     const nextChapter = await Chapter.findOne({
       series_id: seriesId,
       status: CHAPTER_STATUS.PENDING_TE,
+      te_id: req.user.nameid,
     })
       .sort({ chapter_number: 1 })
       .populate("submitted_by", "username full_name phoneNumber")

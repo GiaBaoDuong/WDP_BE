@@ -1,4 +1,5 @@
 const express = require("express");
+const mongoose = require("mongoose");
 const router = express.Router();
 const authMiddleware = require("../middleware/auth");
 const { requireAdmin } = require("../middleware/roles");
@@ -1502,5 +1503,32 @@ router.delete("/eb-representative", async (req, res, next) => {
   }
 });
 
+
+router.post("/migrate-chapters-te-id", async (req, res, next) => {
+  try {
+    const db = mongoose.connection.db;
+    const indexes = await db.collection("chapters").indexes();
+    const hasTeIdIndex = indexes.some(
+      (idx) => idx.key && idx.key.te_id !== undefined,
+    );
+
+    if (hasTeIdIndex) {
+      return res.json({
+        success: true,
+        message: "Index on te_id already exists",
+        data: { index: "te_id_1", action: "skipped" },
+      });
+    }
+
+    await db.collection("chapters").createIndex({ te_id: 1 }, { background: true });
+    res.json({
+      success: true,
+      message: "Created index on te_id",
+      data: { index: "te_id_1", action: "created" },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
 
 module.exports = router;

@@ -12,9 +12,100 @@ const { CHAPTER_STATUS } = require("../utils/constants");
 const { ROLES } = require("../utils/constants");
 const { notifyChapterToTE } = require("../services/notificationService");
 
+// ─── GET /submissions/te-users ────────────────────────────────────────────────
+// Mangaka xem danh sách TE (Editor) để chọn gán cho chapter
+router.get("/te-users", authMiddleware, requireMangaka, async (req, res, next) => {
+  try {
+    const teUsers = await User.find({ role: ROLES.EDITOR, status: "active" })
+      .select("username full_name email phoneNumber")
+      .lean();
+
+    return res.status(200).json({ success: true, data: teUsers });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ─── POST /submissions/chapters/:chapterId/assign-te ────────────────────────
+// Mangaka gán TE cụ thể cho chapter (sau khi đã approve hết tasks)
+router.post("/chapters/:chapterId/assign-te", authMiddleware, requireMangaka, async (req, res, next) => {
+  try {
+    const { te_id } = req.body;
+    if (!te_id) return next(new AppError("te_id is required", 400));
+
+    const te = await User.findOne({ _id: te_id, role: ROLES.EDITOR });
+    if (!te) return next(new AppError("TE not found or invalid role", 400));
+
+    const chapter = await Chapter.findOne({
+      _id: req.params.chapterId,
+      submitted_by: req.user.nameid,
+    });
+    if (!chapter) return next(new AppError("Chapter not found or unauthorized", 404));
+
+    // Chỉ assign được khi chưa gửi TE, hoặc đang ở trạng thái TE_revision
+    if (![CHAPTER_STATUS.DRAFT, CHAPTER_STATUS.PENDING_ASSISTANT, CHAPTER_STATUS.TE_REVISION].includes(chapter.status)) {
+      return next(new AppError(`Không thể gán TE ở trạng thái "${chapter.status}"`, 400));
+    }
+
+    // Kiểm tra tất cả tasks đã approved hoặc không có task
+    const unfinishedTasks = await Task.countDocuments({
+      chapter_id: chapter._id,
+      status: { $in: ["submitted", "revision"] },
+    });
+    if (unfinishedTasks > 0) {
+      return next(new AppError(`${unfinishedTasks} task chưa hoàn thành. Vui lòng duyệt hết trước khi gán TE.`, 400));
+    }
+
+    const previousTeId = chapter.te_id;
+    chapter.te_id = te_id;
+    chapter.te_assigned_at = new Date();
+    await chapter.save();
+
+    // Notify TE được gán
+    const series = await Series.findById(chapter.series_id).lean();
+    const seriesName = series ? series.name : "";
+    await notifyChapterToTE(Notification, te_id, chapter, seriesName);
+
+    // Nếu có TE cũ bị thay, notify TE cũ
+    if (previousTeId && String(previousTeId) !== String(te_id)) {
+      await notifyChapterToTE(Notification, previousTeId, chapter, seriesName);
+    }
+
+    return res.status(200).json({
+      success: true,
+      message: `Đã gán TE "${te.full_name}" cho chapter.`,
+      data: chapter,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ─── POST /submissions/chapters/:chapterId/remove-te ────────────────────────
+// Mangaka gỡ TE khỏi chapter
+router.delete("/chapters/:chapterId/remove-te", authMiddleware, requireMangaka, async (req, res, next) => {
+  try {
+    const chapter = await Chapter.findOne({
+      _id: req.params.chapterId,
+      submitted_by: req.user.nameid,
+    });
+    if (!chapter) return next(new AppError("Chapter not found or unauthorized", 404));
+
+    if (!chapter.te_id) return next(new AppError("Chapter chưa được gán TE nào", 400));
+
+    chapter.te_id = null;
+    chapter.te_assigned_at = null;
+    await chapter.save();
+
+    return res.status(200).json({ success: true, message: "Đã gỡ TE khỏi chapter.", data: chapter });
+  } catch (error) {
+    next(error);
+  }
+});
+
 // ─── POST /submissions/chapters/:chapterId/submit-to-te ───────────────────────
 // Mangaka gửi chapter cho TE duyệt
-// Điều kiện: tất cả pages đã approved
+// Điều kiện: tất cả tasks đã approved
 /**
  * @swagger
  * /submissions/chapters/{chapterId}/submit-to-te:
@@ -33,78 +124,55 @@ const { notifyChapterToTE } = require("../services/notificationService");
  *     responses:
  *       200:
  *         description: Chapter submitted successfully
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 success:
- *                   type: boolean
- *                   example: true
- *                 message:
- *                   type: string
- *                   example: Chapter đã được gửi cho TE duyệt
- *                 data:
- *                   type: object
- *                   description: The updated chapter object
- *                 seriesName:
- *                   type: string
- *                   description: Name of the series
- *       400:
- *         description: Chapter cannot be submitted in current status or unfinished tasks
- *       404:
- *         description: Chapter not found or unauthorized
  */
 router.post("/chapters/:chapterId/submit-to-te", authMiddleware, requireMangaka, async (req, res, next) => {
   try {
+    const { te_id } = req.body;
+
     const chapter = await Chapter.findOne({
       _id: req.params.chapterId,
       submitted_by: req.user.nameid,
     });
     if (!chapter) return next(new AppError("Chapter not found or unauthorized", 404));
 
-    // Kiểm tra chapter đang ở trạng thái draft hoặc TE_revision
     if (![CHAPTER_STATUS.DRAFT, CHAPTER_STATUS.TE_REVISION, CHAPTER_STATUS.PENDING_ASSISTANT].includes(chapter.status)) {
       return next(new AppError("Chapter cannot be submitted in current status", 400));
     }
 
-    // Kiểm tra tất cả tasks đã approved hoặc không có task
-    const pendingTasks = await Task.countDocuments({
-      chapter_id: chapter._id,
-      status: { $nin: ["approved", "pending", "in_progress"] },
-    });
-
-    // Tasks đang submitted hoặc revision = chưa xong
     const unfinishedTasks = await Task.countDocuments({
       chapter_id: chapter._id,
       status: { $in: ["submitted", "revision"] },
     });
-
     if (unfinishedTasks > 0) {
-      return next(
-        new AppError(`Còn ${unfinishedTasks} task chưa hoàn thành. Vui lòng kiểm duyệt hết trước khi gửi cho TE.`, 400)
-      );
+      return next(new AppError(`${unfinishedTasks} task chưa hoàn thành. Vui lòng duyệt hết trước khi gửi cho TE.`, 400));
     }
 
     chapter.status = CHAPTER_STATUS.PENDING_TE;
     chapter.revision_notes = "";
     chapter.revision_annotations = [];
     chapter.revision_source = "";
-    await chapter.save();
 
-    // Lấy series name
     const series = await Series.findById(chapter.series_id).lean();
     const seriesName = series ? series.name : "";
 
-    // Notify TE
-    const teUsers = await User.find({ role: ROLES.EDITOR }).lean();
-    for (const te of teUsers) {
-      await notifyChapterToTE(Notification, te._id, chapter, seriesName);
+    // Ưu tiên gửi cho TE đã được gán trước đó; fallback broadcast
+    const targetTeId = te_id || chapter.te_id;
+    if (targetTeId) {
+      chapter.te_id = targetTeId;
+      chapter.te_assigned_at = chapter.te_assigned_at || new Date();
+      await chapter.save();
+      await notifyChapterToTE(Notification, targetTeId, chapter, seriesName);
+    } else {
+      await chapter.save();
+      const teUsers = await User.find({ role: ROLES.EDITOR }).lean();
+      for (const te of teUsers) {
+        await notifyChapterToTE(Notification, te._id, chapter, seriesName);
+      }
     }
 
     return res.status(200).json({
       success: true,
-      message: "Chapter đã được gửi cho TE duyệt",
+      message: targetTeId ? "Chapter đã được gửi cho TE được gán." : "Chapter đã được gửi cho tất cả TE.",
       data: chapter,
       seriesName,
     });
@@ -226,10 +294,13 @@ router.get("/mangaka", authMiddleware, requireMangaka, async (req, res, next) =>
  */
 router.get("/te", authMiddleware, requireTE, async (req, res, next) => {
   try {
-    const chapters = await Chapter.find({ status: CHAPTER_STATUS.PENDING_TE })
+    const chapters = await Chapter.find({
+      status: CHAPTER_STATUS.PENDING_TE,
+      $or: [{ te_id: req.user.nameid }, { te_id: null }],
+    })
       .populate("submitted_by", "username full_name phoneNumber")
       .populate("series_id", "name")
-      .sort({ updatedAt: 1 })
+      .sort({ te_assigned_at: 1, updatedAt: 1 })
       .lean();
 
     return res.status(200).json({ success: true, data: chapters });
