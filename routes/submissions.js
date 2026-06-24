@@ -43,7 +43,7 @@ const { notifyChapterToTE } = require("../services/notificationService");
  */
 router.get("/te-users", authMiddleware, requireMangaka, async (req, res, next) => {
   try {
-    const teUsers = await User.find({ role: { $in: ["editor", "te"] }, status: "active" })
+    const teUsers = await User.find({ role: "Editor", status: "active" })
       .select("_id username full_name email")
       .lean();
 
@@ -240,7 +240,7 @@ router.post("/chapters/:chapterId/submit-to-te", authMiddleware, requireMangaka,
       });
     } else {
       await chapter.save();
-      const teUsers = await User.find({ role: { $in: ["editor", "te"] }, status: "active" }).lean();
+      const teUsers = await User.find({ role: "Editor", status: "active" }).lean();
       await Notification.insertMany(
         teUsers.map((u) => ({
           user_id: u._id,
