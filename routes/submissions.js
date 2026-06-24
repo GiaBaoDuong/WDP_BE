@@ -486,6 +486,7 @@ router.patch("/chapters/:id/approve", authMiddleware, requireMangaka, async (req
     const VALID_APPROVE_STATUSES = [
       CHAPTER_STATUS.DRAFT,
       CHAPTER_STATUS.PENDING_ASSISTANT,
+      CHAPTER_STATUS.SUBMITTED_BY_ASSISTANT,
       CHAPTER_STATUS.TE_REVISION,
       CHAPTER_STATUS.REVIEW,
     ];

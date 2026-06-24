@@ -22,6 +22,7 @@ const SERIES_STATUS = {
 const CHAPTER_STATUS = {
   DRAFT: "draft",                    // Đang soạn, Mangaka đang làm
   PENDING_ASSISTANT: "pending_assistant", // Mangaka đang chờ Assistant làm
+  SUBMITTED_BY_ASSISTANT: "submitted_by_assistant", // Assistant đã nộp chapter, chờ Mangaka duyệt
   PENDING_TE: "pending_TE",          // Đã gửi lên TE
   TE_REVISION: "TE_revision",        // TE yêu cầu chỉnh sửa
   PENDING_EB: "pending_EB",         // TE duyệt, chờ EB

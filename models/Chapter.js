@@ -14,11 +14,13 @@ const chapterSchema = new mongoose.Schema(
       enum: [
         "draft",
         "pending_assistant",
+        "submitted_by_assistant",
         "pending_TE",
         "TE_revision",
         "pending_EB",
         "EB_revision",
         "published",
+        "review",
       ],
       default: "draft",
     },
