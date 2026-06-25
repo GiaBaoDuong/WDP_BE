@@ -724,18 +724,21 @@ router.post("/chapter/:chapterId/annotations", authMiddleware, requireTE, async 
     const page = await Page.findOne({ _id: pageId, chapter_id: chapterId }).lean();
     if (!page) return next(new AppError("Page not found in this chapter", 404));
 
-    let review = await TEReview.findOne({ chapter_id: chapterId });
-    if (!review) {
-      review = await TEReview.create({
-        chapter_id: chapterId,
-        reviewed_by: req.user.nameid,
-        decision: TE_DECISION.DRAFT,
-        annotations: [],
-        feedback: "",
-        revision_feedback: "",
-        quick_notes: "",
-      });
-    }
+    // Dùng findOneAndUpdate với upsert để tránh race condition duplicate key
+    let review = await TEReview.findOneAndUpdate(
+      { chapter_id: chapterId },
+      {
+        $setOnInsert: {
+          chapter_id: chapterId,
+          reviewed_by: req.user.nameid,
+          decision: TE_DECISION.DRAFT,
+          feedback: "",
+          revision_feedback: "",
+          quick_notes: "",
+        },
+      },
+      { new: true, upsert: true, runValidators: true }
+    );
 
     const pageAnns = review.annotations.filter((a) => String(a.page_id) === String(pageId));
     const newOrder = pageAnns.length + 1;
