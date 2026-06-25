@@ -629,15 +629,31 @@ router.get("/chapter/:chapterId/page/:pageId/annotations", authMiddleware, requi
 router.post("/chapter/:chapterId/annotations", authMiddleware, requireTE, async (req, res, next) => {
   try {
     const { chapterId } = req.params;
-    const { page_id, region, content, error_type } = req.body;
+    const body = req.body;
 
-    if (!page_id || !region || !content) return next(new AppError("page_id, region, and content are required", 400));
-    if (typeof region.x !== "number" || typeof region.y !== "number" ||
-        typeof region.width !== "number" || typeof region.height !== "number") {
-      return next(new AppError("region must have numeric x, y, width, height", 400));
+    // Handle both formats: region object OR flat x/y/w/h fields
+    const pageId = body.page_id || body.id;
+    let region = body.region;
+
+    if (!region) {
+      // Try flat fields: x, y, w/h, width/height
+      const x = Number(body.x ?? body.region_x);
+      const y = Number(body.y ?? body.region_y);
+      const width = Number(body.w ?? body.width ?? body.region_width);
+      const height = Number(body.h ?? body.height ?? body.region_height);
+
+      if (!pageId || isNaN(x) || isNaN(y) || isNaN(width) || isNaN(height) || !body.content) {
+        return next(new AppError("page_id (or id), x, y, w/h, and content are required", 400));
+      }
+
+      region = { x, y, width, height };
     }
 
-    const page = await Page.findOne({ _id: page_id, chapter_id: chapterId }).lean();
+    if (!pageId || !body.content) {
+      return next(new AppError("page_id (or id) and content are required", 400));
+    }
+
+    const page = await Page.findOne({ _id: pageId, chapter_id: chapterId }).lean();
     if (!page) return next(new AppError("Page not found in this chapter", 404));
 
     let review = await TEReview.findOne({ chapter_id: chapterId });
@@ -653,16 +669,16 @@ router.post("/chapter/:chapterId/annotations", authMiddleware, requireTE, async 
       });
     }
 
-    const pageAnns = review.annotations.filter((a) => String(a.page_id) === String(page_id));
+    const pageAnns = review.annotations.filter((a) => String(a.page_id) === String(pageId));
     const newOrder = pageAnns.length + 1;
 
     const newAnnotation = {
       _id: new mongoose.Types.ObjectId(),
-      page_id,
+      page_id: pageId,
       order: newOrder,
       region,
-      content,
-      error_type: error_type || "other",
+      content: body.content,
+      error_type: body.error_type || "other",
     };
 
     review.annotations.push(newAnnotation);
@@ -678,7 +694,8 @@ router.post("/chapter/:chapterId/annotations", authMiddleware, requireTE, async 
 router.patch("/chapter/:chapterId/annotations/:annotationId", authMiddleware, requireTE, async (req, res, next) => {
   try {
     const { chapterId, annotationId } = req.params;
-    const { region, content, error_type, order } = req.body;
+    const body = req.body;
+    const { region, content, error_type, order } = body;
 
     const review = await TEReview.findOne({ chapter_id: chapterId });
     if (!review) return next(new AppError("Review not found", 404));
@@ -692,6 +709,14 @@ router.patch("/chapter/:chapterId/annotations/:annotationId", authMiddleware, re
         return next(new AppError("region must have numeric x, y, width, height", 400));
       }
       annotation.region = region;
+    } else if (body.x !== undefined || body.y !== undefined || body.w !== undefined || body.h !== undefined) {
+      // Handle flat fields: x, y, w/h
+      annotation.region = {
+        x: Number(body.x ?? body.region_x ?? annotation.region.x),
+        y: Number(body.y ?? body.region_y ?? annotation.region.y),
+        width: Number(body.w ?? body.width ?? body.region_width ?? annotation.region.width),
+        height: Number(body.h ?? body.height ?? body.region_height ?? annotation.region.height),
+      };
     }
     if (content !== undefined) annotation.content = content;
     if (error_type !== undefined) {
@@ -891,9 +916,27 @@ router.post("/chapter/:chapterId/te-action", authMiddleware, requireTE, async (r
       chapter.status = CHAPTER_STATUS.TE_REVISION;
       chapter.revision_notes = Array.isArray(notes) ? notes.join("\n") : (notes || "");
       chapter.revision_source = "TE";
+
+      // Copy annotations from TEReview to chapter for Mangaka to view
+      const review = await TEReview.findOne({ chapter_id: chapterId });
+      if (review && review.annotations.length > 0) {
+        chapter.revision_annotations = review.annotations.map((a) => ({
+          page_id: a.page_id,
+          region: {
+            x: a.region.x,
+            y: a.region.y,
+            width: a.region.width,
+            height: a.region.height,
+          },
+          content: a.content,
+          error_type: a.error_type || "other",
+        }));
+      } else {
+        chapter.revision_annotations = [];
+      }
+
       await chapter.save();
 
-      const review = await TEReview.findOne({ chapter_id: chapterId });
       if (review) {
         review.decision = TE_DECISION.REVISION;
         review.revision_feedback = Array.isArray(notes) ? notes.join("\n") : (notes || "");
