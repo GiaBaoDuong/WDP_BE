@@ -115,6 +115,8 @@ const ebEvaluationSchema = new mongoose.Schema(
       enum: ["weekly", "monthly", null],
       default: null,
     },
+    // Ngày giờ EB hẹn xuất bản chapter
+    scheduled_publish_at: { type: Date, default: null },
     notes: { type: String, default: "" },
   },
   { timestamps: true }

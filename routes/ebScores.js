@@ -227,6 +227,8 @@ router.get("/chapter/:chapterId/summary", authMiddleware, requireEB, async (req,
         label_code: classifyResult(councilAvg),
         label_text: getResultText(councilAvg),
         member_count: evaluation.member_scores.length,
+        can_approve: classifyResult(councilAvg) !== EB_RESULT_LABELS.NOT_PASS,
+        is_locked: evaluation.status === EB_EVALUATION_STATUS.LOCKED,
       };
     }
 

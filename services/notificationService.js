@@ -218,6 +218,38 @@ const notifyChapterAssigned = async (Notification, assistantId, chapter, seriesN
   });
 };
 
+const notifyChapterScheduledPublish = async (Notification, mangakaId, chapter, seriesName, scheduledDate, schedule, durationDays) => {
+  const dateStr = new Date(scheduledDate).toLocaleDateString("vi-VN", {
+    day: "2-digit", month: "2-digit", year: "numeric",
+  });
+  await notifyUser(Notification, mangakaId, {
+    type: "chapter_scheduled_publish",
+    title: "Chapter được hẹn xuất bản",
+    message: `Chapter "${chapter.title}" (#${chapter.chapter_number}) của series "${seriesName}" đã được EB duyệt. Xuất bản ngày ${dateStr}, lịch ${schedule} (${durationDays} ngày).`,
+    meta: {
+      chapter_id: chapter._id,
+      series_id: chapter.series_id,
+      scheduled_date: scheduledDate,
+      schedule,
+      duration_days: durationDays,
+    },
+  });
+};
+
+const notifyChapterPublishConfirmed = async (Notification, mangakaId, chapter, seriesName, schedule, durationDays) => {
+  await notifyUser(Notification, mangakaId, {
+    type: "chapter_publish_confirmed",
+    title: "Chapter đã xuất bản",
+    message: `Chapter "${chapter.title}" (#${chapter.chapter_number}) của series "${seriesName}" đã được xuất bản. Lịch ${schedule}, hiển thị ${durationDays} ngày.`,
+    meta: {
+      chapter_id: chapter._id,
+      series_id: chapter.series_id,
+      schedule,
+      duration_days: durationDays,
+    },
+  });
+};
+
 module.exports = {
   sendToUser,
   notifyUser,
@@ -240,4 +272,6 @@ module.exports = {
   notifySeriesRevision,
   notifyAssistantResponse,
   notifyChapterAssigned,
+  notifyChapterScheduledPublish,
+  notifyChapterPublishConfirmed,
 };

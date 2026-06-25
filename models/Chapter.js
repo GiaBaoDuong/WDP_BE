@@ -86,6 +86,18 @@ const chapterSchema = new mongoose.Schema(
       }],
       default: [],
     },
+    // Lịch hẹn xuất bản - khi EB duyệt và chọn ngày cụ thể
+    scheduled_publish_at: { type: Date, default: null },
+    // Thời hạn hiển thị: 7 ngày (weekly) hoặc 30 ngày (monthly)
+    publication_duration_days: { type: Number, default: null },
+    // Lịch xuất bản từ series: "weekly" | "monthly"
+    publication_schedule: {
+      type: String,
+      enum: ["weekly", "monthly", null],
+      default: null,
+    },
+    // Trạng thái chờ hẹn giờ (chưa đến ngày publish)
+    is_scheduled: { type: Boolean, default: false },
   },
   { timestamps: true }
 );
@@ -93,6 +105,7 @@ const chapterSchema = new mongoose.Schema(
 chapterSchema.index({ series_id: 1, chapter_number: 1 });
 chapterSchema.index({ status: 1 });
 chapterSchema.index({ submitted_by: 1, status: 1 });
+chapterSchema.index({ is_scheduled: 1, scheduled_publish_at: 1 });
 
 const Chapter = mongoose.model("Chapter", chapterSchema);
 module.exports = Chapter;
