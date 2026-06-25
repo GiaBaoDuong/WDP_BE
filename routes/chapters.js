@@ -9,6 +9,7 @@ const Page = require("../models/Page");
 const PageLayer = require("../models/PageLayer");
 const Series = require("../models/Series");
 const { uploadLayer, cloudinary } = require("../middleware/uploadCloudinary");
+const { uploadChapterPage } = require("../middleware/uploadChapterPage");
 const Task = require("../models/Task");
 const User = require("../models/User");
 const Cooperation = require("../models/Cooperation");
@@ -459,7 +460,7 @@ router.post(
   "/:id/pages",
   authMiddleware,
   requireMangaka,
-  upload.single("page"),
+  uploadChapterPage.single("page"),
   async (req, res, next) => {
     try {
       const chapter = await Chapter.findOne({
@@ -472,11 +473,7 @@ router.post(
         return next(new AppError("No image uploaded", 400));
       }
 
-      // Upload lên Cloudinary
-      const uploadResult = await cloudinary.uploader.upload(req.file.path, {
-        folder: `wdp/chapters/${chapter.series_id}/${chapter._id}`,
-        resource_type: "image",
-      });
+      const uploadResult = req.file; // CloudinaryStorage đã trả kết quả upload sẵn
 
       // Lấy metadata từ body
       const noteText = req.body.note || "";
@@ -492,9 +489,9 @@ router.post(
       const page = await Page.create({
         chapter_id: chapter._id,
         page_number: existingPages + 1,
-        original_image_url: uploadResult.secure_url,
-        width: uploadResult.width || 0,
-        height: uploadResult.height || 0,
+        original_image_url: uploadResult.secure_url || uploadResult.url,
+        width: uploadResult.width || uploadResult.metadata?.width || 0,
+        height: uploadResult.height || uploadResult.metadata?.height || 0,
         uploaded_by: req.user.nameid,
         status: "has_task",
       });

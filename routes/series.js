@@ -4,9 +4,11 @@ const authMiddleware = require("../middleware/auth");
 const { requireMangaka, requireMangakaOrAssistant } = require("../middleware/roles");
 const { AppError } = require("../middleware/errorHandler");
 const Series = require("../models/Series");
+const { GENRES } = require("../models/Series");
 const Chapter = require("../models/Chapter");
 const Page = require("../models/Page");
 const upload = require("../middleware/upload");
+const { uploadCover } = require("../middleware/uploadCoverCloudinary");
 
 // ─── GET /series ─────────────────────────────────────────────────────────────
 // Tất cả series đã publish (Reader thấy)
@@ -97,7 +99,10 @@ router.get("/", authMiddleware, async (req, res, next) => {
     } else if (req.user.role === "Mangaka") {
       filter.author_id = req.user.nameid;
     }
-    if (genre) filter.genre = genre;
+    if (genre) {
+      const genres = Array.isArray(genre) ? genre : [genre];
+      filter.genre = { $in: genres };
+    }
     if (status) filter.status = status;
 
     const sortObj = { [sort]: order === "asc" ? 1 : -1 };
@@ -352,7 +357,7 @@ router.get("/:id", authMiddleware, async (req, res, next) => {
  *               cover:
  *                 type: string
  *                 format: binary
- *                 description: Cover image file
+ *                 description: Cover image file uploaded to Cloudinary
  *     responses:
  *       200:
  *         description: Cover image uploaded successfully
@@ -370,6 +375,7 @@ router.get("/:id", authMiddleware, async (req, res, next) => {
  *                   properties:
  *                     cover_image_url:
  *                       type: string
+ *                       description: Secure Cloudinary URL for series cover
  *       400:
  *         description: Bad request - No image uploaded or invalid file
  *       401:
@@ -383,7 +389,7 @@ router.post(
   "/:id/cover",
   authMiddleware,
   requireMangaka,
-  upload.single("cover"),
+  uploadCover.single("cover"),
   async (req, res, next) => {
     try {
       const series = await Series.findOne({
@@ -399,7 +405,7 @@ router.post(
         return next(new AppError("No image uploaded", 400));
       }
 
-      series.cover_image_url = `/uploads/covers/${req.file.filename}`;
+      series.cover_image_url = req.file.secure_url;
       await series.save();
 
       return res.status(200).json({
@@ -460,7 +466,7 @@ router.post(
  *               cover:
  *                 type: string
  *                 format: binary
- *                 description: Cover image file
+ *                 description: Cover image file uploaded to Cloudinary
  *     responses:
  *       201:
  *         description: Series created successfully
@@ -484,7 +490,7 @@ router.post(
   "/",
   authMiddleware,
   requireMangaka,
-  upload.single("cover"),
+  uploadCover.single("cover"),
   async (req, res, next) => {
     try {
       const { name, description, genre, target_audience, synopsis, category, tags, age_rating } = req.body;
@@ -500,14 +506,26 @@ router.post(
         }
       }
 
+      // Parse genre: nhận mảng hoặc string CSV
+      let parsedGenre = [];
+      if (genre !== undefined && genre !== "") {
+        parsedGenre = Array.isArray(genre)
+          ? genre
+          : (typeof genre === "string" ? genre.split(",").map((g) => g.trim()) : []);
+        const invalid = parsedGenre.filter((g) => !GENRES.includes(g));
+        if (invalid.length > 0) {
+          return next(new AppError(`Invalid genres: ${invalid.join(", ")}. Valid genres: ${GENRES.join(", ")}`, 400));
+        }
+      }
+
       const cover_image_url = req.file
-        ? `/uploads/covers/${req.file.filename}`
+        ? req.file.secure_url
         : req.body.cover_image_url || "";
 
       const series = await Series.create({
         name,
         description,
-        genre,
+        genre: parsedGenre,
         target_audience,
         synopsis,
         cover_image_url,
@@ -611,16 +629,35 @@ router.patch("/:id", authMiddleware, requireMangaka, async (req, res, next) => {
       }
     }
 
+    const { genre: rawGenre, ...rest } = req.body;
+
+    if (rawGenre !== undefined) {
+      let parsedGenre;
+      if (rawGenre === "" || rawGenre === null) {
+        parsedGenre = [];
+      } else {
+        parsedGenre = Array.isArray(rawGenre)
+          ? rawGenre
+          : (typeof rawGenre === "string" ? rawGenre.split(",").map((g) => g.trim()) : []);
+        const invalid = parsedGenre.filter((g) => !GENRES.includes(g));
+        if (invalid.length > 0) {
+          return next(new AppError(`Invalid genres: ${invalid.join(", ")}. Valid genres: ${GENRES.join(", ")}`, 400));
+        }
+      }
+      series.genre = parsedGenre;
+    }
+
     allowedFields.forEach((field) => {
-      if (req.body[field] !== undefined) {
+      if (field === "genre") return; // handled above
+      if (rest[field] !== undefined) {
         if (field === "tags") {
-          series.tags = Array.isArray(req.body.tags)
-            ? req.body.tags
-            : (typeof req.body.tags === "string" && req.body.tags.length
-                ? req.body.tags.split(",").map((t) => t.trim())
+          series.tags = Array.isArray(rest.tags)
+            ? rest.tags
+            : (typeof rest.tags === "string" && rest.tags.length
+                ? rest.tags.split(",").map((t) => t.trim())
                 : []);
         } else {
-          series[field] = req.body[field];
+          series[field] = rest[field];
         }
       }
     });
