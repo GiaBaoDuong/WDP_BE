@@ -8,7 +8,8 @@ const { GENRES } = require("../models/Series");
 const Chapter = require("../models/Chapter");
 const Page = require("../models/Page");
 const upload = require("../middleware/upload");
-const { uploadCover } = require("../middleware/uploadCoverCloudinary");
+const { uploadCover, uploadToCloudinary } = require("../middleware/uploadCoverCloudinary");
+const cloudinary = require("../config/cloudinary");
 
 // ─── GET /series ─────────────────────────────────────────────────────────────
 // Tất cả series đã publish (Reader thấy)
@@ -405,7 +406,8 @@ router.post(
         return next(new AppError("No image uploaded", 400));
       }
 
-      series.cover_image_url = req.file.secure_url;
+      const result = await uploadToCloudinary(req.file);
+      series.cover_image_url = result.secure_url;
       await series.save();
 
       return res.status(200).json({
@@ -515,12 +517,11 @@ router.post(
         }
       }
 
-      console.log("=== CREATE SERIES DEBUG ===");
-      console.log("req.file:", req.file);
-      console.log("req.body:", req.body);
-      const cover_image_url = req.file
-        ? req.file.secure_url
-        : req.body.cover_image_url || "";
+      let cover_image_url = "";
+      if (req.file) {
+        const result = await uploadToCloudinary(req.file);
+        cover_image_url = result.secure_url;
+      }
 
       const series = await Series.create({
         name,
