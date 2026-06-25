@@ -515,6 +515,9 @@ router.post(
         }
       }
 
+      console.log("=== CREATE SERIES DEBUG ===");
+      console.log("req.file:", req.file);
+      console.log("req.body:", req.body);
       const cover_image_url = req.file
         ? req.file.secure_url
         : req.body.cover_image_url || "";
