@@ -8,8 +8,8 @@ const Chapter = require("../models/Chapter");
 const Page = require("../models/Page");
 const Series = require("../models/Series");
 const Task = require("../models/Task");
-const { TEReview, TE_CRITERIA_KEYS } = require("../models/TEReview");
-const { SeriesReview, SERIES_TE_CRITERIA_KEYS } = require("../models/SeriesReview");
+const { TEReview } = require("../models/TEReview");
+const { SeriesReview } = require("../models/SeriesReview");
 const Notification = require("../models/Notification");
 const { CHAPTER_STATUS } = require("../utils/constants");
 const { TE_DECISION } = require("../utils/constants");
@@ -70,10 +70,7 @@ router.get("/history", authMiddleware, requireTE, async (req, res, next) => {
       .lean();
 
     const enriched = reviews.map((r) => {
-      const scores = r.scores instanceof Map ? Object.fromEntries(r.scores) : r.scores || {};
-      const vals = Object.values(scores).filter((v) => v != null);
-      const avg = vals.length ? +(vals.reduce((a, b) => a + b, 0) / vals.length).toFixed(2) : null;
-      return { ...r, scores, average_score: avg };
+      return { ...r };
     });
 
     return res.status(200).json({ success: true, data: enriched });
@@ -91,13 +88,9 @@ router.get("/chapter/:chapterId", authMiddleware, requireTE, async (req, res, ne
 
     if (!review) return next(new AppError("Review not found", 404));
 
-    const scores = review.scores instanceof Map ? Object.fromEntries(review.scores) : review.scores || {};
-    const vals = Object.values(scores).filter((v) => v != null);
-    const average_score = vals.length ? +(vals.reduce((a, b) => a + b, 0) / vals.length).toFixed(2) : null;
-
     return res.status(200).json({
       success: true,
-      data: { ...review, scores, average_score },
+      data: review,
     });
   } catch (error) {
     next(error);
@@ -287,10 +280,6 @@ router.get("/series-review/:seriesId", authMiddleware, requireTE, async (req, re
 
     let review = await SeriesReview.findOne({ series_id: seriesId, reviewed_by: req.user.nameid }).lean();
 
-    const scores = review && review.scores instanceof Map
-      ? Object.fromEntries(review.scores)
-      : (review ? (review.scores || {}) : {});
-
     return res.status(200).json({
       success: true,
       data: {
@@ -299,8 +288,6 @@ router.get("/series-review/:seriesId", authMiddleware, requireTE, async (req, re
               _id: review._id,
               series_id: review.series_id,
               decision: review.decision,
-              scores,
-              average_score: review.average_score,
               feedback: review.feedback,
               quick_notes: review.quick_notes,
               revision_feedback: review.revision_feedback,
@@ -320,54 +307,32 @@ router.get("/series-review/:seriesId", authMiddleware, requireTE, async (req, re
 router.post("/series-review/:seriesId", authMiddleware, requireTE, async (req, res, next) => {
   try {
     const { seriesId } = req.params;
-    const { scores, feedback, quick_notes } = req.body;
+    const { feedback, quick_notes } = req.body;
 
     const series = await Series.findById(seriesId).lean();
     if (!series) return next(new AppError("Series not found", 404));
 
-    if (scores) {
-      for (const [key, val] of Object.entries(scores)) {
-        if (!SERIES_TE_CRITERIA_KEYS.includes(key)) {
-          return next(new AppError(`Invalid score key: "${key}". Valid: ${SERIES_TE_CRITERIA_KEYS.join(", ")}`, 400));
-        }
-        if (typeof val !== "number" || !Number.isInteger(val) || val < 0 || val > 5) {
-          return next(new AppError(`Score "${key}" must be integer 0–5`, 400));
-        }
-      }
-    }
-
     let review = await SeriesReview.findOne({ series_id: seriesId, reviewed_by: req.user.nameid });
     if (review) {
-      if (scores) {
-        for (const [key, val] of Object.entries(scores)) review.scores.set(key, val);
-      }
       if (feedback !== undefined) review.feedback = feedback;
       if (quick_notes !== undefined) review.quick_notes = quick_notes;
     } else {
-      const scoreMap = new Map();
-      if (scores) {
-        for (const [key, val] of Object.entries(scores)) scoreMap.set(key, val);
-      }
       review = await SeriesReview.create({
         series_id: seriesId,
         reviewed_by: req.user.nameid,
         decision: "draft",
-        scores: scoreMap,
         feedback: feedback || "",
         quick_notes: quick_notes || "",
       });
     }
     await review.save();
 
-    const outScores = Object.fromEntries(review.scores);
     return res.status(200).json({
       success: true,
       data: {
         _id: review._id,
         series_id: review.series_id,
         decision: review.decision,
-        scores: outScores,
-        average_score: review.average_score,
         feedback: review.feedback,
         quick_notes: review.quick_notes,
       },
@@ -378,44 +343,30 @@ router.post("/series-review/:seriesId", authMiddleware, requireTE, async (req, r
 });
 
 // ─── POST /series-review/:seriesId/submit ────────────────────────────────────
-// [Nút: Submit & Send] — Gửi đánh giá series, tự động route:
-//   avg_score >= 3.5  → gửi EB (chapter → pending_EB)
-//   avg_score <  3.5  → gửi Mangaka (series → revision)
+// [Nút: Approve & Publish / Reject & Request Edit]
+//   action = "approve" → gửi EB (chapters → pending_EB)
+//   action = "reject"  → gửi Mangaka (series → revision)
 router.post("/series-review/:seriesId/submit", authMiddleware, requireTE, async (req, res, next) => {
   try {
     const { seriesId } = req.params;
-    const { scores, feedback, quick_notes, revision_feedback } = req.body;
+    const { action, feedback, quick_notes, revision_feedback } = req.body;
+
+    if (!action || !["approve", "reject"].includes(action)) {
+      return next(new AppError("action is required and must be 'approve' or 'reject'", 400));
+    }
 
     const series = await Series.findById(seriesId).lean();
     if (!series) return next(new AppError("Series not found", 404));
 
-    if (scores) {
-      for (const [key, val] of Object.entries(scores)) {
-        if (!SERIES_TE_CRITERIA_KEYS.includes(key)) {
-          return next(new AppError(`Invalid score key: "${key}"`, 400));
-        }
-        if (typeof val !== "number" || !Number.isInteger(val) || val < 0 || val > 5) {
-          return next(new AppError(`Score "${key}" must be integer 0–5`, 400));
-        }
-      }
-    }
-
-    // Upsert review
     let review = await SeriesReview.findOne({ series_id: seriesId, reviewed_by: req.user.nameid });
     if (review) {
-      if (scores) {
-        for (const [key, val] of Object.entries(scores)) review.scores.set(key, val);
-      }
       if (feedback !== undefined) review.feedback = feedback;
       if (quick_notes !== undefined) review.quick_notes = quick_notes;
       if (revision_feedback !== undefined) review.revision_feedback = revision_feedback;
     } else {
-      const scoreMap = new Map();
-      if (scores) for (const [key, val] of Object.entries(scores)) scoreMap.set(key, val);
       review = await SeriesReview.create({
         series_id: seriesId,
         reviewed_by: req.user.nameid,
-        scores: scoreMap,
         feedback: feedback || "",
         quick_notes: quick_notes || "",
         revision_feedback: revision_feedback || "",
@@ -423,12 +374,7 @@ router.post("/series-review/:seriesId/submit", authMiddleware, requireTE, async 
     }
     await review.save();
 
-    const avgScore = review.average_score;
-    const seriesName = series.name;
-
-    // ── Quyết định route theo avg_score ──────────────────────────────────────
-    if (avgScore !== null && avgScore >= 3.5) {
-      // avg >= 3.5 → gửi EB: chỉ chuyển chapters được gán cho TE này → pending_EB
+    if (action === "approve") {
       review.decision = "approved";
       await review.save();
 
@@ -450,34 +396,29 @@ router.post("/series-review/:seriesId/submit", authMiddleware, requireTE, async 
       const ebUsers = await require("../models/User").find({ role: ROLES.EB }).lean();
       for (const eb of ebUsers) {
         for (const ch of chaptersToEB) {
-          await notifyChapterToEB(Notification, eb._id, ch, seriesName);
+          await notifyChapterToEB(Notification, eb._id, ch, series.name);
         }
       }
 
       return res.status(200).json({
         success: true,
         data: {
-          decision: "approved",
-          avg_score: avgScore,
-          auto_route: "EB",
-          message: `avg_score (${avgScore}) >= 3.5 → gửi EB. ${chaptersToEB.length} chapter(s) chuyển sang pending_EB.`,
+          action: "approve",
+          message: `${chaptersToEB.length} chapter(s) chuyển sang pending_EB.`,
           chapters_to_eb: chaptersToEB.map((c) => ({ _id: c._id, chapter_number: c.chapter_number, title: c.title })),
           review: {
             _id: review._id,
-            scores: Object.fromEntries(review.scores),
-            average_score: avgScore,
+            decision: review.decision,
             feedback: review.feedback,
             quick_notes: review.quick_notes,
           },
         },
       });
     } else {
-      // avg < 3.5 → gửi Mangaka: series review → revision
       review.decision = "revision";
       review.revision_feedback = revision_feedback || review.revision_feedback || "";
       await review.save();
 
-      // Đánh dấu revision cho series (author của series)
       await Series.findByIdAndUpdate(seriesId, {
         revision_notes: review.revision_feedback,
         revision_source: "TE",
@@ -488,14 +429,11 @@ router.post("/series-review/:seriesId/submit", authMiddleware, requireTE, async 
       return res.status(200).json({
         success: true,
         data: {
-          decision: "revision",
-          avg_score: avgScore,
-          auto_route: "Mangaka",
-          message: `avg_score (${avgScore ?? "null"}) < 3.5 → gửi Mangaka. Series chuyển sang revision.`,
+          action: "reject",
+          message: "Series chuyển sang revision.",
           review: {
             _id: review._id,
-            scores: Object.fromEntries(review.scores),
-            average_score: avgScore,
+            decision: review.decision,
             feedback: review.feedback,
             quick_notes: review.quick_notes,
             revision_feedback: review.revision_feedback,
@@ -579,8 +517,6 @@ router.get("/series/:seriesId/profile", authMiddleware, requireTEOrEB, async (re
 
     // Lấy series review của TE đang login
     const seriesReview = await SeriesReview.findOne({ series_id: seriesId, reviewed_by: req.user.nameid }).lean();
-    const sScores = seriesReview && seriesReview.scores instanceof Map
-      ? Object.fromEntries(seriesReview.scores) : (seriesReview ? (seriesReview.scores || {}) : {});
 
     const myApprovedCount = await TEReview.countDocuments({
       reviewed_by: req.user.nameid,
@@ -596,8 +532,6 @@ router.get("/series/:seriesId/profile", authMiddleware, requireTEOrEB, async (re
           ? {
               _id: seriesReview._id,
               decision: seriesReview.decision,
-              scores: sScores,
-              average_score: seriesReview.average_score,
               feedback: seriesReview.feedback,
               quick_notes: seriesReview.quick_notes,
               revision_feedback: seriesReview.revision_feedback,
@@ -716,7 +650,6 @@ router.post("/chapter/:chapterId/annotations", authMiddleware, requireTE, async 
         feedback: "",
         revision_feedback: "",
         quick_notes: "",
-        scores: new Map(),
       });
     }
 
@@ -879,7 +812,7 @@ router.get("/chapter/:chapterId/annotations", authMiddleware, requireTE, async (
  * @swagger
  * /te-reviews/chapter/{chapterId}/te-action:
  *   post:
- *     summary: TE thực hiện hành động với chapter (forward EB hoặc yêu cầu revision)
+ *     summary: TE thực hiện hành động với chapter (approve = gửi EB, reject = yêu cầu Mangaka sửa)
  *     tags: [TE Reviews]
  *     security:
  *       - BearerAuth: []
@@ -899,13 +832,13 @@ router.get("/chapter/:chapterId/annotations", authMiddleware, requireTE, async (
  *             properties:
  *               action:
  *                 type: string
- *                 enum: [forward_eb, request_revision]
- *                 description: "forward_eb = gửi EB duyệt, request_revision = yêu cầu Mangaka sửa"
+ *                 enum: [approve, reject]
+ *                 description: "approve = gửi EB duyệt, reject = yêu cầu Mangaka sửa"
  *               notes:
  *                 type: array
  *                 items:
  *                   type: string
- *                 description: Ghi chú revision (khi action = request_revision)
+ *                 description: Ghi chú revision (khi action = reject)
  *     responses:
  *       200:
  *         description: Hành động thực hiện thành công
@@ -919,8 +852,8 @@ router.post("/chapter/:chapterId/te-action", authMiddleware, requireTE, async (r
     const { chapterId } = req.params;
     const { action, notes } = req.body;
 
-    if (!action || !["forward_eb", "request_revision"].includes(action)) {
-      return next(new AppError("action is required and must be 'forward_eb' or 'request_revision'", 400));
+    if (!action || !["approve", "reject"].includes(action)) {
+      return next(new AppError("action is required and must be 'approve' or 'reject'", 400));
     }
 
     const chapter = await Chapter.findById(chapterId);
@@ -930,7 +863,7 @@ router.post("/chapter/:chapterId/te-action", authMiddleware, requireTE, async (r
       return next(new AppError("Bạn không được gán cho chapter này", 403));
     }
 
-    if (action === "forward_eb") {
+    if (action === "approve") {
       chapter.status = CHAPTER_STATUS.PENDING_EB;
       chapter.revision_notes = "";
       chapter.revision_annotations = [];

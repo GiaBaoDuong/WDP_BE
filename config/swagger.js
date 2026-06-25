@@ -142,16 +142,6 @@ const options = {
                 },
               },
             },
-            scores: {
-              type: "object",
-              properties: {
-                pacing_content: { type: "integer", minimum: 0, maximum: 5 },
-                visual_art_writing: { type: "integer", minimum: 0, maximum: 5 },
-                layout_storyboard: { type: "integer", minimum: 0, maximum: 5 },
-                localization_technical: { type: "integer", minimum: 0, maximum: 5 },
-              },
-            },
-            average_score: { type: "number", nullable: true },
             feedback: { type: "string" },
             revision_feedback: { type: "string" },
             quick_notes: { type: "string" },
