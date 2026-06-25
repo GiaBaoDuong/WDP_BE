@@ -115,6 +115,7 @@ const ebEvaluationSchema = new mongoose.Schema(
       enum: ["weekly", "monthly", null],
       default: null,
     },
+    scheduled_publish_at: { type: Date, default: null },
     notes: { type: String, default: "" },
   },
   { timestamps: true }

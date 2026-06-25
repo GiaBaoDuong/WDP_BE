@@ -78,6 +78,19 @@ const chapterSchema = new mongoose.Schema(
     },
     is_published: { type: Boolean, default: false },
     published_at: { type: Date, default: null },
+    // Scheduling fields
+    scheduled_publish_at: { type: Date, default: null },
+    publication_duration_days: {
+      type: Number,
+      enum: [7, 30],
+      default: null,
+    },
+    publication_schedule: {
+      type: String,
+      enum: ["weekly", "monthly"],
+      default: null,
+    },
+    is_scheduled: { type: Boolean, default: false },
     revision_history: {
       type: [{
         at: { type: Date, default: Date.now },
