@@ -229,25 +229,45 @@ router.post("/chapters/:chapterId/submit-to-te", authMiddleware, requireMangaka,
     const series = await Series.findById(chapter.series_id).lean();
     const seriesName = series ? series.name : "";
 
+    const chapterPayload = chapter.toObject ? chapter.toObject() : chapter;
+
+    const baseNotification = {
+      related_entity_type: "chapter",
+      related_entity_id: chapter._id,
+      meta: {
+        chapter_id: chapter._id,
+        chapter_number: chapter.chapter_number,
+        chapter_title: chapter.title,
+        series_id: series ? series._id : chapter.series_id,
+        series_name: seriesName,
+        series_genre: series?.genre || [],
+        series_tags: series?.tags || [],
+        series_synopsis: series?.synopsis || "",
+        series_cover_image_url: series?.cover_image_url || "",
+        series_author_id: series?.author_id || null,
+        submitted_by: chapter.submitted_by,
+      },
+    };
+
     if (chapter.te_id) {
       await chapter.save();
       await Notification.create({
+        ...baseNotification,
         user_id: chapter.te_id,
         type: "chapter_pending_te",
-        chapter_id: chapter._id,
         title: `Chapter "${chapter.title}" cần duyệt`,
-        message: `Chapter "${chapter.title}" (${chapter.chapter_number}) đã được gửi sang TE.`,
+        message: `Chapter "${chapter.title}" (${chapter.chapter_number}) của series "${seriesName}" đã được gửi sang TE.`,
       });
     } else {
       await chapter.save();
       const teUsers = await User.find({ role: "Editor", status: "active" }).lean();
       await Notification.insertMany(
         teUsers.map((u) => ({
+          ...baseNotification,
           user_id: u._id,
           type: "chapter_pending_te",
-          chapter_id: chapter._id,
           title: `Chapter "${chapter.title}" cần duyệt`,
-          message: `Chapter "${chapter.title}" (${chapter.chapter_number}) đã được gửi sang TE.`,
+          message: `Chapter "${chapter.title}" (${chapter.chapter_number}) của series "${seriesName}" đã được gửi sang TE.`,
         }))
       );
     }
@@ -255,7 +275,7 @@ router.post("/chapters/:chapterId/submit-to-te", authMiddleware, requireMangaka,
     return res.status(200).json({
       success: true,
       message: chapter.te_id ? "Chapter đã được gửi cho TE được gán." : "Chapter đã được gửi cho tất cả TE.",
-      data: chapter,
+      data: chapterPayload,
       seriesName,
     });
   } catch (error) {

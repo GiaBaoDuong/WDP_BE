@@ -1,6 +1,7 @@
 const express = require("express");
 const router = express.Router();
 const mongoose = require("mongoose");
+const multer = require("multer");
 const authMiddleware = require("../middleware/auth");
 const { requireMangaka, requireMangakaOrAssistant, requireAssistant, requireMangakaOrTEOrEB } = require("../middleware/roles");
 const { AppError } = require("../middleware/errorHandler");
@@ -9,6 +10,8 @@ const Page = require("../models/Page");
 const PageLayer = require("../models/PageLayer");
 const Series = require("../models/Series");
 const { uploadLayer, cloudinary } = require("../middleware/uploadCloudinary");
+const { uploadChapterPage } = require("../middleware/uploadChapterPage");
+const { uploadToCloudinary: uploadSingleToCloudinary } = require("../middleware/uploadCoverCloudinary");
 const Task = require("../models/Task");
 const User = require("../models/User");
 const Cooperation = require("../models/Cooperation");
@@ -24,6 +27,33 @@ const {
 const sharp = require("sharp");
 const path = require("path");
 const fs = require("fs");
+
+// Memory storage cho page uploads (upload thẳng lên Cloudinary)
+const uploadPages = multer({
+  storage: multer.memoryStorage(),
+  fileFilter: (req, file, cb) => {
+    const allowed = /jpeg|jpg|png|webp/;
+    const ext = allowed.test(path.extname(file.originalname).toLowerCase());
+    const mime = allowed.test(file.mimetype);
+    if (ext && mime) cb(null, true);
+    else cb(new Error("Only image files (jpeg, jpg, png, webp) are allowed"));
+  },
+  limits: { fileSize: 10 * 1024 * 1024 },
+});
+
+// Upload single file lên Cloudinary (stream from memory buffer)
+async function uploadToCloudinary(file, folder) {
+  return new Promise((resolve, reject) => {
+    const stream = cloudinary.uploader.upload_stream(
+      { folder, resource_type: "image", allowed_formats: ["jpg", "jpeg", "png", "webp"] },
+      (error, result) => {
+        if (error) reject(error);
+        else resolve(result);
+      }
+    );
+    stream.end(file.buffer);
+  });
+}
 
 async function getImageDimensions(url) {
   if (!url) return { width: 0, height: 0 };
@@ -97,7 +127,7 @@ async function getImageDimensions(url) {
  *       409:
  *         description: Chapter number đã tồn tại trong series
  */
-router.post("/", authMiddleware, requireMangaka, upload.array("pages", 50), async (req, res, next) => {
+router.post("/", authMiddleware, requireMangaka, uploadPages.array("pages", 50), async (req, res, next) => {
   try {
     // FormData:
     //   series_id          (text)
@@ -134,14 +164,9 @@ router.post("/", authMiddleware, requireMangaka, upload.array("pages", 50), asyn
       return res.status(201).json({ success: true, data: chapter, pages: [], tasks: [] });
     }
 
-    // Upload tất cả ảnh page lên Cloudinary song song
+    const folder = `wdp/chapters/${seriesId}/${Date.now()}`;
     const uploadResults = await Promise.all(
-      req.files.map((f) =>
-        cloudinary.uploader.upload(f.path, {
-          folder: `wdp/chapters/${seriesId}/${Date.now()}`,
-          resource_type: "image",
-        })
-      )
+      req.files.map((f) => uploadToCloudinary(f, folder))
     );
 
     // Tạo chapter
@@ -459,7 +484,7 @@ router.post(
   "/:id/pages",
   authMiddleware,
   requireMangaka,
-  upload.single("page"),
+  uploadChapterPage.single("page"),
   async (req, res, next) => {
     try {
       const chapter = await Chapter.findOne({
@@ -472,11 +497,7 @@ router.post(
         return next(new AppError("No image uploaded", 400));
       }
 
-      // Upload lên Cloudinary
-      const uploadResult = await cloudinary.uploader.upload(req.file.path, {
-        folder: `wdp/chapters/${chapter.series_id}/${chapter._id}`,
-        resource_type: "image",
-      });
+      const uploadResult = req.file; // CloudinaryStorage đã trả kết quả upload sẵn
 
       // Lấy metadata từ body
       const noteText = req.body.note || "";
@@ -492,9 +513,9 @@ router.post(
       const page = await Page.create({
         chapter_id: chapter._id,
         page_number: existingPages + 1,
-        original_image_url: uploadResult.secure_url,
-        width: uploadResult.width || 0,
-        height: uploadResult.height || 0,
+        original_image_url: uploadResult.secure_url || uploadResult.url,
+        width: uploadResult.width || uploadResult.metadata?.width || 0,
+        height: uploadResult.height || uploadResult.metadata?.height || 0,
         uploaded_by: req.user.nameid,
         status: "has_task",
       });

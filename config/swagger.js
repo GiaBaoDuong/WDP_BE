@@ -40,7 +40,6 @@ const options = {
             total_votes: { type: "integer" },
             views_count: { type: "integer" },
             cover_image_url: { type: "string" },
-            category: { type: "string" },
             tags: { type: "array", items: { type: "string" } },
             age_rating: { type: "string", enum: ["All ages", "Teens 13+", "Mature 17+", "Adults Only 18+"] },
             eb_evaluation_id: { type: "string", nullable: true },

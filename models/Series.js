@@ -1,5 +1,15 @@
 const mongoose = require("mongoose");
 
+const GENRES = [
+  "Anime", "Drama", "Josei", "Manhwa", "One Shot", "Shounen", "Webtoons", "Shoujo",
+  "Harem", "Ecchi", "Mature", "Slice of life", "Isekai", "Manga", "Manhua",
+  "Hành Động", "Phiêu Lưu", "Hài Hước", "Võ Thuật", "Huyền Bí", "Lãng Mạn",
+  "Thể Thao", "Học Đường", "Lịch Sử", "Kinh Dị", "Siêu Nhiên", "Bi Kịch",
+  "Trùng Sinh", "Game", "Viễn Tưởng", "Khoa Học", "Truyện Màu", "Người Lớn",
+  "Boylove", "Hầm Ngục", "Săn Bắn", "Ngôn Từ Nhạy Cảm", "Doujinshi", "Bạo Lực",
+  "Ngôn Tình", "Nữ Cường", "Gender Bender", "Murim", "Leo Tháp", "Nấu Ăn",
+];
+
 const seriesSchema = new mongoose.Schema(
   {
     name: {
@@ -9,7 +19,16 @@ const seriesSchema = new mongoose.Schema(
       maxlength: 200,
     },
     description: { type: String, default: "" },
-    genre: { type: String, default: "" },
+    genre: {
+      type: [String],
+      default: [],
+      validate: {
+        validator: function (v) {
+          return v.every((g) => GENRES.includes(g));
+        },
+        message: (props) => `${props.value} is not a valid genre.`,
+      },
+    },
     target_audience: { type: String, default: "" },
     synopsis: { type: String, default: "" },
     author_id: {
@@ -54,3 +73,4 @@ seriesSchema.index({ average_score: -1 });
 
 const Series = mongoose.model("Series", seriesSchema);
 module.exports = Series;
+module.exports.GENRES = GENRES;
