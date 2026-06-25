@@ -513,7 +513,7 @@ router.post(
       const page = await Page.create({
         chapter_id: chapter._id,
         page_number: existingPages + 1,
-        original_image_url: uploadResult.secure_url || uploadResult.url,
+        original_image_url: uploadResult.path || uploadResult.secure_url || uploadResult.url || "",
         width: uploadResult.width || uploadResult.metadata?.width || 0,
         height: uploadResult.height || uploadResult.metadata?.height || 0,
         uploaded_by: req.user.nameid,
