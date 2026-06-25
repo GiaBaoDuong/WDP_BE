@@ -453,9 +453,6 @@ router.post(
  *               synopsis:
  *                 type: string
  *                 description: Series synopsis
- *               category:
- *                 type: string
- *                 description: Thể loại chính
  *               tags:
  *                 type: array
  *                 items: { type: string }
@@ -493,7 +490,7 @@ router.post(
   uploadCover.single("cover"),
   async (req, res, next) => {
     try {
-      const { name, description, genre, target_audience, synopsis, category, tags, age_rating } = req.body;
+      const { name, description, genre, target_audience, synopsis, tags, age_rating } = req.body;
 
       if (!name) {
         return next(new AppError("Series name is required", 400));
@@ -529,7 +526,6 @@ router.post(
         target_audience,
         synopsis,
         cover_image_url,
-        category: category || "",
         tags: Array.isArray(tags) ? tags : (typeof tags === "string" && tags.length ? tags.split(",").map((t) => t.trim()) : []),
         age_rating: age_rating || "All ages",
         author_id: req.user.nameid,
@@ -619,7 +615,7 @@ router.patch("/:id", authMiddleware, requireMangaka, async (req, res, next) => {
 
     const allowedFields = [
       "name", "description", "genre", "target_audience", "synopsis", "cover_image_url",
-      "category", "tags", "age_rating",
+      "tags", "age_rating",
     ];
 
     if (req.body.age_rating !== undefined && req.body.age_rating !== "") {
