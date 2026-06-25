@@ -557,48 +557,116 @@ router.get("/series/:seriesId/profile", authMiddleware, requireTEOrEB, async (re
 // ════════════════════════════════════════════════════════════════════════════
 
 // ─── GET /te-reviews/chapter/:chapterId/pages ────────────────────────────────
+// Query params:
+//   page=N      - Lấy 1 page (mặc định)
+//   all=true    - Lấy tất cả pages cùng lúc
 router.get("/chapter/:chapterId/pages", authMiddleware, requireTE, async (req, res, next) => {
   try {
     const { chapterId } = req.params;
     const pageNum = parseInt(req.query.page) || 1;
-    const limit = 1;
+    const getAll = req.query.all === "true";
 
     const chapter = await Chapter.findById(chapterId).lean();
     if (!chapter) return next(new AppError("Chapter not found", 404));
 
-    const totalPages = await Page.countDocuments({ chapter_id: chapterId });
-    if (totalPages === 0) {
+    const review = await TEReview.findOne({ chapter_id: chapterId }).lean();
+
+    // Lấy tất cả pages
+    const allPages = await Page.find({ chapter_id: chapterId }).sort({ page_number: 1 }).lean();
+
+    if (allPages.length === 0) {
       return res.status(200).json({
         success: true,
-        data: { pages: [], pagination: { page: 1, limit: 1, total: 0, has_prev: false, has_next: false }, annotations: [] },
+        data: {
+          page: null,
+          pages: [],
+          pagination: { page: 1, limit: 1, total: 0, has_prev: false, has_next: false },
+          annotations: [],
+        },
       });
     }
 
-    const safePage = Math.max(1, Math.min(pageNum, totalPages));
-    const skip = (safePage - 1) * limit;
+    // Helper normalize URL - fallback cho nhiều format FE có thể gửi
+    const normalizeUrl = (p) => {
+      return p.final_image_url || p.result_image_url || p.original_image_url ||
+             p.url || p.image_url || p.imageUrl || "";
+    };
 
-    const page = await Page.findOne({ chapter_id: chapterId }).sort({ page_number: 1 }).skip(skip).lean();
+    // Helper format page object
+    const formatPage = (p) => ({
+      _id: p._id,
+      id: p._id,
+      page_number: p.page_number,
+      pageIndex: p.page_number - 1,
+      // URL fields - normalize tất cả các format
+      final_image_url: p.final_image_url || "",
+      result_image_url: p.result_image_url || "",
+      original_image_url: p.original_image_url || "",
+      url: p.url || p.final_image_url || p.result_image_url || p.original_image_url || "",
+      image_url: p.image_url || p.final_image_url || p.result_image_url || p.original_image_url || "",
+      imageUrl: p.imageUrl || p.final_image_url || p.result_image_url || p.original_image_url || "",
+      width: p.width || 0,
+      height: p.height || 0,
+      status: p.status || "raw",
+    });
 
-    const review = await TEReview.findOne({ chapter_id: chapterId }).lean();
-    const pageAnnotations = review
-      ? review.annotations.filter((a) => String(a.page_id) === String(page._id)).sort((a, b) => (a.order || 0) - (b.order || 0))
-      : [];
-
-    const allPages = await Page.find({ chapter_id: chapterId }).select("_id page_number").sort({ page_number: 1 }).lean();
-
+    // Đếm annotations per page
     const pageAnnotationCounts = {};
-    if (review) {
-      for (const p of allPages) {
-        pageAnnotationCounts[String(p._id)] = review.annotations.filter((a) => String(a.page_id) === String(p._id)).length;
-      }
+    for (const p of allPages) {
+      pageAnnotationCounts[String(p._id)] = review
+        ? review.annotations.filter((a) => String(a.page_id) === String(p._id)).length
+        : 0;
     }
+
+    // Lấy tất cả pages
+    if (getAll) {
+      const totalPages = allPages.length;
+      return res.status(200).json({
+        success: true,
+        data: {
+          page: null,
+          pages: allPages.map((p) => ({
+            ...formatPage(p),
+            annotation_count: pageAnnotationCounts[String(p._id)] || 0,
+          })),
+          pagination: { page: 1, limit: totalPages, total: totalPages, has_prev: false, has_next: false },
+          annotations: review ? review.annotations : [],
+        },
+      });
+    }
+
+    // Lấy 1 page
+    const totalPages = allPages.length;
+    const safePage = Math.max(1, Math.min(pageNum, totalPages));
+    const currentPage = allPages[safePage - 1];
+
+    const pageAnnotations = review
+      ? review.annotations.filter((a) => String(a.page_id) === String(currentPage._id))
+          .sort((a, b) => (a.order || 0) - (b.order || 0))
+      : [];
 
     return res.status(200).json({
       success: true,
       data: {
-        page: { _id: page._id, page_number: page.page_number, original_image_url: page.original_image_url, result_image_url: page.result_image_url, final_image_url: page.final_image_url || "", status: page.status },
-        pages: allPages.map((p) => ({ _id: p._id, page_number: p.page_number, annotation_count: pageAnnotationCounts[String(p._id)] || 0 })),
-        pagination: { page: safePage, limit: 1, total: totalPages, has_prev: safePage > 1, has_next: safePage < totalPages, prev_page: safePage > 1 ? safePage - 1 : null, next_page: safePage < totalPages ? safePage + 1 : null },
+        page: {
+          ...formatPage(currentPage),
+          annotations: pageAnnotations,
+        },
+        pages: allPages.map((p) => ({
+          _id: p._id,
+          id: p._id,
+          page_number: p.page_number,
+          annotation_count: pageAnnotationCounts[String(p._id)] || 0,
+        })),
+        pagination: {
+          page: safePage,
+          limit: 1,
+          total: totalPages,
+          has_prev: safePage > 1,
+          has_next: safePage < totalPages,
+          prev_page: safePage > 1 ? safePage - 1 : null,
+          next_page: safePage < totalPages ? safePage + 1 : null,
+        },
         annotations: pageAnnotations,
       },
     });
