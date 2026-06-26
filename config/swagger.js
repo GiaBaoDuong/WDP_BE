@@ -80,7 +80,7 @@ const options = {
                 },
               },
             },
-            revision_source: { type: "string", enum: ["TE", "EB", ""] },
+            revision_source: { type: "string", enum: ["TE", "EB", "Mangaka", ""] },
             is_published: { type: "boolean" },
             published_at: { type: "string", format: "date-time", nullable: true },
             createdAt: { type: "string", format: "date-time" },

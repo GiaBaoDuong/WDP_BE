@@ -73,7 +73,7 @@ const chapterSchema = new mongoose.Schema(
     },
     revision_source: {
       type: String,
-      enum: ["TE", "EB", ""],
+      enum: ["TE", "EB", "Mangaka", ""],
       default: "",
     },
     is_published: { type: Boolean, default: false },
