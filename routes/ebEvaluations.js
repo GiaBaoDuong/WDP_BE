@@ -371,6 +371,9 @@ router.post("/series/:seriesId/evaluate", authMiddleware, requireEB, async (req,
 // - 4.25 – 5     → Duyệt, xuất bản theo tuần (7 ngày)
 // Body: { result: "approved"|"rejected"|"revision", scheduled_publish_at?, notes? }
 //       hoặc { quick_decision, quick_notes?, scheduled_publish_at? }
+// ─── POST /eb-evaluations/chapter/:chapterId/evaluate ──────────────────────
+// EB chấm điểm Series (dùng chapter làm context để lấy series)
+// CHỈ lưu EBEvaluation, KHÔNG đổi chapter/series status
 router.post("/chapter/:chapterId/evaluate", authMiddleware, requireEB, async (req, res, next) => {
   try {
     const { result, notes, quick_decision, quick_notes, scheduled_publish_at } = req.body;
@@ -379,39 +382,59 @@ router.post("/chapter/:chapterId/evaluate", authMiddleware, requireEB, async (re
     if (!chapter) return next(new AppError("Chapter not found or not pending EB", 404));
 
     const series = await Series.findById(chapter.series_id).lean();
+    if (!series) return next(new AppError("Series not found", 404));
 
-    // Lấy evaluation mới nhất để tính council_average
-    const evaluation = await EBEvaluation.findOne({ chapter_id: chapter._id })
-      .sort({ createdAt: -1 })
-      .lean();
-
+    // Tính điểm từ member_scores (nếu có)
     let councilAvg = 0;
-    if (evaluation && evaluation.member_scores && evaluation.member_scores.length > 0) {
+    const isFirstReview = series.status === "draft" || series.status === "submitted";
+    
+    if (isFirstReview && req.body.member_scores) {
       const totals = {};
       EB_CRITERIA_KEYS.forEach((k) => {
-        totals[k] = evaluation.member_scores.reduce((acc, m) => acc + (m.scores?.[k] || 0), 0);
+        totals[k] = req.body.member_scores.reduce((acc, m) => acc + (m.scores?.[k] || 0), 0);
       });
       const avgTotals = {};
       EB_CRITERIA_KEYS.forEach((k) => {
-        avgTotals[k] = Math.round((totals[k] / evaluation.member_scores.length) * 100) / 100;
+        avgTotals[k] = req.body.member_scores.length > 0
+          ? Math.round((totals[k] / req.body.member_scores.length) * 100) / 100
+          : 0;
       });
       councilAvg =
         Math.round(
           (EB_CRITERIA_KEYS.reduce((acc, k) => acc + avgTotals[k], 0) / EB_CRITERIA_KEYS.length) * 100
         ) / 100;
+    } else {
+      // Lấy điểm từ evaluation gần nhất
+      const latestEval = await EBEvaluation.findOne({ series_id: series._id })
+        .sort({ createdAt: -1 })
+        .lean();
+      if (latestEval && latestEval.member_scores && latestEval.member_scores.length > 0) {
+        const totals = {};
+        EB_CRITERIA_KEYS.forEach((k) => {
+          totals[k] = latestEval.member_scores.reduce((acc, m) => acc + (m.scores?.[k] || 0), 0);
+        });
+        const avgTotals = {};
+        EB_CRITERIA_KEYS.forEach((k) => {
+          avgTotals[k] = Math.round((totals[k] / latestEval.member_scores.length) * 100) / 100;
+        });
+        councilAvg =
+          Math.round(
+            (EB_CRITERIA_KEYS.reduce((acc, k) => acc + avgTotals[k], 0) / EB_CRITERIA_KEYS.length) * 100
+          ) / 100;
+      }
     }
 
     const classification = classifyByScore(councilAvg);
     const classificationText = classifyText(councilAvg);
     const finalResult = result || quick_decision || null;
 
-    // Lưu evaluation mới
+    // Lưu evaluation mới - CHỈ lưu điểm, không đổi status
     const newEvaluation = await EBEvaluation.create({
       series_id: chapter.series_id,
       chapter_id: chapter._id,
       evaluated_by: req.user.nameid,
-      first_review: series.status !== "approved",
-      member_scores: evaluation?.member_scores || [],
+      first_review: isFirstReview,
+      member_scores: req.body.member_scores || [],
       quick_decision: quick_decision || null,
       quick_notes: quick_notes || "",
       result: finalResult,
@@ -420,81 +443,16 @@ router.post("/chapter/:chapterId/evaluate", authMiddleware, requireEB, async (re
       status: EB_EVALUATION_STATUS.LOCKED,
     });
 
-    // ─── KHÔNG DUYỆT: < 2.5 hoặc EB chọn rejected/revision ──────────────
-    if (finalResult === "rejected" || finalResult === "revision" || classification === EB_RESULT_LABELS.NOT_PASS) {
-      chapter.status = finalResult === "rejected" ? "rejected" : "EB_revision";
-      chapter.eb_evaluation_id = newEvaluation._id;
-      chapter.revision_notes = notes || quick_notes || "";
-      chapter.revision_annotations = [];
-      chapter.revision_source = "EB";
-      // Không set scheduled_publish_at — không xuất bản
-      await chapter.save();
-
-      await notifyChapterEBRevision(
-        Notification,
-        chapter.submitted_by,
-        chapter,
-        series.name,
-        chapter.revision_notes
-      );
-
-      return res.status(201).json({
-        success: true,
-        data: {
-          chapter,
-          evaluation: newEvaluation,
-          classification,
-          classification_text: classificationText,
-          council_average: councilAvg,
-          action: "revision",
-        },
-      });
-    }
-
-    // ─── DUYỆT: >= 2.5 ─────────────────────────────────────────────────
-    // EB duyệt Chapter → Series được phê duyệt (approved)
-    // Chapter không publish ở đây - TE sẽ publish sau khi Series approved
-
-    // Cập nhật Series thành approved nếu chưa phải approved/published
-    if (!["approved", "published"].includes(series.status)) {
-      await Series.findByIdAndUpdate(chapter.series_id, {
-        status: "approved",
-        is_public: true,
-        publication_schedule: series.publication_schedule || defaultScheduleByScore(councilAvg),
-      });
-    }
-
-    // Cập nhật chapter - đánh dấu đã duyệt bởi EB nhưng chưa publish
-    chapter.status = "approved_by_EB";
-    chapter.eb_evaluation_id = newEvaluation._id;
-    chapter.publication_schedule = series.publication_schedule || defaultScheduleByScore(councilAvg);
-    chapter.revision_notes = "";
-    chapter.revision_annotations = [];
-    chapter.revision_source = "";
-    await chapter.save();
-
-    newEvaluation.publication_schedule = series.publication_schedule || defaultScheduleByScore(councilAvg);
-    await newEvaluation.save();
-
-    // Gửi thông báo cho Mangaka là Series đã được EB duyệt
-    await notifySeriesApproved(
-      Notification,
-      series.author_id,
-      series.name,
-      series.publication_schedule || defaultScheduleByScore(councilAvg)
-    );
-
     return res.status(201).json({
       success: true,
       data: {
-        chapter,
         evaluation: newEvaluation,
         classification,
         classification_text: classificationText,
         council_average: councilAvg,
-        action: "series_approved",
-        message: "Series đã được EB duyệt. TE sẽ publish Chapter sau.",
-        publication_schedule: series.publication_schedule || defaultScheduleByScore(councilAvg),
+        message: councilAvg >= 2.5 || finalResult === "approved" 
+          ? "Điểm đã được lưu. Series đủ điều kiện xuất bản." 
+          : "Điểm thấp hơn 2.5. Series chưa đủ điều kiện xuất bản.",
       },
     });
   } catch (error) {
@@ -712,18 +670,50 @@ router.post("/votes/confirm", authMiddleware, requireEB, async (req, res, next) 
 });
 
 // ─── POST /eb-evaluations/chapter/:chapterId/confirm-publish ─────────────────
-// EB chọn ngày và xác nhận xuất bản Series sau khi chấm điểm
+// EB xác nhận xuất bản Series sau khi đã chấm điểm
+// Kiểm tra điểm >= 2.5 trước khi cho publish
 router.post("/chapter/:chapterId/confirm-publish", authMiddleware, requireEB, async (req, res, next) => {
   try {
     const { scheduled_publish_at } = req.body;
 
-    const chapter = await Chapter.findOne({ _id: req.params.chapterId, status: "approved_by_EB" });
-    if (!chapter) return next(new AppError("Chapter not found or not approved by EB", 404));
+    const chapter = await Chapter.findOne({ _id: req.params.chapterId });
+    if (!chapter) return next(new AppError("Chapter not found", 404));
 
     const series = await Series.findById(chapter.series_id);
     if (!series) return next(new AppError("Series not found", 404));
 
-    // Cập nhật Series thành published
+    // Lấy evaluation mới nhất để kiểm tra điểm
+    const latestEval = await EBEvaluation.findOne({ series_id: series._id })
+      .sort({ createdAt: -1 })
+      .lean();
+    
+    if (!latestEval) {
+      return next(new AppError("Chưa có đánh giá nào. Vui lòng chấm điểm trước.", 400));
+    }
+
+    // Tính council_average từ member_scores
+    let councilAvg = 0;
+    if (latestEval.member_scores && latestEval.member_scores.length > 0) {
+      const totals = {};
+      EB_CRITERIA_KEYS.forEach((k) => {
+        totals[k] = latestEval.member_scores.reduce((acc, m) => acc + (m.scores?.[k] || 0), 0);
+      });
+      const avgTotals = {};
+      EB_CRITERIA_KEYS.forEach((k) => {
+        avgTotals[k] = Math.round((totals[k] / latestEval.member_scores.length) * 100) / 100;
+      });
+      councilAvg =
+        Math.round(
+          (EB_CRITERIA_KEYS.reduce((acc, k) => acc + avgTotals[k], 0) / EB_CRITERIA_KEYS.length) * 100
+        ) / 100;
+    }
+
+    // Kiểm tra điểm >= 2.5 mới cho publish
+    if (councilAvg < 2.5) {
+      return next(new AppError(`Điểm ${councilAvg} thấp hơn 2.5. Series chưa đủ điều kiện xuất bản.`, 400));
+    }
+
+    // Cập nhật Series thành published - KHÔNG đổi chapter status
     series.status = "published";
     series.publication_schedule = scheduled_publish_at || series.publication_schedule;
     await series.save();
@@ -740,13 +730,8 @@ router.post("/chapter/:chapterId/confirm-publish", authMiddleware, requireEB, as
           status: series.status,
           publication_schedule: series.publication_schedule,
         },
-        chapter: {
-          _id: chapter._id,
-          chapter_number: chapter.chapter_number,
-          title: chapter.title,
-          status: chapter.status,
-        },
-        message: "Series đã được xuất bản thành công. Chapter sẽ được xuất bản sau.",
+        council_average: councilAvg,
+        message: "Series đã được xuất bản thành công.",
       },
     });
   } catch (error) {
