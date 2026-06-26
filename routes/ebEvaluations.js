@@ -14,6 +14,7 @@ const {
   notifyChapterEBRevision,
   notifyChapterScheduledPublish,
   notifyChapterPublishConfirmed,
+  notifySeriesPublished,
 } = require("../services/notificationService");
 const {
   EB_CRITERIA_KEYS,
@@ -705,6 +706,49 @@ router.post("/votes/confirm", authMiddleware, requireEB, async (req, res, next) 
     });
 
     return res.status(200).json({ success: true, data: results });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ─── POST /eb-evaluations/chapter/:chapterId/confirm-publish ─────────────────
+// EB chọn ngày và xác nhận xuất bản Series sau khi chấm điểm
+router.post("/chapter/:chapterId/confirm-publish", authMiddleware, requireEB, async (req, res, next) => {
+  try {
+    const { scheduled_publish_at } = req.body;
+
+    const chapter = await Chapter.findOne({ _id: req.params.chapterId, status: "approved_by_EB" });
+    if (!chapter) return next(new AppError("Chapter not found or not approved by EB", 404));
+
+    const series = await Series.findById(chapter.series_id);
+    if (!series) return next(new AppError("Series not found", 404));
+
+    // Cập nhật Series thành published
+    series.status = "published";
+    series.publication_schedule = scheduled_publish_at || series.publication_schedule;
+    await series.save();
+
+    // Gửi thông báo cho Mangaka
+    await notifySeriesPublished(Notification, series.author_id, series, scheduled_publish_at);
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        series: {
+          _id: series._id,
+          name: series.name,
+          status: series.status,
+          publication_schedule: series.publication_schedule,
+        },
+        chapter: {
+          _id: chapter._id,
+          chapter_number: chapter.chapter_number,
+          title: chapter.title,
+          status: chapter.status,
+        },
+        message: "Series đã được xuất bản thành công. Chapter sẽ được xuất bản sau.",
+      },
+    });
   } catch (error) {
     next(error);
   }
