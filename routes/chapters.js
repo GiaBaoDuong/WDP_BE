@@ -413,6 +413,19 @@ router.patch("/:id", authMiddleware, requireMangaka, async (req, res, next) => {
           if (!page || !Array.isArray(annotations)) continue;
 
           for (const ann of annotations) {
+            // Map FE work_type → BE error_type enum
+            const workTypeToErrorType = {
+              background: "art",
+              shading: "art",
+              effects: "art",
+              details: "art",
+              fill: "art",
+              content: "content",
+              dialogue: "dialogue",
+              script: "script",
+              other: "other",
+            };
+
             // Transform FE format → Chapter schema format
             const chapterAnn = {
               page_id: page._id,
@@ -423,7 +436,7 @@ router.patch("/:id", authMiddleware, requireMangaka, async (req, res, next) => {
                 height: Number(ann.h ?? ann.height ?? ann.region?.height ?? 100),
               },
               content: ann.text || ann.content || "",
-              error_type: ann.error_type || ann.taskType || "other",
+              error_type: ann.error_type || workTypeToErrorType[ann.taskType] || "other",
             };
             chapterAnnotations.push(chapterAnn);
 
