@@ -428,13 +428,34 @@ router.post("/chapter/:chapterId/evaluate", authMiddleware, requireEB, async (re
     const classificationText = classifyText(councilAvg);
     const finalResult = result || quick_decision || null;
 
+    // Transform member_scores từ format FE sang format model
+    let transformedMemberScores = [];
+    if (req.body.member_scores && Array.isArray(req.body.member_scores)) {
+      transformedMemberScores = req.body.member_scores.map((m) => {
+        // Tính total_score từ 5 tiêu chí nếu có scores
+        let totalScore = m.total_score || 0;
+        if (m.scores && Object.keys(m.scores).length > 0 && totalScore === 0) {
+          totalScore = EB_CRITERIA_KEYS.reduce((acc, k) => acc + (m.scores[k] || 0), 0);
+        }
+        return {
+          member_name: m.member_name || m.member_id || "Member",
+          member_id: null, // FE gửi string, không phải ObjectId
+          scores: m.scores || {},
+          comments: m.comments || {},
+          overall_comment: m.overall_comment || "",
+          total_score: totalScore,
+          notes: m.notes || "",
+        };
+      });
+    }
+
     // Lưu evaluation mới - CHỈ lưu điểm, không đổi status
     const newEvaluation = await EBEvaluation.create({
       series_id: chapter.series_id,
       chapter_id: chapter._id,
       evaluated_by: req.user.nameid,
       first_review: isFirstReview,
-      member_scores: req.body.member_scores || [],
+      member_scores: transformedMemberScores,
       quick_decision: quick_decision || null,
       quick_notes: quick_notes || "",
       result: finalResult,
