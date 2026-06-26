@@ -428,7 +428,8 @@ router.patch("/:id", authMiddleware, requireMangaka, async (req, res, next) => {
             chapterAnnotations.push(chapterAnn);
 
             // Tạo Task cho annotation
-            const assignedTo = ann.assigned_to || req.body.assigned_to || null;
+            // Ưu tiên: ann.assigned_to (per-note) → req.body.assigned_to (top-level) → chapter.assistant_id (từ API /assign)
+            const assignedTo = ann.assigned_to || req.body.assigned_to || chapter.assistant_id || null;
             if (assignedTo) {
               const task = await Task.create({
                 page_id: page._id,
@@ -459,7 +460,7 @@ router.patch("/:id", authMiddleware, requireMangaka, async (req, res, next) => {
           if (existingTask) continue;
 
           const note = await PageNote.findOne({ page_id: page._id }).lean();
-          const assignedTo = req.body.assigned_to || null;
+          const assignedTo = req.body.assigned_to || chapter.assistant_id || null;
 
           if (note && assignedTo) {
             const task = await Task.create({
