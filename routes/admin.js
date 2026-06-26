@@ -1328,7 +1328,7 @@ router.patch("/manga/series/:id/status", async (req, res, next) => {
 router.patch("/manga/chapters/:id/status", async (req, res, next) => {
   try {
     const { status } = req.body;
-    const validStatuses = ["draft", "pending_assistant", "pending_TE", "TE_revision", "pending_EB", "EB_revision", "published"];
+    const validStatuses = ["draft", "pending_assistant", "pending_TE", "TE_revision", "pending_EB", "EB_revision", "approved_by_EB", "published"];
     if (!validStatuses.includes(status)) {
       return next(new AppError(`Status must be one of: ${validStatuses.join(", ")}`, 400));
     }

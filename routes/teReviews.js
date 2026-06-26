@@ -24,18 +24,18 @@ const {
 } = require("../services/notificationService");
 
 // ─── GET /te-reviews/pending ─────────────────────────────────────────────────
-// TE chỉ thấy chapter được gán cho mình HOẶC chưa ai gán
+// TE chỉ thấy chapter được gán cho mình HOẶC chưa ai gán, ở trạng thái pending_TE hoặc approved_by_EB
 router.get("/pending", authMiddleware, requireTE, async (req, res, next) => {
   try {
     const chapters = await Chapter.find({
-      status: CHAPTER_STATUS.PENDING_TE,
+      status: { $in: [CHAPTER_STATUS.PENDING_TE, CHAPTER_STATUS.APPROVED_BY_EB] },
       $or: [
         { te_id: req.user.nameid },
         { te_id: null },
       ],
     })
       .populate("submitted_by", "username full_name phoneNumber")
-      .populate("series_id", "name")
+      .populate("series_id", "name status")
       .sort({ te_assigned_at: 1, updatedAt: 1 })
       .lean();
 
@@ -104,10 +104,10 @@ router.get("/dashboard", authMiddleware, requireTE, async (req, res, next) => {
     const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
 
     const pendingChapters = await Chapter.find({
-      status: CHAPTER_STATUS.PENDING_TE,
+      status: { $in: [CHAPTER_STATUS.PENDING_TE, CHAPTER_STATUS.APPROVED_BY_EB] },
       $or: [{ te_id: req.user.nameid }, { te_id: null }],
     })
-      .select("_id series_id chapter_number title submitted_by updatedAt te_assigned_at")
+      .select("_id series_id chapter_number title submitted_by updatedAt te_assigned_at status")
       .populate("series_id", "name publication_schedule")
       .populate("submitted_by", "username full_name phoneNumber")
       .lean();
@@ -960,13 +960,14 @@ router.post("/chapter/:chapterId/te-action", authMiddleware, requireTE, async (r
     }
 
     if (action === "approve") {
-      // Kiểm tra series đã publish chưa
+      // Kiểm tra series đã approved bởi EB chưa
       const series = await Series.findById(chapter.series_id).lean();
-      const seriesPublished = series && series.status === "published";
+      const seriesApproved = series && ["approved", "published"].includes(series.status);
 
-      if (seriesPublished) {
-        // Series đã publish → TE duyệt xong → Publish trực tiếp (không qua EB)
+      if (seriesApproved) {
+        // Series đã approved/published → TE duyệt xong → Publish trực tiếp
         chapter.status = CHAPTER_STATUS.PUBLISHED;
+        chapter.is_published = true;
         chapter.published_at = new Date();
         chapter.revision_notes = "";
         chapter.revision_annotations = [];
@@ -979,13 +980,20 @@ router.post("/chapter/:chapterId/te-action", authMiddleware, requireTE, async (r
           await review.save();
         }
 
+        await notifyChapterTEPublished(
+          Notification,
+          chapter.submitted_by,
+          chapter,
+          series.name
+        );
+
         return res.status(200).json({
           success: true,
           message: "Chapter đã được publish.",
           data: chapter,
         });
       } else {
-        // Series chưa publish → gửi EB duyệt (luồng cũ)
+        // Series chưa approved → gửi EB duyệt (chờ EB approve Series)
         chapter.status = CHAPTER_STATUS.PENDING_EB;
         chapter.revision_notes = "";
         chapter.revision_annotations = [];
@@ -1005,7 +1013,7 @@ router.post("/chapter/:chapterId/te-action", authMiddleware, requireTE, async (r
 
         return res.status(200).json({
           success: true,
-          message: "Chapter đã được gửi lên EB.",
+          message: "Chapter đã được gửi lên EB để duyệt Series.",
           data: chapter,
         });
       }
@@ -1048,6 +1056,58 @@ router.post("/chapter/:chapterId/te-action", authMiddleware, requireTE, async (r
         data: chapter,
       });
     }
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ─── POST /te-reviews/chapter/:chapterId/publish ─────────────────────────────
+// TE publish chapter trực tiếp khi Series đã approved bởi EB
+router.post("/chapter/:chapterId/publish", authMiddleware, requireTE, async (req, res, next) => {
+  try {
+    const { chapterId } = req.params;
+
+    const chapter = await Chapter.findById(chapterId);
+    if (!chapter) return next(new AppError("Chapter not found", 404));
+
+    // Chỉ cho phép publish chapter ở trạng thái approved_by_EB
+    if (chapter.status !== CHAPTER_STATUS.APPROVED_BY_EB) {
+      return next(new AppError("Chapter không ở trạng thái sẵn sàng publish. Vui lòng duyệt chapter trước.", 400));
+    }
+
+    // Kiểm tra series đã approved bởi EB chưa
+    const series = await Series.findById(chapter.series_id).lean();
+    if (!series || !["approved", "published"].includes(series.status)) {
+      return next(new AppError("Series chưa được EB duyệt", 400));
+    }
+
+    // Publish chapter
+    chapter.status = CHAPTER_STATUS.PUBLISHED;
+    chapter.is_published = true;
+    chapter.published_at = new Date();
+    chapter.revision_notes = "";
+    chapter.revision_annotations = [];
+    chapter.revision_source = "";
+    await chapter.save();
+
+    const review = await TEReview.findOne({ chapter_id: chapterId });
+    if (review) {
+      review.decision = TE_DECISION.APPROVED_PUBLISH;
+      await review.save();
+    }
+
+    await notifyChapterTEPublished(
+      Notification,
+      chapter.submitted_by,
+      chapter,
+      series.name
+    );
+
+    return res.status(200).json({
+      success: true,
+      message: "Chapter đã được publish thành công.",
+      data: chapter,
+    });
   } catch (error) {
     next(error);
   }

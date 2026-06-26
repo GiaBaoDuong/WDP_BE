@@ -451,116 +451,51 @@ router.post("/chapter/:chapterId/evaluate", authMiddleware, requireEB, async (re
     }
 
     // ─── DUYỆT: >= 2.5 ─────────────────────────────────────────────────
-    // Xác định schedule: EB chọn date > dùng schedule từ series | ngược lại dùng mặc định theo điểm
-    const hasScheduleDate = scheduled_publish_at && new Date(scheduled_publish_at) > new Date();
-    const publicationSchedule = hasScheduleDate
-      ? (series.publication_schedule || defaultScheduleByScore(councilAvg))
-      : defaultScheduleByScore(councilAvg);
-    const durationDays = durationDaysBySchedule(publicationSchedule);
+    // EB duyệt Chapter → Series được phê duyệt (approved)
+    // Chapter không publish ở đây - TE sẽ publish sau khi Series approved
 
-    chapter.eb_evaluation_id = newEvaluation._id;
-    chapter.publication_schedule = publicationSchedule;
-    chapter.publication_duration_days = durationDays;
-
-    if (hasScheduleDate) {
-      // Hẹn giờ xuất bản: chapter chờ đến ngày
-      chapter.status = "pending_EB"; // giữ nguyên trạng thái
-      chapter.is_scheduled = true;
-      chapter.scheduled_publish_at = new Date(scheduled_publish_at);
-      chapter.is_published = false;
-      chapter.published_at = null;
-      await chapter.save();
-
-      // Cập nhật lại series schedule nếu chưa có
-      if (!series.publication_schedule) {
-        await Series.findByIdAndUpdate(series._id, {
-          publication_schedule: publicationSchedule,
-        });
-      }
-
-      // Đánh dấu evaluation là scheduled
-      newEvaluation.publication_schedule = publicationSchedule;
-      newEvaluation.scheduled_publish_at = new Date(scheduled_publish_at);
-      await newEvaluation.save();
-
-      await notifyChapterScheduledPublish(
-        Notification,
-        chapter.submitted_by,
-        chapter,
-        series.name,
-        scheduled_publish_at,
-        publicationSchedule,
-        durationDays
-      );
-
-      return res.status(201).json({
-        success: true,
-        data: {
-          chapter,
-          evaluation: newEvaluation,
-          classification,
-          classification_text: classificationText,
-          council_average: councilAvg,
-          action: "scheduled",
-          scheduled_publish_at,
-          publication_schedule: publicationSchedule,
-          publication_duration_days: durationDays,
-        },
-      });
-    } else {
-      // Xuất bản ngay lập tức (không chọn ngày hoặc ngày đã qua)
-      chapter.status = "published";
-      chapter.is_published = true;
-      chapter.published_at = new Date();
-      chapter.is_scheduled = false;
-      chapter.scheduled_publish_at = null;
-      chapter.revision_notes = "";
-      chapter.revision_annotations = [];
-      chapter.revision_source = "";
-      await chapter.save();
-
-      newEvaluation.publication_schedule = publicationSchedule;
-      await newEvaluation.save();
-
-      // Kiểm tra tất cả chapters đã published
-      const unpublished = await Chapter.countDocuments({
-        series_id: chapter.series_id,
-        is_published: false,
-      });
-      if (unpublished === 0) {
-        await Series.findByIdAndUpdate(chapter.series_id, {
-          status: "published",
-          publication_schedule: publicationSchedule,
-        });
-      } else {
-        await Series.findByIdAndUpdate(chapter.series_id, {
-          publication_schedule: publicationSchedule,
-        });
-      }
-
-      await notifyChapterPublishConfirmed(
-        Notification,
-        chapter.submitted_by,
-        chapter,
-        series.name,
-        publicationSchedule,
-        durationDays
-      );
-
-      return res.status(201).json({
-        success: true,
-        data: {
-          chapter,
-          evaluation: newEvaluation,
-          classification,
-          classification_text: classificationText,
-          council_average: councilAvg,
-          action: "published",
-          publication_schedule: publicationSchedule,
-          publication_duration_days: durationDays,
-        },
+    // Cập nhật Series thành approved nếu chưa phải approved/published
+    if (!["approved", "published"].includes(series.status)) {
+      await Series.findByIdAndUpdate(chapter.series_id, {
+        status: "approved",
+        is_public: true,
+        publication_schedule: series.publication_schedule || defaultScheduleByScore(councilAvg),
       });
     }
+
+    // Cập nhật chapter - đánh dấu đã duyệt bởi EB nhưng chưa publish
+    chapter.status = "approved_by_EB";
+    chapter.eb_evaluation_id = newEvaluation._id;
+    chapter.publication_schedule = series.publication_schedule || defaultScheduleByScore(councilAvg);
+    chapter.revision_notes = "";
+    chapter.revision_annotations = [];
+    chapter.revision_source = "";
+    await chapter.save();
+
+    newEvaluation.publication_schedule = series.publication_schedule || defaultScheduleByScore(councilAvg);
+    await newEvaluation.save();
+
+    // Gửi thông báo cho Mangaka là Series đã được EB duyệt
+    await notifySeriesApproved(
+      Notification,
+      series.author_id,
+      series.name,
+      series.publication_schedule || defaultScheduleByScore(councilAvg)
+    );
+
+    return res.status(201).json({
+      success: true,
+      data: {
+        chapter,
+        evaluation: newEvaluation,
+        classification,
+        classification_text: classificationText,
+        council_average: councilAvg,
+        action: "series_approved",
+        message: "Series đã được EB duyệt. TE sẽ publish Chapter sau.",
+        publication_schedule: series.publication_schedule || defaultScheduleByScore(councilAvg),
+      },
+    });
   } catch (error) {
     next(error);
   }

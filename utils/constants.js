@@ -27,6 +27,7 @@ const CHAPTER_STATUS = {
   TE_REVISION: "TE_revision",        // TE yêu cầu chỉnh sửa
   PENDING_EB: "pending_EB",         // TE duyệt, chờ EB
   EB_REVISION: "EB_revision",       // EB yêu cầu chỉnh sửa
+  APPROVED_BY_EB: "approved_by_EB", // EB duyệt Series, chờ TE publish
   PUBLISHED: "published",            // Đã xuất bản
   REVIEW: "review",                  // Mangaka đang duyệt
 };

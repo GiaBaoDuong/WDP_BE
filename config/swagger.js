@@ -54,7 +54,7 @@ const options = {
             series_id: { type: "string" },
             chapter_number: { type: "integer" },
             title: { type: "string" },
-            status: { type: "string", enum: ["draft", "pending_assistant", "submitted_by_assistant", "pending_TE", "TE_revision", "pending_EB", "EB_revision", "published", "review"] },
+            status: { type: "string", enum: ["draft", "pending_assistant", "submitted_by_assistant", "pending_TE", "TE_revision", "pending_EB", "EB_revision", "approved_by_EB", "published", "review"] },
             submitted_by: { type: "string" },
             te_review_id: { type: "string", nullable: true },
             eb_evaluation_id: { type: "string", nullable: true },

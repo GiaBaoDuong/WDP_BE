@@ -19,6 +19,7 @@ const chapterSchema = new mongoose.Schema(
         "TE_revision",
         "pending_EB",
         "EB_revision",
+        "approved_by_EB",
         "published",
         "review",
       ],
