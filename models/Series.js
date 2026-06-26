@@ -46,6 +46,7 @@ const seriesSchema = new mongoose.Schema(
       enum: ["weekly", "monthly", null],
       default: null,
     },
+    scheduled_publish_at: { type: Date, default: null },
     is_public: { type: Boolean, default: false },
     average_score: { type: Number, default: 0, min: 0, max: 10 },
     total_votes: { type: Number, default: 0 },

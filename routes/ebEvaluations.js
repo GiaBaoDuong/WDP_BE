@@ -695,7 +695,7 @@ router.post("/votes/confirm", authMiddleware, requireEB, async (req, res, next) 
 // Kiểm tra điểm >= 2.5 trước khi cho publish
 router.post("/chapter/:chapterId/confirm-publish", authMiddleware, requireEB, async (req, res, next) => {
   try {
-    const { scheduled_publish_at } = req.body;
+    const { scheduled_publish_at, publication_schedule } = req.body;
 
     const chapter = await Chapter.findOne({ _id: req.params.chapterId });
     if (!chapter) return next(new AppError("Chapter not found", 404));
@@ -707,7 +707,7 @@ router.post("/chapter/:chapterId/confirm-publish", authMiddleware, requireEB, as
     const latestEval = await EBEvaluation.findOne({ series_id: series._id })
       .sort({ createdAt: -1 })
       .lean();
-    
+
     if (!latestEval) {
       return next(new AppError("Chưa có đánh giá nào. Vui lòng chấm điểm trước.", 400));
     }
@@ -736,7 +736,14 @@ router.post("/chapter/:chapterId/confirm-publish", authMiddleware, requireEB, as
 
     // Cập nhật Series thành published - KHÔNG đổi chapter status
     series.status = "published";
-    series.publication_schedule = scheduled_publish_at || series.publication_schedule;
+    // publication_schedule chỉ nhận weekly/monthly
+    if (publication_schedule && ["weekly", "monthly"].includes(publication_schedule)) {
+      series.publication_schedule = publication_schedule;
+    }
+    // scheduled_publish_at là ngày cụ thể - lưu vào field khác nếu có
+    if (scheduled_publish_at) {
+      series.scheduled_publish_at = new Date(scheduled_publish_at);
+    }
     await series.save();
 
     // Gửi thông báo cho Mangaka
@@ -750,6 +757,7 @@ router.post("/chapter/:chapterId/confirm-publish", authMiddleware, requireEB, as
           name: series.name,
           status: series.status,
           publication_schedule: series.publication_schedule,
+          scheduled_publish_at: series.scheduled_publish_at,
         },
         council_average: councilAvg,
         message: "Series đã được xuất bản thành công.",
