@@ -384,14 +384,20 @@ router.post("/series-review/:seriesId/submit", authMiddleware, requireTE, async 
         te_id: req.user.nameid,
       }).lean();
 
-      for (const ch of chaptersToEB) {
-        ch.status = CHAPTER_STATUS.PENDING_EB;
-        ch.revision_notes = "";
-        ch.revision_annotations = [];
-        ch.revision_source = "";
-        ch.is_published = false;
-        await ch.save();
-      }
+      await Chapter.updateMany(
+        {
+          series_id: seriesId,
+          status: CHAPTER_STATUS.PENDING_TE,
+          te_id: req.user.nameid,
+        },
+        {
+          status: CHAPTER_STATUS.PENDING_EB,
+          revision_notes: "",
+          revision_annotations: [],
+          revision_source: "",
+          is_published: false,
+        }
+      );
 
       const ebUsers = await require("../models/User").find({ role: ROLES.EB }).lean();
       for (const eb of ebUsers) {
