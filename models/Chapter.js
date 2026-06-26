@@ -99,18 +99,6 @@ const chapterSchema = new mongoose.Schema(
       }],
       default: [],
     },
-    // Lịch hẹn xuất bản - khi EB duyệt và chọn ngày cụ thể
-    scheduled_publish_at: { type: Date, default: null },
-    // Thời hạn hiển thị: 7 ngày (weekly) hoặc 30 ngày (monthly)
-    publication_duration_days: { type: Number, default: null },
-    // Lịch xuất bản từ series: "weekly" | "monthly"
-    publication_schedule: {
-      type: String,
-      enum: ["weekly", "monthly", null],
-      default: null,
-    },
-    // Trạng thái chờ hẹn giờ (chưa đến ngày publish)
-    is_scheduled: { type: Boolean, default: false },
   },
   { timestamps: true }
 );

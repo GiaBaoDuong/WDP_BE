@@ -36,9 +36,4 @@ seriesReviewSchema.set("toObject", { virtuals: true });
 
 const SeriesReview = mongoose.model("SeriesReview", seriesReviewSchema);
 
-module.exports = {
-  SeriesReview,
-};
-module.exports.SERIES_TE_CRITERIA = null;
-module.exports.SERIES_TE_CRITERIA_LABELS = null;
-module.exports.SERIES_TE_CRITERIA_KEYS = null;
+module.exports = SeriesReview;

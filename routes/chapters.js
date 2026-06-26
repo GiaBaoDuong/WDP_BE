@@ -150,6 +150,17 @@ router.post("/", authMiddleware, requireMangaka, uploadPages.array("pages", 50),
     const series = await Series.findOne({ _id: seriesId, author_id: req.user.nameid });
     if (!series) return next(new AppError("Series not found or unauthorized", 404));
 
+    // Nếu series đã publish → bắt buộc phải có assistant (assigned_to ở pages)
+    if (series.status === "published") {
+      const hasAnyAssistant = req.files && req.files.some((f) => {
+        const i = req.files.indexOf(f);
+        return req.body[`pages[${i}].assigned_to`];
+      });
+      if (!hasAnyAssistant) {
+        return next(new AppError("Series đã publish, bắt buộc phải assign assistant cho chapter", 400));
+      }
+    }
+
     const dup = await Chapter.findOne({ series_id: seriesId, chapter_number: Number(chapterNumber) });
     if (dup) return next(new AppError("Chapter number already exists", 409));
 
@@ -376,7 +387,7 @@ router.patch("/:id", authMiddleware, requireMangaka, async (req, res, next) => {
       return next(new AppError("Cannot edit published chapter", 400));
     }
 
-    const { title, revision_notes, action } = req.body;
+    const { title, revision_notes, revision_annotations, action } = req.body;
 
     // ─── "Gửi cả chapter" ───────────────────────────────────────────────────
     if (action === "submit") {
@@ -386,36 +397,97 @@ router.patch("/:id", authMiddleware, requireMangaka, async (req, res, next) => {
         return next(new AppError("No pages to submit", 400));
       }
 
-      // Tạo task cho mỗi page (nếu chưa có task)
+      // Tạo map page_index → page doc để lookup nhanh
+      const pageIndexMap = {};
+      pages.forEach((p, idx) => {
+        pageIndexMap[`page_${idx}`] = p;
+      });
+
+      // Tạo task cho mỗi annotation trong revision_annotations
       const createdTasks = [];
-      for (const page of pages) {
-        const existingTask = await Task.findOne({ page_id: page._id });
-        if (existingTask) continue;
+      const chapterAnnotations = []; // Lưu vào chapter.revision_annotations
 
-        const note = await PageNote.findOne({ page_id: page._id }).lean();
-        const assignedTo = req.body.assigned_to || null;
+      if (revision_annotations && typeof revision_annotations === "object") {
+        for (const [pageKey, annotations] of Object.entries(revision_annotations)) {
+          const page = pageIndexMap[pageKey];
+          if (!page || !Array.isArray(annotations)) continue;
 
-        const task = await Task.create({
-          page_id: page._id,
-          chapter_id: chapter._id,
-          assigned_by: req.user.nameid,
-          assigned_to: assignedTo,
-          work_type: note?.taskType || "other",
-          region: {
-            x: note?.x ?? 0,
-            y: note?.y ?? 0,
-            width: note?.w ?? 100,
-            height: note?.h ?? 100,
-          },
-          description: note?.text || "",
-          note_ids: note ? [note._id] : [],
-          status: "pending",
-        });
-        createdTasks.push(task);
+          for (const ann of annotations) {
+            // Transform FE format → Chapter schema format
+            const chapterAnn = {
+              page_id: page._id,
+              region: {
+                x: Number(ann.x ?? ann.region?.x ?? 0),
+                y: Number(ann.y ?? ann.region?.y ?? 0),
+                width: Number(ann.w ?? ann.width ?? ann.region?.width ?? 100),
+                height: Number(ann.h ?? ann.height ?? ann.region?.height ?? 100),
+              },
+              content: ann.text || ann.content || "",
+              error_type: ann.error_type || ann.taskType || "other",
+            };
+            chapterAnnotations.push(chapterAnn);
+
+            // Tạo Task cho annotation
+            const assignedTo = ann.assigned_to || req.body.assigned_to || null;
+            if (assignedTo) {
+              const task = await Task.create({
+                page_id: page._id,
+                chapter_id: chapter._id,
+                assigned_by: req.user.nameid,
+                assigned_to: assignedTo,
+                work_type: ann.taskType || ann.work_type || "other",
+                region: {
+                  x: chapterAnn.region.x,
+                  y: chapterAnn.region.y,
+                  width: chapterAnn.region.width,
+                  height: chapterAnn.region.height,
+                },
+                description: ann.text || ann.content || "",
+                revision_note: revision_notes || "",
+                status: "pending",
+              });
+              createdTasks.push(task);
+            }
+          }
+        }
+      }
+
+      // Fallback: nếu không có revision_annotations, tạo task từ PageNote cũ
+      if (chapterAnnotations.length === 0) {
+        for (const page of pages) {
+          const existingTask = await Task.findOne({ page_id: page._id });
+          if (existingTask) continue;
+
+          const note = await PageNote.findOne({ page_id: page._id }).lean();
+          const assignedTo = req.body.assigned_to || null;
+
+          if (note && assignedTo) {
+            const task = await Task.create({
+              page_id: page._id,
+              chapter_id: chapter._id,
+              assigned_by: req.user.nameid,
+              assigned_to: assignedTo,
+              work_type: note.taskType || "other",
+              region: {
+                x: note.x ?? 0,
+                y: note.y ?? 0,
+                width: note.w ?? note.width ?? 100,
+                height: note.h ?? note.height ?? 100,
+              },
+              description: note.text || "",
+              revision_note: revision_notes || "",
+              note_ids: [note._id],
+              status: "pending",
+            });
+            createdTasks.push(task);
+          }
+        }
       }
 
       chapter.status = "pending_assistant";
       if (revision_notes !== undefined) chapter.revision_notes = revision_notes;
+      chapter.revision_annotations = chapterAnnotations;
+      chapter.revision_source = "Mangaka";
       await chapter.save();
 
       return res.status(200).json({

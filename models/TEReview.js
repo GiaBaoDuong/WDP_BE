@@ -53,9 +53,4 @@ teReviewSchema.set("toObject", { virtuals: true });
 
 const TEReview = mongoose.model("TEReview", teReviewSchema);
 
-module.exports = {
-  TEReview,
-};
-module.exports.TE_CRITERIA = null;
-module.exports.TE_CRITERIA_LABELS = null;
-module.exports.TE_CRITERIA_KEYS = null;
+module.exports = TEReview;

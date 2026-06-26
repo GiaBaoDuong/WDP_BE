@@ -960,29 +960,55 @@ router.post("/chapter/:chapterId/te-action", authMiddleware, requireTE, async (r
     }
 
     if (action === "approve") {
-      chapter.status = CHAPTER_STATUS.PENDING_EB;
-      chapter.revision_notes = "";
-      chapter.revision_annotations = [];
-      chapter.revision_source = "";
-      await chapter.save();
-
-      const review = await TEReview.findOne({ chapter_id: chapterId });
-      if (review) {
-        review.decision = TE_DECISION.APPROVED;
-        await review.save();
-      }
-
-      const ebUsers = await require("../models/User").find({ role: ROLES.EB }).lean();
+      // Kiểm tra series đã publish chưa
       const series = await Series.findById(chapter.series_id).lean();
-      for (const eb of ebUsers) {
-        await notifyChapterToEB(Notification, eb._id, chapter, series ? series.name : "");
-      }
+      const seriesPublished = series && series.status === "published";
 
-      return res.status(200).json({
-        success: true,
-        message: "Chapter đã được gửi lên EB.",
-        data: chapter,
-      });
+      if (seriesPublished) {
+        // Series đã publish → TE duyệt xong → Publish trực tiếp (không qua EB)
+        chapter.status = CHAPTER_STATUS.PUBLISHED;
+        chapter.published_at = new Date();
+        chapter.revision_notes = "";
+        chapter.revision_annotations = [];
+        chapter.revision_source = "";
+        await chapter.save();
+
+        const review = await TEReview.findOne({ chapter_id: chapterId });
+        if (review) {
+          review.decision = TE_DECISION.APPROVED;
+          await review.save();
+        }
+
+        return res.status(200).json({
+          success: true,
+          message: "Chapter đã được publish.",
+          data: chapter,
+        });
+      } else {
+        // Series chưa publish → gửi EB duyệt (luồng cũ)
+        chapter.status = CHAPTER_STATUS.PENDING_EB;
+        chapter.revision_notes = "";
+        chapter.revision_annotations = [];
+        chapter.revision_source = "";
+        await chapter.save();
+
+        const review = await TEReview.findOne({ chapter_id: chapterId });
+        if (review) {
+          review.decision = TE_DECISION.APPROVED;
+          await review.save();
+        }
+
+        const ebUsers = await require("../models/User").find({ role: ROLES.EB }).lean();
+        for (const eb of ebUsers) {
+          await notifyChapterToEB(Notification, eb._id, chapter, series ? series.name : "");
+        }
+
+        return res.status(200).json({
+          success: true,
+          message: "Chapter đã được gửi lên EB.",
+          data: chapter,
+        });
+      }
     } else {
       chapter.status = CHAPTER_STATUS.TE_REVISION;
       chapter.revision_notes = Array.isArray(notes) ? notes.join("\n") : (notes || "");
