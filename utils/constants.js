@@ -13,6 +13,7 @@ const SERIES_STATUS = {
   DRAFT: "draft",                    // Đang soạn thảo (chỉ Mangaka thấy)
   SUBMITTED: "submitted",            // Đã gửi lên EB
   APPROVED: "approved",              // EB duyệt → đang xuất bản
+  APPROVED_BY_EB: "approved_by_EB",  // EB duyệt, chờ publish theo lịch (Job scheduledPublish sẽ set → published)
   REJECTED: "rejected",             // EB từ chối
   PUBLISHED: "published",            // Đã xuất bản công khai
   CANCELLED: "cancelled",            // Bị huỷ
@@ -23,6 +24,7 @@ const CHAPTER_STATUS = {
   DRAFT: "draft",                    // Đang soạn, Mangaka đang làm
   PENDING_ASSISTANT: "pending_assistant", // Mangaka đang chờ Assistant làm
   SUBMITTED_BY_ASSISTANT: "submitted_by_assistant", // Assistant đã nộp chapter, chờ Mangaka duyệt
+  APPROVED_BY_MANGAKA: "approved_by_mangaka", // Mangaka đã duyệt chapter, chờ gửi TE
   PENDING_TE: "pending_TE",          // Đã gửi lên TE
   TE_REVISION: "TE_revision",        // TE yêu cầu chỉnh sửa
   PENDING_EB: "pending_EB",         // TE duyệt, chờ EB

@@ -8,8 +8,7 @@ const Series = require("../models/Series");
 const Task = require("../models/Task");
 const Notification = require("../models/Notification");
 const User = require("../models/User");
-const { CHAPTER_STATUS } = require("../utils/constants");
-const { ROLES } = require("../utils/constants");
+const { CHAPTER_STATUS, ROLES, SERIES_STATUS } = require("../utils/constants");
 const { notifyChapterToTE } = require("../services/notificationService");
 
 // ─── GET /submissions/te-users ────────────────────────────────────────────────
@@ -102,19 +101,20 @@ router.post("/chapters/:chapterId/assign-te", authMiddleware, requireMangaka, as
     });
     if (!chapter) return next(new AppError("Chapter not found or unauthorized", 404));
 
-    // Chỉ assign được khi chưa gửi TE, hoặc đang ở trạng thái TE_revision hoặc review
-    if (![CHAPTER_STATUS.DRAFT, CHAPTER_STATUS.PENDING_ASSISTANT, CHAPTER_STATUS.TE_REVISION, CHAPTER_STATUS.REVIEW].includes(chapter.status)) {
-      return next(new AppError(`Không thể gán TE ở trạng thái "${chapter.status}"`, 400));
+    // Chỉ assign được khi đã duyệt bởi Mangaka HOẶC đang revision
+    // KHÔNG đổi status ở đây - status sẽ đổi ở submit-to-te
+    if (![CHAPTER_STATUS.APPROVED_BY_MANGAKA, CHAPTER_STATUS.TE_REVISION, CHAPTER_STATUS.REVIEW].includes(chapter.status)) {
+      return next(new AppError(`Không thể gán TE ở trạng thái "${chapter.status}". Vui lòng duyệt chapter trước.`, 400));
     }
 
     const previousTeId = chapter.te_id;
     chapter.te_id = te_id;
     chapter.te_assigned_at = new Date();
-    chapter.status = CHAPTER_STATUS.PENDING_TE;
+    // KHÔNG đổi status ở đây - chỉ lưu te_id để submit-to-te dùng
+    const series = await Series.findById(chapter.series_id).lean();
     await chapter.save();
 
     // Notify TE được gán
-    const series = await Series.findById(chapter.series_id).lean();
     const seriesName = series ? series.name : "";
     await notifyChapterToTE(Notification, te_id, chapter, seriesName);
 
@@ -125,7 +125,69 @@ router.post("/chapters/:chapterId/assign-te", authMiddleware, requireMangaka, as
 
     return res.status(200).json({
       success: true,
-      message: `Đã gán TE "${te.full_name}" cho chapter.`,
+      message: `Đã gán TE "${te.full_name}" cho chapter. Có thể gửi cho TE.`,
+      data: chapter,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ─── POST /submissions/chapters/:chapterId/approve-by-mangaka ────────────────
+// Mangaka duyệt chapter từ Assistant trước khi gửi TE
+// Điều kiện: tất cả tasks đã approved
+/**
+ * @swagger
+ * /submissions/chapters/{chapterId}/approve-by-mangaka:
+ *   post:
+ *     summary: Mangaka duyệt chapter từ Assistant
+ *     tags: [Submissions]
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: chapterId
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: ID của chapter
+ *     responses:
+ *       200:
+ *         description: Chapter đã được duyệt
+ *       400:
+ *         description: Chapter không ở trạng thái chờ duyệt
+ *       404:
+ *         description: Chapter không tìm thấy
+ */
+router.post("/chapters/:chapterId/approve-by-mangaka", authMiddleware, requireMangaka, async (req, res, next) => {
+  try {
+    const chapter = await Chapter.findOne({
+      _id: req.params.chapterId,
+      submitted_by: req.user.nameid,
+    });
+    if (!chapter) return next(new AppError("Chapter not found or unauthorized", 404));
+
+    // Chỉ duyệt được khi đang ở trạng thái submitted_by_assistant
+    if (chapter.status !== CHAPTER_STATUS.SUBMITTED_BY_ASSISTANT) {
+      return next(new AppError(`Không thể duyệt chapter ở trạng thái "${chapter.status}"`, 400));
+    }
+
+    // Kiểm tra tất cả tasks đã approved chưa
+    const unfinishedTasks = await Task.countDocuments({
+      chapter_id: chapter._id,
+      status: { $ne: "approved" },
+    });
+    if (unfinishedTasks > 0) {
+      return next(new AppError(`${unfinishedTasks} task chưa được duyệt. Vui lòng duyệt hết trước.`, 400));
+    }
+
+    // Cập nhật status
+    chapter.status = CHAPTER_STATUS.APPROVED_BY_MANGAKA;
+    await chapter.save();
+
+    return res.status(200).json({
+      success: true,
+      message: "Chapter đã được duyệt. Có thể gửi cho TE.",
       data: chapter,
     });
   } catch (error) {
@@ -179,12 +241,32 @@ router.delete("/chapters/:chapterId/remove-te", authMiddleware, requireMangaka, 
 
 // ─── POST /submissions/chapters/:chapterId/submit-to-te ───────────────────────
 // Mangaka gửi chapter cho TE duyệt
-// Điều kiện: tất cả tasks đã approved
+// Hỗ trợ 2 giai đoạn (xem `phase` trong response):
+//   - "series_level": Series chưa EB-approved (status ∈ draft/submitted/rejected/cancelled)
+//     → Gửi Series + chapter cho TE. TE duyệt cả Series (gửi EB / yêu cầu revision).
+//   - "chapter_level": Series đã EB-approved (status ∈ approved/published)
+//     → Chỉ gửi chapter cho TE. TE duyệt chapter để publish.
 /**
  * @swagger
  * /submissions/chapters/{chapterId}/submit-to-te:
  *   post:
  *     summary: Submit chapter to TE for review
+ *     description: |
+ *       Mangaka gửi chapter cho TE duyệt.
+ *       Điều kiện:
+ *       - Chapter đang ở trạng thái `approved_by_mangaka`, `te_revision`, hoặc `review`
+ *       - Tất cả tasks của chapter phải ở trạng thái `approved` (không còn `submitted`/`revision`)
+ *       Nếu đã gán TE (chapter.te_id) → chỉ gửi cho TE đó.
+ *       Nếu chưa gán → gửi cho TẤT CẢ TE active.
+ *       Chapter → status = "pending_TE"
+ *
+ *       **Hỗ trợ 2 giai đoạn** (phân biệt theo `Series.status`):
+ *       - Giai đoạn 1 (`series_level`): Series chưa EB-approved (status ∈ {draft, submitted, rejected, cancelled}).
+ *         Gửi cả Series + chapter. TE review chapter và quyết định cả Series (gửi EB hoặc yêu cầu revision).
+ *         Notification type: `series_pending_te`, `related_entity_type = "series"`.
+ *       - Giai đoạn 2 (`chapter_level`): Series đã EB-approved (status ∈ {approved, published}).
+ *         Chỉ gửi chapter cho TE. TE duyệt chapter để EB confirm publish.
+ *         Notification type: `chapter_pending_te`, `related_entity_type = "chapter"`.
  *     tags: [Submissions]
  *     security:
  *       - BearerAuth: []
@@ -195,9 +277,56 @@ router.delete("/chapters/:chapterId/remove-te", authMiddleware, requireMangaka, 
  *         schema:
  *           type: string
  *         description: The chapter ID
+ *     requestBody:
+ *       required: false
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               te_id:
+ *                 type: string
+ *                 description: Override TE (optional, dùng nếu chưa assign trước đó)
  *     responses:
  *       200:
  *         description: Chapter submitted successfully
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 message:
+ *                   type: string
+ *                 phase:
+ *                   type: string
+ *                   enum: [series_level, chapter_level]
+ *                   description: |
+ *                     Giai đoạn review:
+ *                     - `series_level`: TE duyệt cả Series (giai đoạn 1).
+ *                     - `chapter_level`: TE duyệt chapter (giai đoạn 2).
+ *                 data:
+ *                   $ref: '#/components/schemas/Chapter'
+ *                 seriesInfo:
+ *                   type: object
+ *                   properties:
+ *                     _id: { type: string }
+ *                     name: { type: string }
+ *                     cover_image_url: { type: string }
+ *                     genre:
+ *                       type: array
+ *                       items: { type: string }
+ *                     tags:
+ *                       type: array
+ *                       items: { type: string }
+ *                     synopsis: { type: string }
+ *                     author_id: { type: string }
+ *                     status: { type: string }
+ *       400:
+ *         description: Invalid status or unfinished tasks
+ *       404:
+ *         description: Chapter not found or unauthorized
  */
 router.post("/chapters/:chapterId/submit-to-te", authMiddleware, requireMangaka, async (req, res, next) => {
   try {
@@ -209,8 +338,9 @@ router.post("/chapters/:chapterId/submit-to-te", authMiddleware, requireMangaka,
     });
     if (!chapter) return next(new AppError("Chapter not found or unauthorized", 404));
 
-    if (![CHAPTER_STATUS.DRAFT, CHAPTER_STATUS.TE_REVISION, CHAPTER_STATUS.PENDING_ASSISTANT, CHAPTER_STATUS.REVIEW].includes(chapter.status)) {
-      return next(new AppError("Chapter cannot be submitted in current status", 400));
+    // Chỉ submit được khi đã duyệt bởi Mangaka HOẶC đang revision
+    if (![CHAPTER_STATUS.APPROVED_BY_MANGAKA, CHAPTER_STATUS.TE_REVISION, CHAPTER_STATUS.REVIEW].includes(chapter.status)) {
+      return next(new AppError(`Không thể gửi chapter ở trạng thái "${chapter.status}". Vui lòng duyệt chapter trước.`, 400));
     }
 
     const unfinishedTasks = await Task.countDocuments({
@@ -227,36 +357,63 @@ router.post("/chapters/:chapterId/submit-to-te", authMiddleware, requireMangaka,
     chapter.revision_source = "";
 
     const series = await Series.findById(chapter.series_id).lean();
-    const seriesName = series ? series.name : "";
+    if (!series) return next(new AppError("Series not found", 404));
+
+    // Phân biệt 2 giai đoạn theo Series.status:
+    //   - Giai đoạn 1: Series chưa EB-approved (draft/submitted/rejected/cancelled)
+    //     → Gửi Series + chapter cho TE. TE quyết định cả Series (gửi EB / yêu cầu revision).
+    //   - Giai đoạn 2: Series đã EB-approved (approved_by_EB/approved/published)
+    //     → Chỉ gửi chapter cho TE. TE publish chapter thủ công qua /te-reviews/chapter/:id/publish.
+    const isSeriesLevel = ![SERIES_STATUS.APPROVED_BY_EB, SERIES_STATUS.APPROVED, SERIES_STATUS.PUBLISHED].includes(series.status);
 
     const chapterPayload = chapter.toObject ? chapter.toObject() : chapter;
 
-    const baseNotification = {
-      related_entity_type: "chapter",
-      related_entity_id: chapter._id,
-      meta: {
-        chapter_id: chapter._id,
-        chapter_number: chapter.chapter_number,
-        chapter_title: chapter.title,
-        series_id: series ? series._id : chapter.series_id,
-        series_name: seriesName,
-        series_genre: series?.genre || [],
-        series_tags: series?.tags || [],
-        series_synopsis: series?.synopsis || "",
-        series_cover_image_url: series?.cover_image_url || "",
-        series_author_id: series?.author_id || null,
-        submitted_by: chapter.submitted_by,
-      },
+    const baseMeta = {
+      chapter_id: chapter._id,
+      chapter_number: chapter.chapter_number,
+      chapter_title: chapter.title,
+      series_id: series._id,
+      series_name: series.name,
+      series_genre: series.genre || [],
+      series_tags: series.tags || [],
+      series_synopsis: series.synopsis || "",
+      series_cover_image_url: series.cover_image_url || "",
+      series_author_id: series.author_id || null,
+      series_status: series.status,
+      is_series_level: isSeriesLevel,
+      submitted_by: chapter.submitted_by,
     };
+
+    // Giai đoạn 1: notification trỏ vào Series (related_entity_type = "series")
+    // Giai đoạn 2: notification trỏ vào Chapter (giữ nguyên flow cũ)
+    const baseNotification = isSeriesLevel
+      ? {
+          related_entity_type: "series",
+          related_entity_id: series._id,
+          meta: baseMeta,
+        }
+      : {
+          related_entity_type: "chapter",
+          related_entity_id: chapter._id,
+          meta: baseMeta,
+        };
+
+    const notificationType = isSeriesLevel ? "series_pending_te" : "chapter_pending_te";
+    const notificationTitle = isSeriesLevel
+      ? `Series "${series.name}" cần TE duyệt`
+      : `Chapter "${chapter.title}" cần duyệt`;
+    const notificationMessage = isSeriesLevel
+      ? `Series "${series.name}" (kèm chapter ${chapter.chapter_number}) đã được gửi sang TE để duyệt.`
+      : `Chapter "${chapter.title}" (${chapter.chapter_number}) của series "${series.name}" đã được gửi sang TE.`;
 
     if (chapter.te_id) {
       await chapter.save();
       await Notification.create({
         ...baseNotification,
         user_id: chapter.te_id,
-        type: "chapter_pending_te",
-        title: `Chapter "${chapter.title}" cần duyệt`,
-        message: `Chapter "${chapter.title}" (${chapter.chapter_number}) của series "${seriesName}" đã được gửi sang TE.`,
+        type: notificationType,
+        title: notificationTitle,
+        message: notificationMessage,
       });
     } else {
       await chapter.save();
@@ -265,18 +422,29 @@ router.post("/chapters/:chapterId/submit-to-te", authMiddleware, requireMangaka,
         teUsers.map((u) => ({
           ...baseNotification,
           user_id: u._id,
-          type: "chapter_pending_te",
-          title: `Chapter "${chapter.title}" cần duyệt`,
-          message: `Chapter "${chapter.title}" (${chapter.chapter_number}) của series "${seriesName}" đã được gửi sang TE.`,
+          type: notificationType,
+          title: notificationTitle,
+          message: notificationMessage,
         }))
       );
     }
 
     return res.status(200).json({
       success: true,
-      message: chapter.te_id ? "Chapter đã được gửi cho TE được gán." : "Chapter đã được gửi cho tất cả TE.",
+      message: chapter.te_id ? "Đã gửi cho TE được gán." : "Đã gửi cho tất cả TE.",
       data: chapterPayload,
-      seriesName,
+      // Trả về phase để FE biết đang ở giai đoạn nào
+      phase: isSeriesLevel ? "series_level" : "chapter_level",
+      seriesInfo: {
+        _id: series._id,
+        name: series.name,
+        cover_image_url: series.cover_image_url || "",
+        genre: series.genre || [],
+        tags: series.tags || [],
+        synopsis: series.synopsis || "",
+        author_id: series.author_id,
+        status: series.status,
+      },
     });
   } catch (error) {
     next(error);

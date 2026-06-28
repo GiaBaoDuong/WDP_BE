@@ -1,76 +1,76 @@
 /**
  * Scheduled Publish Job
- * Chạy mỗi phút: tìm các chapter đang chờ hẹn giờ (is_scheduled=true, scheduled_publish_at <= now)
- * và tự động xuất bản chúng.
+ * Chạy mỗi phút:
+ *  1. Auto set Series.status = "published" theo Series.scheduled_publish_at (kể cả khi Series chưa có chapter nào publish).
+ *  2. KHÔNG auto-publish chapter nữa — chapter sẽ được TE publish thủ công qua POST /te-reviews/chapter/:id/publish.
+ *     (Giữ job này để tương thích ngược với những chapter cũ đã được schedule trước đó.)
  */
 const Chapter = require("../models/Chapter");
 const Series = require("../models/Series");
-const Notification = require("../models/Notification");
-const { notifyChapterPublishConfirmed } = require("../services/notificationService");
+const { SERIES_STATUS, CHAPTER_STATUS } = require("../utils/constants");
 
 let intervalHandle = null;
 
 const processScheduledPublish = async () => {
   try {
     const now = new Date();
+
+    // 1. Auto set Series.status = "published" khi đến scheduled_publish_at
+    //    Áp dụng cho Series đang ở APPROVED_BY_EB — Reader sẽ thấy Series kể cả khi chưa có chapter nào publish.
+    const dueSeries = await Series.find({
+      status: SERIES_STATUS.APPROVED_BY_EB,
+      scheduled_publish_at: { $lte: now, $ne: null },
+    }).select("_id");
+
+    if (dueSeries.length > 0) {
+      console.log(`[ScheduledPublish] Auto-publishing ${dueSeries.length} series...`);
+      await Series.updateMany(
+        { _id: { $in: dueSeries.map((s) => s._id) } },
+        { status: SERIES_STATUS.PUBLISHED }
+      );
+    }
+
+    // 2. Auto-publish chapter cũ (tương thích ngược) — chỉ áp dụng khi chapter đã is_scheduled = true
+    //    và Series đang ở "published" (không phải APPROVED_BY_EB).
+    //    Chapter mới sau khi sửa confirm-publish sẽ KHÔNG có is_scheduled = true.
     const pendingChapters = await Chapter.find({
       is_scheduled: true,
       scheduled_publish_at: { $lte: now },
-      status: "pending_EB",
+      status: CHAPTER_STATUS.APPROVED_BY_EB,
     }).lean();
 
     if (pendingChapters.length === 0) return;
 
-    console.log(`[ScheduledPublish] Processing ${pendingChapters.length} scheduled chapter(s)...`);
+    const publishableChapters = [];
+    for (const ch of pendingChapters) {
+      const series = await Series.findById(ch.series_id).select("status").lean();
+      // Bỏ qua chapter thuộc Series đang APPROVED_BY_EB — chờ TE publish thủ công
+      if (!series || series.status === SERIES_STATUS.APPROVED_BY_EB) continue;
+      publishableChapters.push(ch);
+    }
 
-    await Promise.all(
-      pendingChapters.map(async (chapter) => {
-        try {
-          chapter.status = "published";
-          chapter.is_published = true;
-          chapter.published_at = now;
-          chapter.is_scheduled = false;
-          chapter.revision_notes = "";
-          chapter.revision_annotations = [];
-          chapter.revision_source = "";
-          await Chapter.findByIdAndUpdate(chapter._id, {
-            status: "published",
-            is_published: true,
-            published_at: now,
-            is_scheduled: false,
-            revision_notes: "",
-            revision_annotations: [],
-            revision_source: "",
-          });
+    if (publishableChapters.length === 0) return;
 
-          const series = await Series.findById(chapter.series_id).lean();
-          if (series) {
-            const unpublished = await Chapter.countDocuments({
-              series_id: chapter.series_id,
-              is_published: false,
-            });
-            if (unpublished === 0) {
-              await Series.findByIdAndUpdate(series._id, { status: "published" });
-            }
-          }
+    console.log(`[ScheduledPublish] Processing ${publishableChapters.length} scheduled chapter(s)...`);
 
-          await notifyChapterPublishConfirmed(
-            Notification,
-            chapter.submitted_by,
-            chapter,
-            series?.name || "",
-            chapter.publication_schedule,
-            chapter.publication_duration_days
-          );
-
-          console.log(
-            `[ScheduledPublish] Chapter ${chapter._id} (${chapter.chapter_number}) published successfully.`
-          );
-        } catch (err) {
-          console.error(`[ScheduledPublish] Error publishing chapter ${chapter._id}:`, err.message);
-        }
-      })
-    );
+    for (const chapter of publishableChapters) {
+      try {
+        await Chapter.findByIdAndUpdate(chapter._id, {
+          status: CHAPTER_STATUS.PUBLISHED,
+          is_published: true,
+          published_at: now,
+          is_scheduled: false,
+          revision_notes: "",
+          revision_annotations: [],
+          revision_source: "",
+        });
+        console.log(
+          `[ScheduledPublish] Chapter ${chapter._id} (${chapter.chapter_number}) published successfully.`
+        );
+      } catch (err) {
+        console.error(`[ScheduledPublish] Error publishing chapter ${chapter._id}:`, err.message);
+      }
+    }
   } catch (err) {
     console.error("[ScheduledPublish] Job error:", err.message);
   }

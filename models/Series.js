@@ -38,7 +38,7 @@ const seriesSchema = new mongoose.Schema(
     },
     status: {
       type: String,
-      enum: ["draft", "submitted", "approved", "rejected", "published", "cancelled"],
+      enum: ["draft", "submitted", "approved", "approved_by_EB", "rejected", "published", "cancelled"],
       default: "draft",
     },
     publication_schedule: {

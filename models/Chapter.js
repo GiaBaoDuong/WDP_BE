@@ -15,6 +15,7 @@ const chapterSchema = new mongoose.Schema(
         "draft",
         "pending_assistant",
         "submitted_by_assistant",
+        "approved_by_mangaka",
         "pending_TE",
         "TE_revision",
         "pending_EB",

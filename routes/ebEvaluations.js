@@ -22,6 +22,8 @@ const {
   EB_RESULT_LABEL_TEXT,
   EB_EVALUATION_STATUS,
   NOTIF_TYPES,
+  SERIES_STATUS,
+  CHAPTER_STATUS,
 } = require("../utils/constants");
 
 // ─── Helper: phân loại kết quả theo phổ điểm ────────────────────────────────
@@ -52,7 +54,7 @@ const durationDaysBySchedule = (schedule) => {
 };
 
 /**
- * @swagger
+ * @swaggerap
  * /eb-evaluations/pending:
  *   get:
  *     tags: [EBEvaluations]
@@ -79,19 +81,39 @@ const durationDaysBySchedule = (schedule) => {
  *         description: Forbidden - EB role required
  */
 // ─── GET /eb-evaluations/pending ─────────────────────────────────────────────
-// EB xem chapter đang chờ duyệt, kèm điểm tổng hợp nếu đã có
+// EB xem danh sách SERIES đang chờ duyệt (lấy series có ít nhất 1 chapter ở pending_EB)
+// Mỗi series chỉ xuất hiện 1 lần trong danh sách (dù có nhiều chapter pending)
 router.get("/pending", authMiddleware, requireEB, async (req, res, next) => {
   try {
-    const chapters = await Chapter.find({ status: "pending_EB" })
-      .populate("submitted_by", "username full_name phoneNumber")
-      .populate("series_id", "name status publication_schedule")
-      .sort({ updatedAt: 1 })
+    // 1. Tìm tất cả series có chapter đang ở pending_EB
+    //    → lấy distinct series_id từ chapters pending_EB
+    const pendingChapterSeriesIds = await Chapter.distinct("series_id", {
+      status: "pending_EB",
+    });
+
+    if (pendingChapterSeriesIds.length === 0) {
+      return res.status(200).json({ success: true, data: [] });
+    }
+
+    // 2. Lấy thông tin series đầy đủ
+    const seriesList = await Series.find({ _id: { $in: pendingChapterSeriesIds } })
+      .populate("author_id", "username full_name phoneNumber")
       .lean();
 
-    // Gắn điểm EB mới nhất vào từng chapter
-    const chaptersWithScores = await Promise.all(
-      chapters.map(async (ch) => {
-        const ev = await EBEvaluation.findOne({ chapter_id: ch._id })
+    // 3. Với mỗi series, gắn thông tin EB evaluation mới nhất + chapter đầu tiên (pending_EB)
+    const result = await Promise.all(
+      seriesList.map(async (s) => {
+        // Tìm chapter đầu tiên đang pending_EB (để hiển thị trong danh sách)
+        const firstPendingChapter = await Chapter.findOne({
+          series_id: s._id,
+          status: "pending_EB",
+        })
+          .sort({ chapter_number: 1 })
+          .select("_id chapter_number title updatedAt")
+          .lean();
+
+        // Tìm EBEvaluation mới nhất liên quan đến series này
+        const ev = await EBEvaluation.findOne({ series_id: s._id })
           .sort({ createdAt: -1 })
           .lean();
 
@@ -116,7 +138,29 @@ router.get("/pending", authMiddleware, requireEB, async (req, res, next) => {
         }
 
         return {
-          ...ch,
+          _id: s._id,
+          name: s.name,
+          cover_image_url: s.cover_image_url,
+          synopsis: s.synopsis,
+          genre: s.genre,
+          tags: s.tags,
+          status: s.status,
+          publication_schedule: s.publication_schedule,
+          author_id: s.author_id,
+          average_score: s.average_score,
+          total_votes: s.total_votes,
+          createdAt: s.createdAt,
+          updatedAt: s.updatedAt,
+          // Chapter đầu tiên đang pending_EB
+          first_pending_chapter: firstPendingChapter
+            ? {
+                _id: firstPendingChapter._id,
+                chapter_number: firstPendingChapter.chapter_number,
+                title: firstPendingChapter.title,
+                updatedAt: firstPendingChapter.updatedAt,
+              }
+            : null,
+          // Điểm EB đã có
           council_average: councilAvg,
           classification,
           classification_text: classificationText,
@@ -127,7 +171,393 @@ router.get("/pending", authMiddleware, requireEB, async (req, res, next) => {
       })
     );
 
-    return res.status(200).json({ success: true, data: chaptersWithScores });
+    // Sort theo updatedAt của series (cũ nhất lên đầu)
+    result.sort((a, b) => new Date(a.updatedAt) - new Date(b.updatedAt));
+
+    return res.status(200).json({ success: true, data: result });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * @swagger
+ * /eb-evaluations/my-history:
+ *   get:
+ *     tags: [EBEvaluations]
+ *     summary: Lịch sử chấm điểm của EB hiện tại
+ *     description: |
+ *       Trả về danh sách series mà EB hiện tại đã từng chấm điểm (qua `member_scores.member_id`),
+ *       kèm điểm trung bình hội đồng và điểm của riêng EB này cho từng series.
+ *
+ *       Mỗi item gồm:
+ *       - Thông tin series (name, cover_image_url, status, author, ...)
+ *       - Điểm của user EB hiện tại (5 tiêu chí + average + tổng)
+ *       - Điểm trung bình cả hội đồng (council_average)
+ *       - Số thành viên đã chấm
+ *       - Kết quả cuối cùng (approved/rejected/revision) + ngày chấm gần nhất
+ *
+ *       Query params:
+ *       - `page` (default 1), `limit` (default 20)
+ *       - `result` (optional): lọc theo kết quả `approved` | `rejected` | `revision`
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: page
+ *         schema: { type: integer, default: 1 }
+ *       - in: query
+ *         name: limit
+ *         schema: { type: integer, default: 20 }
+ *       - in: query
+ *         name: result
+ *         schema:
+ *           type: string
+ *           enum: [approved, rejected, revision]
+ *     responses:
+ *       200:
+ *         description: OK
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success: { type: boolean }
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     items:
+ *                       type: array
+ *                       items:
+ *                         type: object
+ *                         properties:
+ *                           series: { $ref: '#/components/schemas/Series' }
+ *                           evaluation_id: { type: string }
+ *                           chapter_id: { type: string }
+ *                           my_score:
+ *                             type: object
+ *                             properties:
+ *                               scores:
+ *                                 type: object
+ *                                 description: 5 tiêu chí điểm của EB hiện tại
+ *                               average: { type: number }
+ *                               total_score: { type: number }
+ *                               overall_comment: { type: string }
+ *                               saved_at: { type: string, format: date-time }
+ *                               member_name: { type: string }
+ *                           council_average: { type: number }
+ *                           member_count: { type: integer }
+ *                           result: { type: string, enum: [approved, rejected, revision, null] }
+ *                           evaluated_at: { type: string, format: date-time }
+ *                     page: { type: integer }
+ *                     limit: { type: integer }
+ *                     total: { type: integer }
+ *                     has_more: { type: boolean }
+ *       401:
+ *         description: Unauthorized
+ *       403:
+ *         description: Forbidden - EB role required
+ */
+// ─── GET /eb-evaluations/my-history ──────────────────────────────────────────
+// Trả về lịch sử series mà EB hiện tại đã chấm + điểm của riêng họ + điểm hội đồng
+router.get("/my-history", authMiddleware, requireEB, async (req, res, next) => {
+  try {
+    const userId = req.user.nameid;
+    const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
+    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 20, 1), 100);
+    const skip = (page - 1) * limit;
+    const { result } = req.query;
+
+    // Filter theo result nếu có
+    const evalFilter = {};
+    if (result && ["approved", "rejected", "revision"].includes(result)) {
+      evalFilter.result = result;
+    }
+
+    // Tìm tất cả EBEvaluation có chứa lượt chấm của user hiện tại
+    const evaluations = await EBEvaluation.find({
+      ...evalFilter,
+      "member_scores.member_id": userId,
+    })
+      .populate("series_id", "name cover_image_url status publication_schedule genre synopsis author_id tags")
+      .populate("series_id.author_id", "username full_name phoneNumber")
+      .sort({ updatedAt: -1 })
+      .lean();
+
+    // Tính tổng trước khi paginate
+    const total = evaluations.length;
+
+    const items = evaluations.slice(skip, skip + limit).map((ev) => {
+      // Tìm lượt chấm của user hiện tại trong member_scores
+      const myMemberScore =
+        (ev.member_scores || []).find(
+          (m) => m.member_id && String(m.member_id) === String(userId)
+        ) || null;
+
+      // Tính điểm trung bình hội đồng
+      let councilAvg = 0;
+      if (ev.member_scores && ev.member_scores.length > 0) {
+        const totals = {};
+        EB_CRITERIA_KEYS.forEach((k) => {
+          totals[k] = ev.member_scores.reduce(
+            (acc, m) => acc + (m.scores?.[k] || 0),
+            0
+          );
+        });
+        const avgTotals = {};
+        EB_CRITERIA_KEYS.forEach((k) => {
+          avgTotals[k] =
+            Math.round((totals[k] / ev.member_scores.length) * 100) / 100;
+        });
+        councilAvg =
+          Math.round(
+            (EB_CRITERIA_KEYS.reduce((acc, k) => acc + avgTotals[k], 0) /
+              EB_CRITERIA_KEYS.length) * 100
+          ) / 100;
+      }
+
+      return {
+        series: ev.series_id,
+        evaluation_id: ev._id,
+        chapter_id: ev.chapter_id || null,
+        story_type: ev.story_type || "",
+        my_score: myMemberScore
+          ? {
+              member_name: myMemberScore.member_name || "",
+              scores: myMemberScore.scores || {},
+              average: myMemberScore.average || 0,
+              total_score: myMemberScore.total_score || 0,
+              overall_comment: myMemberScore.overall_comment || "",
+              comments: myMemberScore.comments || {},
+              saved_at: myMemberScore.saved_at || null,
+            }
+          : null,
+        council_average: councilAvg,
+        classification: classifyByScore(councilAvg),
+        classification_text: classifyText(councilAvg),
+        member_count: ev.member_scores ? ev.member_scores.length : 0,
+        result: ev.result || null,
+        quick_decision: ev.quick_decision || null,
+        evaluated_at: ev.last_saved_at || ev.updatedAt,
+        evaluation_status: ev.status,
+      };
+    });
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        items,
+        page,
+        limit,
+        total,
+        has_more: skip + items.length < total,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * @swagger
+ * /eb-evaluations/series/{seriesId}/detail:
+ *   get:
+ *     tags: [EBEvaluations]
+ *     summary: Chi tiết series + chapter 1 để EB xem trước khi chấm
+ *     description: |
+ *       Khi EB click vào 1 series trong danh sách `/eb-evaluations/pending`,
+ *       endpoint này trả về:
+ *
+ *       - **series**: thông tin đầy đủ của series (name, cover_image_url, description, genre, tags,
+ *         synopsis, author, publication_schedule, status, average_score, total_votes, ...)
+ *       - **first_chapter**: chapter 1 (chapter_number nhỏ nhất) của series kèm:
+ *         - Tất cả pages (page_number, image_url, status)
+ *         - preview_images URL để EB xem trước
+ *       - **evaluation**: EBEvaluation hiện tại của series (nếu có) kèm:
+ *         - member_scores của cả hội đồng
+ *         - draft_scores/draft_comments nếu EB này đang nhập dở
+ *         - result, quick_decision, council_average
+ *
+ *       Dùng để EB quyết định trước khi chấm điểm series (xem cover, đọc mô tả, xem chapter 1).
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: seriesId
+ *         required: true
+ *         schema: { type: string }
+ *     responses:
+ *       200:
+ *         description: OK
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success: { type: boolean }
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     series: { $ref: '#/components/schemas/Series' }
+ *                     first_chapter:
+ *                       type: object
+ *                       nullable: true
+ *                       description: chapter 1 của series (preview)
+ *                       properties:
+ *                         _id: { type: string }
+ *                         chapter_number: { type: number }
+ *                         title: { type: string }
+ *                         status: { type: string }
+ *                         pages:
+ *                           type: array
+ *                           items:
+ *                             type: object
+ *                             properties:
+ *                               _id: { type: string }
+ *                               page_number: { type: number }
+ *                               image_url: { type: string }
+ *                               status: { type: string }
+ *                     pending_chapters:
+ *                       type: array
+ *                       description: Tất cả chapter đang pending_EB của series này
+ *                     evaluation:
+ *                       type: object
+ *                       nullable: true
+ *                       description: EBEvaluation hiện tại của series
+ *       404:
+ *         description: Series not found
+ */
+// ─── GET /eb-evaluations/series/:seriesId/detail ────────────────────────────
+// EB click vào 1 series trong danh sách /pending → trả về đầy đủ series + chapter 1 để preview
+router.get("/series/:seriesId/detail", authMiddleware, requireEB, async (req, res, next) => {
+  try {
+    const Page = require("../models/Page");
+    const { seriesId } = req.params;
+
+    // 1. Lấy series đầy đủ thông tin
+    const series = await Series.findById(seriesId)
+      .populate("author_id", "username full_name phoneNumber avatar_url")
+      .lean();
+    if (!series) return next(new AppError("Series not found", 404));
+
+    // 2. Tìm chapter 1 (chapter_number nhỏ nhất) của series để EB preview
+    const firstChapter = await Chapter.findOne({ series_id: series._id })
+      .sort({ chapter_number: 1 })
+      .select("_id chapter_number title status")
+      .lean();
+
+    let firstChapterWithPages = null;
+    if (firstChapter) {
+      const pages = await Page.find({ chapter_id: firstChapter._id })
+        .select("_id page_number original_image_url result_image_url final_image_url status")
+        .sort({ page_number: 1 })
+        .lean();
+      firstChapterWithPages = {
+        _id: firstChapter._id,
+        chapter_number: firstChapter.chapter_number,
+        title: firstChapter.title,
+        status: firstChapter.status,
+        pages: (pages || []).map((p) => ({
+          _id: p._id,
+          page_number: p.page_number,
+          image_url: p.final_image_url || p.result_image_url || p.original_image_url || "",
+          status: p.status,
+        })),
+      };
+    }
+
+    // 3. Lấy tất cả chapter đang pending_EB của series này
+    const pendingChapters = await Chapter.find({
+      series_id: series._id,
+      status: "pending_EB",
+    })
+      .sort({ chapter_number: 1 })
+      .lean();
+
+    // 4. Lấy EBEvaluation hiện tại của series
+    const evaluation = await EBEvaluation.findOne({ series_id: seriesId })
+      .populate("evaluated_by", "username full_name phoneNumber")
+      .sort({ createdAt: -1 })
+      .lean();
+
+    // Tính council_average + gắn my_member_score cho EB hiện tại
+    let enrichedEvaluation = null;
+    if (evaluation) {
+      let councilAvg = 0;
+      if (evaluation.member_scores && evaluation.member_scores.length > 0) {
+        const totals = {};
+        EB_CRITERIA_KEYS.forEach((k) => {
+          totals[k] = evaluation.member_scores.reduce(
+            (acc, m) => acc + (m.scores?.[k] || 0),
+            0
+          );
+        });
+        const avgTotals = {};
+        EB_CRITERIA_KEYS.forEach((k) => {
+          avgTotals[k] =
+            Math.round((totals[k] / evaluation.member_scores.length) * 100) / 100;
+        });
+        councilAvg =
+          Math.round(
+            (EB_CRITERIA_KEYS.reduce((acc, k) => acc + avgTotals[k], 0) /
+              EB_CRITERIA_KEYS.length) * 100
+          ) / 100;
+      }
+
+      const userId = req.user.nameid;
+      const myMemberScore = (evaluation.member_scores || []).find(
+        (m) => m.member_id && String(m.member_id) === String(userId)
+      ) || null;
+
+      enrichedEvaluation = {
+        _id: evaluation._id,
+        series_id: evaluation.series_id,
+        chapter_id: evaluation.chapter_id,
+        evaluated_by: evaluation.evaluated_by,
+        last_saved_by: evaluation.last_saved_by,
+        last_saved_at: evaluation.last_saved_at,
+        story_type: evaluation.story_type,
+        preview_images: evaluation.preview_images || [],
+        current_member_name: evaluation.current_member_name,
+        draft_scores: evaluation.draft_scores || {},
+        draft_comments: evaluation.draft_comments || {},
+        draft_overall_comment: evaluation.draft_overall_comment || "",
+        status: evaluation.status,
+        first_review: evaluation.first_review,
+        member_scores: evaluation.member_scores || [],
+        quick_decision: evaluation.quick_decision,
+        quick_notes: evaluation.quick_notes,
+        result: evaluation.result,
+        publication_schedule: evaluation.publication_schedule,
+        scheduled_publish_at: evaluation.scheduled_publish_at,
+        notes: evaluation.notes,
+        council_average: councilAvg,
+        classification: classifyByScore(councilAvg),
+        classification_text: classifyText(councilAvg),
+        my_member_score: myMemberScore,
+        can_edit: evaluation.status !== EB_EVALUATION_STATUS.LOCKED,
+        created_at: evaluation.createdAt,
+        updated_at: evaluation.updatedAt,
+      };
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        series,
+        first_chapter: firstChapterWithPages,
+        pending_chapters: pendingChapters.map((ch) => ({
+          _id: ch._id,
+          chapter_number: ch.chapter_number,
+          title: ch.title,
+          status: ch.status,
+          submitted_by: ch.submitted_by,
+          createdAt: ch.createdAt,
+          updatedAt: ch.updatedAt,
+        })),
+        evaluation: enrichedEvaluation,
+      },
+    });
   } catch (error) {
     next(error);
   }
@@ -138,7 +568,13 @@ router.get("/pending", authMiddleware, requireEB, async (req, res, next) => {
  * /eb-evaluations/series/{seriesId}/evaluate:
  *   post:
  *     tags: [EBEvaluations]
- *     summary: EB evaluates a series (first review or quick review)
+ *     summary: EB evaluates a series (Series-level, only once)
+ *     description: |
+ *       EB chấm điểm Series 1 lần duy nhất. Chapter chỉ là nội dung EB đọc để đưa ra quyết định cho Series.
+ *       - Lần đầu: truyền `member_scores` + `result` (approved/revision/rejected) → tạo EBEvaluation với `council_average`
+ *       - Lần sau: truyền `quick_decision` + `quick_notes` → cập nhật nhanh
+ *       - Nếu `result = approved` và `council_average >= 2.5` → series.status chuyển "approved"
+ *       - Nếu `result = rejected` → series.status chuyển "rejected"
  *     security:
  *       - BearerAuth: []
  *     parameters:
@@ -157,31 +593,48 @@ router.get("/pending", authMiddleware, requireEB, async (req, res, next) => {
  *             properties:
  *               member_scores:
  *                 type: array
+ *                 description: Bắt buộc cho lần đầu. Mảng điểm từ các thành viên hội đồng
  *                 items:
  *                   type: object
  *                   properties:
- *                     content_script:
- *                       type: number
- *                     art:
- *                       type: number
- *                     characters:
- *                       type: number
- *                     commercial_potential:
- *                       type: number
- *                     publisher_fit:
- *                       type: number
+ *                     member_id:
+ *                       type: string
+ *                       description: ID thành viên EB (optional)
+ *                     scores:
+ *                       type: object
+ *                       properties:
+ *                         content_script:
+ *                           type: number
+ *                         art:
+ *                           type: number
+ *                         characters:
+ *                           type: number
+ *                         commercial_potential:
+ *                           type: number
+ *                         publisher_fit:
+ *                           type: number
  *               result:
  *                 type: string
  *                 enum: [approved, revision, rejected]
+ *                 description: Kết quả chấm (bắt buộc lần đầu)
  *               publication_schedule:
  *                 type: string
+ *                 enum: [weekly, monthly]
+ *                 description: Tần suất xuất bản (cho lần đầu approved)
  *               notes:
  *                 type: string
+ *                 description: Ghi chú tổng hợp
  *               quick_decision:
  *                 type: string
  *                 enum: [approved, revision, rejected]
+ *                 description: Quyết định nhanh (lần sau)
  *               quick_notes:
  *                 type: string
+ *                 description: Ghi chú nhanh (lần sau)
+ *               scheduled_publish_at:
+ *                 type: string
+ *                 format: date-time
+ *                 description: Ngày giờ cụ thể để chapter đầu tiên publish (optional)
  *     responses:
  *       201:
  *         description: Evaluation submitted successfully
@@ -200,7 +653,7 @@ router.get("/pending", authMiddleware, requireEB, async (req, res, next) => {
  *                     evaluation:
  *                       $ref: '#/components/schemas/EBEvaluation'
  *       400:
- *         description: Validation error
+ *         description: Validation error (member_scores required for first review, etc.)
  *       404:
  *         description: Series not found
  */
@@ -690,17 +1143,108 @@ router.post("/votes/confirm", authMiddleware, requireEB, async (req, res, next) 
   }
 });
 
-// ─── POST /eb-evaluations/chapter/:chapterId/confirm-publish ─────────────────
-// EB xác nhận xuất bản Series sau khi đã chấm điểm
-// Kiểm tra điểm >= 2.5 trước khi cho publish
-router.post("/chapter/:chapterId/confirm-publish", authMiddleware, requireEB, async (req, res, next) => {
+// ─── POST /eb-evaluations/series/:seriesId/confirm-publish ───────────────────
+/**
+ * @swagger
+ * /eb-evaluations/series/{seriesId}/confirm-publish:
+ *   post:
+ *     tags: [EBEvaluations]
+ *     summary: EB confirm publish for a series (Series-level)
+ *     description: |
+ *       Sau khi EB chấm điểm Series (council_average >= 2.5),
+ *       EB gọi endpoint này để xác nhận xuất bản Series.
+ *       - Series → status = "approved_by_EB", is_public = true
+ *       - **KHÔNG tự động publish chapter**: chapter đầu tiên (nếu có) chuyển sang "approved_by_EB"
+ *         nhưng chờ TE publish thủ công sau khi Mangaka sửa xong.
+ *       - Job scheduledPublish sẽ tự động set Series.status = "published" theo scheduled_publish_at
+ *         (kể cả khi Series chưa có chapter nào publish → Reader vẫn thấy được Series).
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: seriesId
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Series ID
+ *     requestBody:
+ *       required: false
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               publication_schedule:
+ *                 type: string
+ *                 enum: [weekly, monthly]
+ *                 description: Tần suất xuất bản
+ *               scheduled_publish_at:
+ *                 type: string
+ *                 format: date-time
+ *                 description: Ngày giờ cụ thể để chapter đầu tiên được publish
+ *     responses:
+ *       200:
+ *         description: Series confirmed for publishing
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     series:
+ *                       type: object
+ *                       properties:
+ *                         _id:
+ *                           type: string
+ *                         name:
+ *                           type: string
+ *                         status:
+ *                           type: string
+ *                           example: approved_by_EB
+ *                         is_public:
+ *                           type: boolean
+ *                         publication_schedule:
+ *                           type: string
+ *                           enum: [weekly, monthly]
+ *                         scheduled_publish_at:
+ *                           type: string
+ *                           format: date-time
+ *                     chapters_scheduled:
+ *                       type: integer
+ *                       description: Số chapter được scheduled tự động (luôn là 0 — chapter chờ TE publish thủ công)
+ *                     chapter_ready_for_te:
+ *                       type: string
+ *                       nullable: true
+ *                       description: ID của chapter đầu tiên ở trạng thái "approved_by_EB" chờ TE publish
+ *                     council_average:
+ *                       type: number
+ *                       description: Điểm trung bình hội đồng
+ *                     message:
+ *                       type: string
+ *       400:
+ *         description: Score below 2.5 or missing evaluation
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: false
+ *                 message:
+ *                   type: string
+ *       404:
+ *         description: Series not found
+ */
+router.post("/series/:seriesId/confirm-publish", authMiddleware, requireEB, async (req, res, next) => {
   try {
     const { scheduled_publish_at, publication_schedule } = req.body;
 
-    const chapter = await Chapter.findOne({ _id: req.params.chapterId });
-    if (!chapter) return next(new AppError("Chapter not found", 404));
-
-    const series = await Series.findById(chapter.series_id);
+    const series = await Series.findById(req.params.seriesId);
     if (!series) return next(new AppError("Series not found", 404));
 
     // Lấy evaluation mới nhất để kiểm tra điểm
@@ -734,17 +1278,47 @@ router.post("/chapter/:chapterId/confirm-publish", authMiddleware, requireEB, as
       return next(new AppError(`Điểm ${councilAvg} thấp hơn 2.5. Series chưa đủ điều kiện xuất bản.`, 400));
     }
 
-    // Cập nhật Series thành published - KHÔNG đổi chapter status
-    series.status = "published";
+    // Cập nhật Series thành approved_by_EB (CHƯA published - chờ đến ngày)
+    // Series.status = "published" sẽ do job scheduledPublish set theo scheduled_publish_at
+    // (không phụ thuộc vào chapter - kể cả khi Series chưa có chapter nào được publish)
+    series.status = SERIES_STATUS.APPROVED_BY_EB;
+    series.is_public = true;
     // publication_schedule chỉ nhận weekly/monthly
     if (publication_schedule && ["weekly", "monthly"].includes(publication_schedule)) {
       series.publication_schedule = publication_schedule;
     }
-    // scheduled_publish_at là ngày cụ thể - lưu vào field khác nếu có
+    // scheduled_publish_at là ngày cụ thể - lưu vào Series
     if (scheduled_publish_at) {
       series.scheduled_publish_at = new Date(scheduled_publish_at);
     }
     await series.save();
+
+    // Lưu ý: KHÔNG schedule chapter tự động.
+    // Chapter sẽ được TE publish thủ công sau khi Mangaka sửa xong và TE review lại.
+    // Job scheduledPublish sẽ tự động set Series.status = "published" theo scheduled_publish_at.
+    // Cập nhật chapter 1 (nếu có) sang trạng thái sẵn sàng cho TE review/publish sau:
+    //   - chapter 1 status = "approved_by_EB" (chờ TE publish)
+    //   - KHÔNG set is_scheduled = true (chờ TE publish thủ công)
+    //   - Giữ revision_notes/annotations để TE xem lịch sử feedback từ EB
+    const pendingEBChapters = await Chapter.find({
+      series_id: series._id,
+      status: "pending_EB",
+    });
+    // Chapter 1 (đầu tiên) sẽ là chapter đầu tiên sau khi sắp xếp theo chapter_number
+    const orderedChapters = pendingEBChapters.sort((a, b) => (a.chapter_number || 0) - (b.chapter_number || 0));
+    if (orderedChapters.length > 0) {
+      // Chỉ chuyển chapter đầu tiên sang approved_by_EB để TE publish thủ công
+      // Các chapter còn lại (nếu có) vẫn ở pending_EB chờ EB duyệt từng chapter
+      const firstChapter = orderedChapters[0];
+      await Chapter.findByIdAndUpdate(firstChapter._id, {
+        status: CHAPTER_STATUS.APPROVED_BY_EB,
+        is_scheduled: false,
+        // Lưu publication_schedule để TE dùng khi publish chapter
+        ...(publication_schedule && ["weekly", "monthly"].includes(publication_schedule)
+          ? { publication_schedule }
+          : {}),
+      });
+    }
 
     // Gửi thông báo cho Mangaka
     await notifySeriesPublished(Notification, series.author_id, series, scheduled_publish_at);
@@ -756,11 +1330,16 @@ router.post("/chapter/:chapterId/confirm-publish", authMiddleware, requireEB, as
           _id: series._id,
           name: series.name,
           status: series.status,
+          is_public: series.is_public,
           publication_schedule: series.publication_schedule,
           scheduled_publish_at: series.scheduled_publish_at,
         },
+        chapters_scheduled: 0,
+        chapter_ready_for_te: orderedChapters.length > 0 ? orderedChapters[0]._id : null,
         council_average: councilAvg,
-        message: "Series đã được xuất bản thành công.",
+        message: scheduled_publish_at
+          ? `Series đã được duyệt. Series sẽ tự động chuyển sang "published" vào ${new Date(scheduled_publish_at).toLocaleString("vi-VN")}. Chapter đầu tiên sẽ chờ TE publish thủ công sau khi Mangaka sửa xong.`
+          : `Series đã được duyệt. Chapter đầu tiên sẽ chờ TE publish thủ công sau khi Mangaka sửa xong.`,
       },
     });
   } catch (error) {

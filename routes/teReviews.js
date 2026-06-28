@@ -11,8 +11,7 @@ const Task = require("../models/Task");
 const TEReview = require("../models/TEReview");
 const SeriesReview = require("../models/SeriesReview");
 const Notification = require("../models/Notification");
-const { CHAPTER_STATUS } = require("../utils/constants");
-const { TE_DECISION } = require("../utils/constants");
+const { CHAPTER_STATUS, TE_DECISION, SERIES_STATUS } = require("../utils/constants");
 const { ROLES } = require("../utils/constants");
 const {
   notifyChapterToTE,
@@ -24,6 +23,74 @@ const {
 } = require("../services/notificationService");
 
 // ─── GET /te-reviews/pending ─────────────────────────────────────────────────
+/**
+ * @swagger
+ * /te-reviews/pending:
+ *   get:
+ *     tags: [TEReviews]
+ *     summary: Lấy danh sách chapter chờ TE duyệt
+ *     description: |
+ *       TE chỉ thấy chapter:
+ *       - Được gán cho mình (te_id = req.user.nameid)
+ *       - HOẶC chưa ai gán (te_id = null)
+ *       Ở trạng thái `pending_TE` hoặc `approved_by_EB`
+ *
+ *       Mỗi item có kèm trường `phase` để FE phân biệt 2 giai đoạn:
+ *       - `series_level`: Series chưa EB-approved (status ∈ {draft, submitted, rejected, cancelled})
+ *         → TE duyệt cả Series (gửi EB / yêu cầu revision).
+ *       - `chapter_level`: Series đã EB-approved (status ∈ {approved_by_EB, approved, published})
+ *         → TE publish chapter thủ công qua `POST /te-reviews/chapter/:id/publish`.
+ *     security:
+ *       - BearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Danh sách chapter chờ duyệt
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success: { type: boolean }
+ *                 data:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       _id: { type: string }
+ *                       chapter_number: { type: number }
+ *                       title: { type: string }
+ *                       status:
+ *                         type: string
+ *                         enum: [pending_TE, approved_by_EB]
+ *                       phase:
+ *                         type: string
+ *                         enum: [series_level, chapter_level]
+ *                         description: Giai đoạn review (series_level | chapter_level)
+ *                       submitted_by:
+ *                         type: object
+ *                         properties:
+ *                           username: { type: string }
+ *                           full_name: { type: string }
+ *                           phoneNumber: { type: string }
+ *                       series_id:
+ *                         type: object
+ *                         properties:
+ *                           _id: { type: string }
+ *                           name: { type: string }
+ *                           status: { type: string }
+ *                           publication_schedule: { type: string, nullable: true }
+ *                           author_id: { type: string }
+ *                           cover_image_url: { type: string }
+ *                           genre:
+ *                             type: array
+ *                             items: { type: string }
+ *                           tags:
+ *                             type: array
+ *                             items: { type: string }
+ *                           synopsis: { type: string }
+ *                       te_assigned_at: { type: string, format: date-time }
+ *                       updatedAt: { type: string, format: date-time }
+ */
 // TE chỉ thấy chapter được gán cho mình HOẶC chưa ai gán, ở trạng thái pending_TE hoặc approved_by_EB
 router.get("/pending", authMiddleware, requireTE, async (req, res, next) => {
   try {
@@ -35,17 +102,88 @@ router.get("/pending", authMiddleware, requireTE, async (req, res, next) => {
       ],
     })
       .populate("submitted_by", "username full_name phoneNumber")
-      .populate("series_id", "name status")
+      .populate("series_id", "name status publication_schedule author_id cover_image_url genre tags synopsis")
       .sort({ te_assigned_at: 1, updatedAt: 1 })
       .lean();
 
-    return res.status(200).json({ success: true, data: chapters });
+    // Đính kèm `phase` để FE phân biệt:
+    //   - series_level: Series chưa EB-approved (TE duyệt cả Series, gồm draft/submitted/rejected/cancelled)
+    //   - chapter_level: Series đã EB-approved (TE publish chapter thủ công, gồm approved_by_EB/approved/published)
+    const enriched = chapters.map((c) => {
+      const seriesStatus = c.series_id && c.series_id.status;
+      const phase = seriesStatus && [SERIES_STATUS.APPROVED_BY_EB, SERIES_STATUS.APPROVED, SERIES_STATUS.PUBLISHED].includes(seriesStatus)
+        ? "chapter_level"
+        : "series_level";
+      return { ...c, phase };
+    });
+
+    return res.status(200).json({ success: true, data: enriched });
   } catch (error) {
     next(error);
   }
 });
 
 // ─── GET /te-reviews/history ─────────────────────────────────────────────────
+/**
+ * @swagger
+ * /te-reviews/history:
+ *   get:
+ *     tags: [TEReviews]
+ *     summary: Lịch sử các review của TE hiện tại
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: decision
+ *         schema:
+ *           type: string
+ *           enum: [approved, rejected]
+ *         description: Lọc theo quyết định
+ *       - in: query
+ *         name: from_date
+ *         schema:
+ *           type: string
+ *           format: date
+ *         description: Từ ngày (inclusive)
+ *       - in: query
+ *         name: to_date
+ *         schema:
+ *           type: string
+ *           format: date
+ *         description: Đến ngày (inclusive)
+ *     responses:
+ *       200:
+ *         description: Danh sách review đã hoàn thành
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success: { type: boolean }
+ *                 data:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       _id: { type: string }
+ *                       decision: { type: string }
+ *                       createdAt: { type: string, format: date-time }
+ *                       chapter_id:
+ *                         type: object
+ *                         properties:
+ *                           _id: { type: string }
+ *                           chapter_number: { type: number }
+ *                           title: { type: string }
+ *                           series_id:
+ *                             type: object
+ *                             properties:
+ *                               name: { type: string }
+ *                           submitted_by:
+ *                             type: object
+ *                             properties:
+ *                               username: { type: string }
+ *                               full_name: { type: string }
+ */
 router.get("/history", authMiddleware, requireTE, async (req, res, next) => {
   try {
     const { decision, from_date, to_date } = req.query;
@@ -80,6 +218,51 @@ router.get("/history", authMiddleware, requireTE, async (req, res, next) => {
 });
 
 // ─── GET /te-reviews/chapter/:chapterId ─────────────────────────────────────
+/**
+ * @swagger
+ * /te-reviews/chapter/{chapterId}:
+ *   get:
+ *     tags: [TEReviews]
+ *     summary: Lấy TEReview của một chapter
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: chapterId
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Review của chapter
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success: { type: boolean }
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     _id: { type: string }
+ *                     chapter_id: { type: string }
+ *                     decision:
+ *                       type: string
+ *                       enum: [approved, rejected]
+ *                     notes: { type: string }
+ *                     annotations:
+ *                       type: array
+ *                       items: { type: object }
+ *                     reviewed_by:
+ *                       type: object
+ *                       properties:
+ *                         username: { type: string }
+ *                         full_name: { type: string }
+ *                         phoneNumber: { type: string }
+ *                     createdAt: { type: string, format: date-time }
+ *       404:
+ *         description: Review not found
+ */
 router.get("/chapter/:chapterId", authMiddleware, requireTE, async (req, res, next) => {
   try {
     const review = await TEReview.findOne({ chapter_id: req.params.chapterId })
@@ -98,6 +281,74 @@ router.get("/chapter/:chapterId", authMiddleware, requireTE, async (req, res, ne
 });
 
 // ─── GET /te-reviews/dashboard ───────────────────────────────────────────────
+/**
+ * @swagger
+ * /te-reviews/dashboard:
+ *   get:
+ *     tags: [TEReviews]
+ *     summary: Dashboard TE - gom chapter theo series + cảnh báo trễ hạn
+ *     description: |
+ *       Trả về:
+ *       - summary: tổng số chapter pending / in-revision / late
+ *       - by_series: danh sách series với chapter pending/in-revision, oldest_pending, is_late (>7 ngày), estimated_deadline
+ *     security:
+ *       - BearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Dashboard data
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success: { type: boolean }
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     summary:
+ *                       type: object
+ *                       properties:
+ *                         total_pending: { type: integer }
+ *                         total_in_revision: { type: integer }
+ *                         total_chapters: { type: integer }
+ *                         series_count: { type: integer }
+ *                         late_count: { type: integer }
+ *                     by_series:
+ *                       type: array
+ *                       items:
+ *                         type: object
+ *                         properties:
+ *                           series:
+ *                             type: object
+ *                             properties:
+ *                               _id: { type: string }
+ *                               name: { type: string }
+ *                               publication_schedule:
+ *                                 type: string
+ *                                 enum: [weekly, monthly]
+ *                           pending_count: { type: integer }
+ *                           in_revision_count: { type: integer }
+ *                           oldest_pending:
+ *                             type: object
+ *                             nullable: true
+ *                             properties:
+ *                               _id: { type: string }
+ *                               chapter_number: { type: number }
+ *                               title: { type: string }
+ *                               updatedAt: { type: string, format: date-time }
+ *                               age_hours: { type: integer }
+ *                           is_late: { type: boolean }
+ *                           estimated_deadline:
+ *                             type: string
+ *                             format: date-time
+ *                             nullable: true
+ *                           pending_chapters:
+ *                             type: array
+ *                             items: { type: object }
+ *                           in_revision_chapters:
+ *                             type: array
+ *                             items: { type: object }
+ */
 router.get("/dashboard", authMiddleware, requireTE, async (req, res, next) => {
   try {
     const now = new Date();
@@ -198,6 +449,82 @@ router.get("/dashboard", authMiddleware, requireTE, async (req, res, next) => {
 });
 
 // ─── GET /te-reviews/studio-progress ─────────────────────────────────────────
+/**
+ * @swagger
+ * /te-reviews/studio-progress:
+ *   get:
+ *     tags: [TEReviews]
+ *     summary: Tiến độ studio - thống kê chapter/task theo series
+ *     description: |
+ *       Trả về tiến độ của các series (đang approved/published).
+ *       - Mangaka: chỉ xem series của mình
+ *       - TE/EB: xem tất cả
+ *       Filter thêm bằng `series_id` query.
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: series_id
+ *         schema:
+ *           type: string
+ *         description: Filter theo series ID (optional)
+ *     responses:
+ *       200:
+ *         description: Studio progress
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success: { type: boolean }
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     summary:
+ *                       type: object
+ *                       properties:
+ *                         total_active_series: { type: integer }
+ *                         total_chapters_in_production: { type: integer }
+ *                         chapters_at_risk: { type: integer }
+ *                         fetched_at: { type: string, format: date-time }
+ *                     series_progress:
+ *                       type: array
+ *                       items:
+ *                         type: object
+ *                         properties:
+ *                           series:
+ *                             type: object
+ *                             properties:
+ *                               _id: { type: string }
+ *                               name: { type: string }
+ *                               status: { type: string }
+ *                               author_id:
+ *                                 type: object
+ *                                 properties:
+ *                                   username: { type: string }
+ *                                   full_name: { type: string }
+ *                                   phoneNumber: { type: string }
+ *                           task_stats:
+ *                             type: object
+ *                             properties:
+ *                               total: { type: integer }
+ *                               by_status:
+ *                                 type: object
+ *                                 additionalProperties: { type: integer }
+ *                               approved: { type: integer }
+ *                               completion_rate:
+ *                                 type: number
+ *                                 nullable: true
+ *                           chapter_stats:
+ *                             type: object
+ *                             properties:
+ *                               total: { type: integer }
+ *                               by_status:
+ *                                 type: object
+ *                                 additionalProperties: { type: integer }
+ *                               in_production: { type: integer }
+ *                               at_risk: { type: integer }
+ */
 router.get("/studio-progress", authMiddleware, requireMangakaOrTEOrEB, async (req, res, next) => {
   try {
     const { series_id } = req.query;
@@ -206,10 +533,11 @@ router.get("/studio-progress", authMiddleware, requireMangakaOrTEOrEB, async (re
     const ACTIVE_STATUSES = [
       CHAPTER_STATUS.DRAFT, CHAPTER_STATUS.PENDING_ASSISTANT, CHAPTER_STATUS.PENDING_TE,
       CHAPTER_STATUS.TE_REVISION, CHAPTER_STATUS.PENDING_EB, CHAPTER_STATUS.EB_REVISION,
+      CHAPTER_STATUS.APPROVED_BY_EB,
       CHAPTER_STATUS.PUBLISHED,
     ];
 
-    const seriesFilter = { status: { $in: ["approved", "published"] } };
+    const seriesFilter = { status: { $in: [SERIES_STATUS.APPROVED_BY_EB, SERIES_STATUS.APPROVED, SERIES_STATUS.PUBLISHED] } };
     if (series_id) seriesFilter._id = series_id;
     if (req.user.role === "Mangaka") seriesFilter.author_id = req.user.nameid;
 
@@ -237,7 +565,7 @@ router.get("/studio-progress", authMiddleware, requireMangakaOrTEOrEB, async (re
       const completionRate = taskTotal === 0 ? null : +(taskApproved / taskTotal).toFixed(2);
 
       const atRisk = chapters.filter((c) => {
-        if (![CHAPTER_STATUS.PENDING_TE, CHAPTER_STATUS.TE_REVISION, CHAPTER_STATUS.PENDING_EB, CHAPTER_STATUS.EB_REVISION].includes(c.status)) return false;
+        if (![CHAPTER_STATUS.PENDING_TE, CHAPTER_STATUS.TE_REVISION, CHAPTER_STATUS.PENDING_EB, CHAPTER_STATUS.EB_REVISION, CHAPTER_STATUS.APPROVED_BY_EB].includes(c.status)) return false;
         return now - new Date(c.updatedAt) > SEVEN_DAYS_MS;
       }).length;
       chaptersAtRisk += atRisk;
@@ -270,7 +598,49 @@ router.get("/studio-progress", authMiddleware, requireMangakaOrTEOrEB, async (re
 // ════════════════════════════════════════════════════════════════════════════
 
 // ─── GET /series-review/:seriesId ────────────────────────────────────────────
-// Lấy series review hiện tại của TE cho series này
+/**
+ * @swagger
+ * /te-reviews/series-review/{seriesId}:
+ *   get:
+ *     tags: [TEReviews]
+ *     summary: Lấy series review hiện tại của TE cho series
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: seriesId
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Series review (null nếu chưa có)
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success: { type: boolean }
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     review:
+ *                       type: object
+ *                       nullable: true
+ *                       properties:
+ *                         _id: { type: string }
+ *                         series_id: { type: string }
+ *                         decision:
+ *                           type: string
+ *                           enum: [draft, approved, revision]
+ *                         feedback: { type: string }
+ *                         quick_notes: { type: string }
+ *                         revision_feedback: { type: string }
+ *                         createdAt: { type: string, format: date-time }
+ *                         updatedAt: { type: string, format: date-time }
+ *       404:
+ *         description: Series not found
+ */
 router.get("/series-review/:seriesId", authMiddleware, requireTE, async (req, res, next) => {
   try {
     const { seriesId } = req.params;
@@ -303,7 +673,40 @@ router.get("/series-review/:seriesId", authMiddleware, requireTE, async (req, re
 });
 
 // ─── POST /series-review/:seriesId ───────────────────────────────────────────
-// [Nút: Save Review] — Lưu nháp đánh giá series, KHÔNG gửi đi
+/**
+ * @swagger
+ * /te-reviews/series-review/{seriesId}:
+ *   post:
+ *     tags: [TEReviews]
+ *     summary: Save draft Series review (không gửi đi)
+ *     description: |
+ *       [Nút: Save Review] — Lưu nháp đánh giá series, KHÔNG gửi đi.
+ *       Tạo mới nếu chưa có, cập nhật nếu đã có.
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: seriesId
+ *         required: true
+ *         schema:
+ *           type: string
+ *     requestBody:
+ *       required: false
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               feedback:
+ *                 type: string
+ *               quick_notes:
+ *                 type: string
+ *     responses:
+ *       200:
+ *         description: Draft saved
+ *       404:
+ *         description: Series not found
+ */
 router.post("/series-review/:seriesId", authMiddleware, requireTE, async (req, res, next) => {
   try {
     const { seriesId } = req.params;
@@ -343,9 +746,97 @@ router.post("/series-review/:seriesId", authMiddleware, requireTE, async (req, r
 });
 
 // ─── POST /series-review/:seriesId/submit ────────────────────────────────────
-// [Nút: Approve & Publish / Reject & Request Edit]
-//   action = "approve" → gửi EB (chapters → pending_EB)
-//   action = "reject"  → gửi Mangaka (series → revision)
+/**
+ * @swagger
+ * /te-reviews/series-review/{seriesId}/submit:
+ *   post:
+ *     tags: [TEReviews]
+ *     summary: TE submit Series review (approve → EB / reject → Mangaka)
+ *     description: |
+ *       [Nút: Approve & Publish / Reject & Request Edit]
+ *
+ *       - action = "approve":
+ *         - Tất cả chapter `pending_TE` của series (được assign cho TE này) → `pending_EB`
+ *         - Gửi notification cho tất cả EB
+ *         - SeriesReview.decision = "approved"
+ *       - action = "reject":
+ *         - Series → revision (revision_source = "TE", revision_notes = revision_feedback)
+ *         - Gửi notification cho Mangaka
+ *         - SeriesReview.decision = "revision"
+ *
+ *       Chapter chỉ là nội dung TE review để đưa ra quyết định cho Series.
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: seriesId
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Series ID
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [action]
+ *             properties:
+ *               action:
+ *                 type: string
+ *                 enum: [approve, reject]
+ *                 description: Hành động của TE
+ *               feedback:
+ *                 type: string
+ *                 description: Feedback tổng hợp cho series
+ *               quick_notes:
+ *                 type: string
+ *                 description: Ghi chú nhanh
+ *               revision_feedback:
+ *                 type: string
+ *                 description: Feedback yêu cầu sửa (chỉ dùng khi action=reject)
+ *     responses:
+ *       200:
+ *         description: Series review submitted
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     action:
+ *                       type: string
+ *                       enum: [approve, reject]
+ *                     message:
+ *                       type: string
+ *                     chapters_to_eb:
+ *                       type: array
+ *                       description: Chỉ trả về khi action=approve
+ *                       items:
+ *                         type: object
+ *                         properties:
+ *                           _id: { type: string }
+ *                           chapter_number: { type: number }
+ *                           title: { type: string }
+ *                     review:
+ *                       type: object
+ *                       properties:
+ *                         _id: { type: string }
+ *                         decision:
+ *                           type: string
+ *                           enum: [approved, revision]
+ *                         feedback: { type: string }
+ *                         quick_notes: { type: string }
+ *                         revision_feedback: { type: string }
+ *       400:
+ *         description: Invalid action
+ *       404:
+ *         description: Series not found
+ */
 router.post("/series-review/:seriesId/submit", authMiddleware, requireTE, async (req, res, next) => {
   try {
     const { seriesId } = req.params;
@@ -453,7 +944,59 @@ router.post("/series-review/:seriesId/submit", authMiddleware, requireTE, async 
 });
 
 // ─── GET /series-review/:seriesId/next-chapter ───────────────────────────────
-// [Nút: Next Chapter] — Tìm chapter pending_TE tiếp theo của series
+/**
+ * @swagger
+ * /te-reviews/series-review/{seriesId}/next-chapter:
+ *   get:
+ *     tags: [TEReviews]
+ *     summary: Lấy chapter pending_TE tiếp theo của series (cho nút Next Chapter)
+ *     description: |
+ *       Tìm chapter `pending_TE` được assign cho TE hiện tại,
+ *       sắp xếp theo chapter_number tăng dần (ưu tiên chapter nhỏ nhất).
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: seriesId
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Next chapter (null nếu hết)
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success: { type: boolean }
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     next_chapter:
+ *                       type: object
+ *                       nullable: true
+ *                       properties:
+ *                         _id: { type: string }
+ *                         chapter_number: { type: number }
+ *                         title: { type: string }
+ *                         status: { type: string }
+ *                         submitted_by:
+ *                           type: object
+ *                           properties:
+ *                             username: { type: string }
+ *                             full_name: { type: string }
+ *                         series:
+ *                           type: object
+ *                           properties:
+ *                             _id: { type: string }
+ *                             name: { type: string }
+ *                         updatedAt: { type: string, format: date-time }
+ *                     message:
+ *                       type: string
+ *       404:
+ *         description: Series not found
+ */
 router.get("/series-review/:seriesId/next-chapter", authMiddleware, requireTE, async (req, res, next) => {
   try {
     const { seriesId } = req.params;
@@ -497,6 +1040,76 @@ router.get("/series-review/:seriesId/next-chapter", authMiddleware, requireTE, a
 });
 
 // ─── GET /te-reviews/series/:seriesId/profile ───────────────────────────────
+/**
+ * @swagger
+ * /te-reviews/series/{seriesId}/profile:
+ *   get:
+ *     tags: [TEReviews]
+ *     summary: Profile tổng hợp của series cho TE/EB
+ *     description: |
+ *       Trả về:
+ *       - Series info
+ *       - chapter_status_breakdown: số chapter theo từng status
+ *       - my_series_review: SeriesReview của TE/EB hiện tại cho series này
+ *       - my_approved_count: số chapter mà TE hiện tại đã approved
+ *       - ranking: vị trí xếp hạng theo average_score trong tất cả series published
+ *       - recent_chapters: 10 chapter gần nhất
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: seriesId
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Series profile
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success: { type: boolean }
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     series:
+ *                       $ref: '#/components/schemas/Series'
+ *                     chapter_status_breakdown:
+ *                       type: object
+ *                       additionalProperties: { type: integer }
+ *                     my_series_review:
+ *                       type: object
+ *                       nullable: true
+ *                       properties:
+ *                         _id: { type: string }
+ *                         decision:
+ *                           type: string
+ *                           enum: [draft, approved, revision]
+ *                         feedback: { type: string }
+ *                         quick_notes: { type: string }
+ *                         revision_feedback: { type: string }
+ *                     my_approved_count: { type: integer }
+ *                     ranking:
+ *                       type: object
+ *                       properties:
+ *                         position: { type: integer, nullable: true }
+ *                         score: { type: number }
+ *                         total_votes: { type: integer }
+ *                     recent_chapters:
+ *                       type: array
+ *                       items:
+ *                         type: object
+ *                         properties:
+ *                           _id: { type: string }
+ *                           chapter_number: { type: number }
+ *                           title: { type: string }
+ *                           status: { type: string }
+ *                           updatedAt: { type: string, format: date-time }
+ *       404:
+ *         description: Series not found
+ */
 router.get("/series/:seriesId/profile", authMiddleware, requireTEOrEB, async (req, res, next) => {
   try {
     const { seriesId } = req.params;
@@ -563,6 +1176,68 @@ router.get("/series/:seriesId/profile", authMiddleware, requireTEOrEB, async (re
 // ════════════════════════════════════════════════════════════════════════════
 
 // ─── GET /te-reviews/chapter/:chapterId/pages ────────────────────────────────
+/**
+ * @swagger
+ * /te-reviews/chapter/{chapterId}/pages:
+ *   get:
+ *     tags: [TEReviews]
+ *     summary: Lấy pages của chapter (kèm annotations) để TE review
+ *     description: |
+ *       - `page=N`: lấy 1 page (mặc định page=1), trả về pagination
+ *       - `all=true`: lấy tất cả pages cùng lúc
+ *       Mỗi page có format URL normalize (final_image_url, result_image_url, original_image_url, url, image_url, imageUrl)
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: chapterId
+ *         required: true
+ *         schema:
+ *           type: string
+ *       - in: query
+ *         name: page
+ *         schema:
+ *           type: integer
+ *           default: 1
+ *       - in: query
+ *         name: all
+ *         schema:
+ *           type: boolean
+ *           default: false
+ *     responses:
+ *       200:
+ *         description: Pages + annotations
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success: { type: boolean }
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     page:
+ *                       type: object
+ *                       nullable: true
+ *                     pages:
+ *                       type: array
+ *                       items: { type: object }
+ *                     pagination:
+ *                       type: object
+ *                       properties:
+ *                         page: { type: integer }
+ *                         limit: { type: integer }
+ *                         total: { type: integer }
+ *                         has_prev: { type: boolean }
+ *                         has_next: { type: boolean }
+ *                         prev_page: { type: integer, nullable: true }
+ *                         next_page: { type: integer, nullable: true }
+ *                     annotations:
+ *                       type: array
+ *                       items: { type: object }
+ *       404:
+ *         description: Chapter not found
+ */
 // Query params:
 //   page=N      - Lấy 1 page (mặc định)
 //   all=true    - Lấy tất cả pages cùng lúc
@@ -682,6 +1357,54 @@ router.get("/chapter/:chapterId/pages", authMiddleware, requireTE, async (req, r
 });
 
 // ─── GET /te-reviews/chapter/:chapterId/page/:pageId/annotations ───────────
+/**
+ * @swagger
+ * /te-reviews/chapter/{chapterId}/page/{pageId}/annotations:
+ *   get:
+ *     tags: [TEReviews]
+ *     summary: Lấy annotations của 1 page trong chapter
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: chapterId
+ *         required: true
+ *         schema:
+ *           type: string
+ *       - in: path
+ *         name: pageId
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Annotations của page
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success: { type: boolean }
+ *                 data:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       _id: { type: string }
+ *                       page_id: { type: string }
+ *                       order: { type: integer }
+ *                       region:
+ *                         type: object
+ *                         properties:
+ *                           x: { type: number }
+ *                           y: { type: number }
+ *                           width: { type: number }
+ *                           height: { type: number }
+ *                       content: { type: string }
+ *                       error_type: { type: string }
+ *       404:
+ *         description: Page not found in chapter
+ */
 router.get("/chapter/:chapterId/page/:pageId/annotations", authMiddleware, requireTE, async (req, res, next) => {
   try {
     const { chapterId, pageId } = req.params;
@@ -700,6 +1423,65 @@ router.get("/chapter/:chapterId/page/:pageId/annotations", authMiddleware, requi
 });
 
 // ─── POST /te-reviews/chapter/:chapterId/annotations ───────────────────────
+/**
+ * @swagger
+ * /te-reviews/chapter/{chapterId}/annotations:
+ *   post:
+ *     tags: [TEReviews]
+ *     summary: Tạo annotation mới cho 1 page của chapter
+ *     description: |
+ *       TE vẽ ô khoanh trên page + nhập nội dung.
+ *       Hỗ trợ 2 format region:
+ *       - `region: {x,y,width,height}` (object)
+ *       - Hoặc flat: `x, y, w, h, width, height, region_x, region_y, region_width, region_height`
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: chapterId
+ *         required: true
+ *         schema:
+ *           type: string
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [page_id, content]
+ *             properties:
+ *               page_id:
+ *                 type: string
+ *                 description: Cũng có thể gửi là `id`
+ *               id:
+ *                 type: string
+ *                 description: Alias của page_id
+ *               region:
+ *                 type: object
+ *                 properties:
+ *                   x: { type: number }
+ *                   y: { type: number }
+ *                   width: { type: number }
+ *                   height: { type: number }
+ *               x: { type: number }
+ *               y: { type: number }
+ *               w: { type: number }
+ *               h: { type: number }
+ *               content:
+ *                 type: string
+ *                 description: Nội dung ghi chú
+ *               error_type:
+ *                 type: string
+ *                 enum: [content, dialogue, script, art, other]
+ *                 default: other
+ *     responses:
+ *       201:
+ *         description: Annotation created
+ *       400:
+ *         description: Missing required fields
+ *       404:
+ *         description: Page not found in chapter
+ */
 router.post("/chapter/:chapterId/annotations", authMiddleware, requireTE, async (req, res, next) => {
   try {
     const { chapterId } = req.params;
@@ -768,6 +1550,58 @@ router.post("/chapter/:chapterId/annotations", authMiddleware, requireTE, async 
 });
 
 // ─── PATCH /te-reviews/chapter/:chapterId/annotations/:annotationId ────────
+/**
+ * @swagger
+ * /te-reviews/chapter/{chapterId}/annotations/{annotationId}:
+ *   patch:
+ *     tags: [TEReviews]
+ *     summary: Cập nhật annotation
+ *     description: |
+ *       Cập nhật region/content/error_type/order. Có thể truyền `region` object HOẶC flat fields.
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: chapterId
+ *         required: true
+ *         schema:
+ *           type: string
+ *       - in: path
+ *         name: annotationId
+ *         required: true
+ *         schema:
+ *           type: string
+ *     requestBody:
+ *       required: false
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               region:
+ *                 type: object
+ *                 properties:
+ *                   x: { type: number }
+ *                   y: { type: number }
+ *                   width: { type: number }
+ *                   height: { type: number }
+ *               x: { type: number }
+ *               y: { type: number }
+ *               w: { type: number }
+ *               h: { type: number }
+ *               content: { type: string }
+ *               error_type:
+ *                 type: string
+ *                 enum: [content, dialogue, script, art, other]
+ *               order: { type: integer, minimum: 0 }
+ *     responses:
+ *       200:
+ *         description: Annotation updated
+ *       400:
+ *         description: Invalid input
+ *       404:
+ *         description: Review or annotation not found
+ */
 router.patch("/chapter/:chapterId/annotations/:annotationId", authMiddleware, requireTE, async (req, res, next) => {
   try {
     const { chapterId, annotationId } = req.params;
@@ -813,6 +1647,33 @@ router.patch("/chapter/:chapterId/annotations/:annotationId", authMiddleware, re
 });
 
 // ─── DELETE /te-reviews/chapter/:chapterId/annotations/:annotationId ───────
+/**
+ * @swagger
+ * /te-reviews/chapter/{chapterId}/annotations/{annotationId}:
+ *   delete:
+ *     tags: [TEReviews]
+ *     summary: Xóa annotation
+ *     description: |
+ *       Xóa annotation khỏi TEReview. Sau khi xóa, các annotation còn lại trên cùng page sẽ được reorder.
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: chapterId
+ *         required: true
+ *         schema:
+ *           type: string
+ *       - in: path
+ *         name: annotationId
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Annotation deleted
+ *       404:
+ *         description: Review or annotation not found
+ */
 router.delete("/chapter/:chapterId/annotations/:annotationId", authMiddleware, requireTE, async (req, res, next) => {
   try {
     const { chapterId, annotationId } = req.params;
@@ -844,7 +1705,7 @@ router.delete("/chapter/:chapterId/annotations/:annotationId", authMiddleware, r
  * /te-reviews/chapter/{chapterId}/annotations:
  *   get:
  *     summary: Lấy tất cả annotations của chapter
- *     tags: [TE Reviews]
+ *     tags: [TEReviews]
  *     security:
  *       - BearerAuth: []
  *     parameters:
@@ -915,7 +1776,7 @@ router.get("/chapter/:chapterId/annotations", authMiddleware, requireTE, async (
  * /te-reviews/chapter/{chapterId}/te-action:
  *   post:
  *     summary: TE thực hiện hành động với chapter (approve = gửi EB, reject = yêu cầu Mangaka sửa)
- *     tags: [TE Reviews]
+ *     tags: [TEReviews]
  *     security:
  *       - BearerAuth: []
  *     parameters:
@@ -966,12 +1827,12 @@ router.post("/chapter/:chapterId/te-action", authMiddleware, requireTE, async (r
     }
 
     if (action === "approve") {
-      // Kiểm tra series đã approved bởi EB chưa
+      // Kiểm tra series đã được EB duyệt chưa (approved_by_EB / approved / published)
       const series = await Series.findById(chapter.series_id).lean();
-      const seriesApproved = series && ["approved", "published"].includes(series.status);
+      const seriesApproved = series && [SERIES_STATUS.APPROVED_BY_EB, SERIES_STATUS.APPROVED, SERIES_STATUS.PUBLISHED].includes(series.status);
 
       if (seriesApproved) {
-        // Series đã approved/published → TE duyệt xong → Publish trực tiếp
+        // Series đã được EB duyệt → TE duyệt xong → Publish trực tiếp
         chapter.status = CHAPTER_STATUS.PUBLISHED;
         chapter.is_published = true;
         chapter.published_at = new Date();
@@ -982,7 +1843,7 @@ router.post("/chapter/:chapterId/te-action", authMiddleware, requireTE, async (r
 
         const review = await TEReview.findOne({ chapter_id: chapterId });
         if (review) {
-          review.decision = TE_DECISION.APPROVED;
+          review.decision = TE_DECISION.APPROVED_PUBLISH;
           await review.save();
         }
 
@@ -1068,7 +1929,54 @@ router.post("/chapter/:chapterId/te-action", authMiddleware, requireTE, async (r
 });
 
 // ─── POST /te-reviews/chapter/:chapterId/publish ─────────────────────────────
-// TE publish chapter trực tiếp khi Series đã approved bởi EB
+/**
+ * @swagger
+ * /te-reviews/chapter/{chapterId}/publish:
+ *   post:
+ *     tags: [TEReviews]
+ *     summary: TE publish chapter (chapter đã được EB duyệt)
+ *     description: |
+ *       TE publish chapter sau khi đã review sửa xong.
+ *
+ *       **Điều kiện**:
+ *       - Chapter.status = "approved_by_EB"
+ *       - Series.status ∈ ["approved_by_EB", "approved", "published"]
+ *
+ *       **Hành động**:
+ *       - Chapter → "published", is_published = true, published_at = now
+ *       - TEReview.decision = "approved_publish"
+ *       - Nếu Series đang ở "approved_by_EB" → set Series = "published"
+ *       - Notification cho Mangaka
+ *
+ *       **Lưu ý flow 2 giai đoạn**:
+ *       - Giai đoạn 1 (Series chưa EB-approved): TE approve → chapter → "pending_EB", không publish.
+ *       - Giai đoạn 2 (Series đã EB-approved): chapter sau khi EB confirm → "approved_by_EB",
+ *         TE publish thủ công qua endpoint này.
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: chapterId
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Chapter published
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success: { type: boolean }
+ *                 message: { type: string }
+ *                 data:
+ *                   $ref: '#/components/schemas/Chapter'
+ *       400:
+ *         description: Chapter chưa approved_by_EB hoặc Series chưa được EB duyệt
+ *       404:
+ *         description: Chapter not found
+ */
 router.post("/chapter/:chapterId/publish", authMiddleware, requireTE, async (req, res, next) => {
   try {
     const { chapterId } = req.params;
@@ -1081,9 +1989,9 @@ router.post("/chapter/:chapterId/publish", authMiddleware, requireTE, async (req
       return next(new AppError("Chapter không ở trạng thái sẵn sàng publish. Vui lòng duyệt chapter trước.", 400));
     }
 
-    // Kiểm tra series đã approved bởi EB chưa
+    // Kiểm tra series đã được EB duyệt chưa (approved_by_EB / approved / published)
     const series = await Series.findById(chapter.series_id).lean();
-    if (!series || !["approved", "published"].includes(series.status)) {
+    if (!series || ![SERIES_STATUS.APPROVED_BY_EB, SERIES_STATUS.APPROVED, SERIES_STATUS.PUBLISHED].includes(series.status)) {
       return next(new AppError("Series chưa được EB duyệt", 400));
     }
 
@@ -1100,6 +2008,12 @@ router.post("/chapter/:chapterId/publish", authMiddleware, requireTE, async (req
     if (review) {
       review.decision = TE_DECISION.APPROVED_PUBLISH;
       await review.save();
+    }
+
+    // Nếu đây là chapter đầu tiên của Series được publish → set Series.status = "published"
+    // (áp dụng khi Series đang ở "approved_by_EB" - chuyển sang "published")
+    if (series.status === SERIES_STATUS.APPROVED_BY_EB) {
+      await Series.findByIdAndUpdate(series._id, { status: SERIES_STATUS.PUBLISHED });
     }
 
     await notifyChapterTEPublished(
