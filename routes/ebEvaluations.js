@@ -679,6 +679,18 @@ router.post("/series/:seriesId/evaluate", authMiddleware, requireEB, async (req,
       }
       if (!result) return next(new AppError("result is required", 400));
 
+      // Nếu approve → BẮT BUỘC chọn publication_schedule (weekly/monthly) trước
+      if (result === "approved") {
+        if (!publication_schedule || !["weekly", "monthly"].includes(publication_schedule)) {
+          return next(
+            new AppError(
+              "publication_schedule (weekly/monthly) là bắt buộc khi result = 'approved'",
+              400
+            )
+          );
+        }
+      }
+
       // Tính council_average từ member_scores
       const totals = {};
       EB_CRITERIA_KEYS.forEach((k) => {
@@ -727,6 +739,18 @@ router.post("/series/:seriesId/evaluate", authMiddleware, requireEB, async (req,
       // Lần sau: duyệt nhanh
       if (!quick_decision) return next(new AppError("quick_decision is required", 400));
 
+      // Nếu quick_decision = approved → BẮT BUỘC chọn publication_schedule
+      if (quick_decision === "approved") {
+        if (!publication_schedule || !["weekly", "monthly"].includes(publication_schedule)) {
+          return next(
+            new AppError(
+              "publication_schedule (weekly/monthly) là bắt buộc khi quick_decision = 'approved'",
+              400
+            )
+          );
+        }
+      }
+
       evaluation = await EBEvaluation.create({
         series_id: series._id,
         evaluated_by: req.user.nameid,
@@ -734,12 +758,16 @@ router.post("/series/:seriesId/evaluate", authMiddleware, requireEB, async (req,
         quick_decision,
         quick_notes: quick_notes || "",
         result: quick_decision,
+        publication_schedule: quick_decision === "approved" ? publication_schedule : null,
+        scheduled_publish_at: scheduled_publish_at || null,
         notes: notes || "",
       });
 
       series.status = quick_decision;
+      series.eb_evaluation_id = evaluation._id;
       if (quick_decision === "approved") {
         series.is_public = true;
+        series.publication_schedule = publication_schedule;
       }
       await series.save();
     }
@@ -1247,6 +1275,25 @@ router.post("/series/:seriesId/confirm-publish", authMiddleware, requireEB, asyn
     const series = await Series.findById(req.params.seriesId);
     if (!series) return next(new AppError("Series not found", 404));
 
+    // Xác định publication_schedule sẽ dùng:
+    //  - Ưu tiên giá trị truyền vào body (nếu hợp lệ)
+    //  - Nếu không truyền → lấy từ series.publication_schedule (đã set lúc evaluate)
+    //  - Nếu vẫn rỗng → BẮT BUỘC chọn weekly/monthly trước khi confirm-publish
+    let finalSchedule = null;
+    if (publication_schedule && ["weekly", "monthly"].includes(publication_schedule)) {
+      finalSchedule = publication_schedule;
+    } else if (series.publication_schedule && ["weekly", "monthly"].includes(series.publication_schedule)) {
+      finalSchedule = series.publication_schedule;
+    }
+    if (!finalSchedule) {
+      return next(
+        new AppError(
+          "publication_schedule (weekly/monthly) là bắt buộc. Vui lòng chọn weekly hoặc monthly trước khi confirm-publish.",
+          400
+        )
+      );
+    }
+
     // Lấy evaluation mới nhất để kiểm tra điểm
     const latestEval = await EBEvaluation.findOne({ series_id: series._id })
       .sort({ createdAt: -1 })
@@ -1283,10 +1330,8 @@ router.post("/series/:seriesId/confirm-publish", authMiddleware, requireEB, asyn
     // (không phụ thuộc vào chapter - kể cả khi Series chưa có chapter nào được publish)
     series.status = SERIES_STATUS.APPROVED_BY_EB;
     series.is_public = true;
-    // publication_schedule chỉ nhận weekly/monthly
-    if (publication_schedule && ["weekly", "monthly"].includes(publication_schedule)) {
-      series.publication_schedule = publication_schedule;
-    }
+    // publication_schedule: dùng finalSchedule đã validate ở trên
+    series.publication_schedule = finalSchedule;
     // scheduled_publish_at là ngày cụ thể - lưu vào Series
     if (scheduled_publish_at) {
       series.scheduled_publish_at = new Date(scheduled_publish_at);
@@ -1314,9 +1359,7 @@ router.post("/series/:seriesId/confirm-publish", authMiddleware, requireEB, asyn
         status: CHAPTER_STATUS.APPROVED_BY_EB,
         is_scheduled: false,
         // Lưu publication_schedule để TE dùng khi publish chapter
-        ...(publication_schedule && ["weekly", "monthly"].includes(publication_schedule)
-          ? { publication_schedule }
-          : {}),
+        publication_schedule: finalSchedule,
       });
     }
 
