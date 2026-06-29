@@ -6,6 +6,7 @@ const { AppError } = require("../middleware/errorHandler");
 const Series = require("../models/Series");
 const Chapter = require("../models/Chapter");
 const Vote = require("../models/Vote");
+const Page = require("../models/Page");
 const { getCurrentPeriod } = require("../utils/helpers");
 
 /**
@@ -436,6 +437,103 @@ router.get("/votes/mine", authMiddleware, requireReader, async (req, res, next) 
       .lean();
 
     return res.status(200).json({ success: true, data: votes });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ─── GET /reader/chapters/:id/pages ──────────────────────────────────────────
+/**
+ * @swagger
+ * /reader/chapters/{id}/pages:
+ *   get:
+ *     tags: [Readers]
+ *     summary: Get pages for reading a chapter
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Chapter ID
+ *     responses:
+ *       200:
+ *         description: List of pages for the chapter
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 data:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       _id:
+ *                         type: string
+ *                       page_number:
+ *                         type: integer
+ *                       final_image_url:
+ *                         type: string
+ *                       width:
+ *                         type: integer
+ *                       height:
+ *                         type: integer
+ *                 chapter:
+ *                   type: object
+ *                   properties:
+ *                     _id:
+ *                       type: string
+ *                     chapter_number:
+ *                       type: integer
+ *                     title:
+ *                       type: string
+ *                 series:
+ *                   type: object
+ *                   properties:
+ *                     _id:
+ *                       type: string
+ *                     name:
+ *                       type: string
+ *       404:
+ *         description: Chapter not found or not published
+ */
+// Reader lấy danh sách pages để đọc truyện
+router.get("/chapters/:id/pages", authMiddleware, requireReader, async (req, res, next) => {
+  try {
+    const chapter = await Chapter.findOne({
+      _id: req.params.id,
+      is_published: true,
+    })
+      .populate("series_id", "name")
+      .lean();
+
+    if (!chapter) {
+      return next(new AppError("Chapter not found or not published", 404));
+    }
+
+    const pages = await Page.find({ chapter_id: req.params.id })
+      .select("page_number final_image_url width height")
+      .sort({ page_number: 1 })
+      .lean();
+
+    return res.status(200).json({
+      success: true,
+      data: pages,
+      chapter: {
+        _id: chapter._id,
+        chapter_number: chapter.chapter_number,
+        title: chapter.title,
+      },
+      series: {
+        _id: chapter.series_id._id,
+        name: chapter.series_id.name,
+      },
+    });
   } catch (error) {
     next(error);
   }
