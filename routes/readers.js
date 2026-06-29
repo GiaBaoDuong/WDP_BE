@@ -75,7 +75,7 @@ router.get("/series", authMiddleware, requireReader, async (req, res, next) => {
 
     const [series, total] = await Promise.all([
       Series.find(filter)
-        .populate("author_id", "username full_name phoneNumber")
+        .populate("author_id", "username full_name phoneNumber avatar_url")
         .sort({ [sort]: -1 })
         .skip((page - 1) * limit)
         .limit(parseInt(limit))
@@ -83,9 +83,26 @@ router.get("/series", authMiddleware, requireReader, async (req, res, next) => {
       Series.countDocuments(filter),
     ]);
 
+    // Enrich: gắn total_chapters đã publish cho từng series
+    const seriesIds = series.map((s) => s._id);
+    const chapterCounts = await Chapter.aggregate([
+      { $match: { series_id: { $in: seriesIds }, is_published: true } },
+      { $group: { _id: "$series_id", count: { $sum: 1 }, latest_chapter_number: { $max: "$chapter_number" } } },
+    ]);
+    const countMap = new Map(chapterCounts.map((c) => [String(c._id), c]));
+
+    const enriched = series.map((s) => {
+      const stats = countMap.get(String(s._id));
+      return {
+        ...s,
+        total_chapters: stats?.count || 0,
+        latest_chapter_number: stats?.latest_chapter_number || null,
+      };
+    });
+
     return res.status(200).json({
       success: true,
-      data: series,
+      data: enriched,
       pagination: { total, page: parseInt(page), limit: parseInt(limit) },
     });
   } catch (error) {
@@ -132,12 +149,31 @@ router.get("/series/:id", authMiddleware, requireReader, async (req, res, next) 
       is_public: true,
       status: "published",
     })
-      .populate("author_id", "username full_name phoneNumber")
+      .populate("author_id", "username full_name phoneNumber avatar_url")
       .lean();
 
     if (!series) return next(new AppError("Series not found", 404));
 
-    return res.status(200).json({ success: true, data: series });
+    // Enrich: total_chapters đã publish + latest_chapter
+    const [chapterStats, latestChapter] = await Promise.all([
+      Chapter.aggregate([
+        { $match: { series_id: series._id, is_published: true } },
+        { $group: { _id: null, count: { $sum: 1 }, latest_chapter_number: { $max: "$chapter_number" } } },
+      ]),
+      Chapter.findOne({ series_id: series._id, is_published: true })
+        .sort({ chapter_number: -1 })
+        .select("_id chapter_number title published_at")
+        .lean(),
+    ]);
+
+    const enriched = {
+      ...series,
+      total_chapters: chapterStats[0]?.count || 0,
+      latest_chapter_number: chapterStats[0]?.latest_chapter_number || null,
+      latest_chapter: latestChapter || null,
+    };
+
+    return res.status(200).json({ success: true, data: enriched });
   } catch (error) {
     next(error);
   }
