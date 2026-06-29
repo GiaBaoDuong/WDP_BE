@@ -1135,8 +1135,15 @@ router.post("/series-review/:seriesId/review-chapter", authMiddleware, requireTE
     }
 
     // Check TE có được gán chapter không
-    if (!chapter.te_id || String(chapter.te_id) !== String(req.user.nameid)) {
-      return next(new AppError("Bạn không được gán cho chapter này", 403));
+    // Logic: Nếu chapter chưa được gán (te_id = null), TE hiện tại sẽ tự nhận.
+    //       Nếu đã được gán → chỉ TE đó mới được review.
+    if (chapter.te_id && String(chapter.te_id) !== String(req.user.nameid)) {
+      return next(new AppError("Chapter này đã được gán cho TE khác", 403));
+    }
+    if (!chapter.te_id) {
+      // Auto-claim chapter
+      chapter.te_id = req.user.nameid;
+      chapter.te_assigned_at = new Date();
     }
 
     // Lưu SeriesReview (dùng chung cho cả approve/reject)
