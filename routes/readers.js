@@ -7,6 +7,7 @@ const Series = require("../models/Series");
 const Chapter = require("../models/Chapter");
 const Vote = require("../models/Vote");
 const Page = require("../models/Page");
+const Bookshelf = require("../models/Bookshelf");
 const { getCurrentPeriod } = require("../utils/helpers");
 
 /**
@@ -534,6 +535,267 @@ router.get("/chapters/:id/pages", authMiddleware, requireReader, async (req, res
         name: chapter.series_id.name,
       },
     });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// BOOKSHELF - Tủ sách của reader
+// ════════════════════════════════════════════════════════════════════════════
+
+/**
+ * @swagger
+ * /reader/bookshelf:
+ *   get:
+ *     tags: [Readers]
+ *     summary: Lấy danh sách truyện trong tủ sách của reader hiện tại
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: page
+ *         schema:
+ *           type: integer
+ *           default: 1
+ *       - in: query
+ *         name: limit
+ *         schema:
+ *           type: integer
+ *           default: 20
+ *     responses:
+ *       200:
+ *         description: Danh sách truyện đã lưu (kèm thông tin series & số chapter đã publish)
+ *       401:
+ *         description: Unauthorized
+ */
+// ─── GET /reader/bookshelf ──────────────────────────────────────────────────
+// Reader lấy danh sách truyện đã lưu vào tủ sách
+router.get("/bookshelf", authMiddleware, requireReader, async (req, res, next) => {
+  try {
+    const { page = 1, limit = 20 } = req.query;
+    const pageNum = Math.max(1, parseInt(page));
+    const limitNum = Math.min(100, Math.max(1, parseInt(limit)));
+
+    const [items, total] = await Promise.all([
+      Bookshelf.find({ reader_id: req.user.nameid })
+        .sort({ added_at: -1 })
+        .skip((pageNum - 1) * limitNum)
+        .limit(limitNum)
+        .populate({
+          path: "series_id",
+          select: "name cover_image_url genre author_id status is_public",
+          populate: { path: "author_id", select: "username full_name avatar_url" },
+        })
+        .lean(),
+      Bookshelf.countDocuments({ reader_id: req.user.nameid }),
+    ]);
+
+    // Chỉ trả về các series vẫn còn public + published
+    const validSeriesIds = items
+      .filter((it) => it.series_id && it.series_id.is_public && it.series_id.status === "published")
+      .map((it) => it.series_id._id);
+
+    const chapterStats = await Chapter.aggregate([
+      { $match: { series_id: { $in: validSeriesIds }, is_published: true } },
+      {
+        $group: {
+          _id: "$series_id",
+          count: { $sum: 1 },
+          latest_chapter_number: { $max: "$chapter_number" },
+        },
+      },
+    ]);
+    const statsMap = new Map(chapterStats.map((c) => [String(c._id), c]));
+
+    const data = items
+      .filter((it) => it.series_id && it.series_id.is_public && it.series_id.status === "published")
+      .map((it) => {
+        const stats = statsMap.get(String(it.series_id._id));
+        return {
+          _id: it._id,
+          added_at: it.added_at,
+          series: {
+            ...it.series_id,
+            total_chapters: stats?.count || 0,
+            latest_chapter_number: stats?.latest_chapter_number || null,
+          },
+        };
+      });
+
+    return res.status(200).json({
+      success: true,
+      data,
+      pagination: { total, page: pageNum, limit: limitNum },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * @swagger
+ * /reader/bookshelf:
+ *   post:
+ *     tags: [Readers]
+ *     summary: Thêm 1 truyện vào tủ sách (idempotent)
+ *     security:
+ *       - BearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [series_id]
+ *             properties:
+ *               series_id:
+ *                 type: string
+ *     responses:
+ *       201:
+ *         description: Đã thêm vào tủ sách
+ *       200:
+ *         description: Truyện đã có sẵn trong tủ sách (idempotent)
+ *       404:
+ *         description: Series không tồn tại / chưa publish
+ *       400:
+ *         description: Thiếu series_id
+ */
+// ─── POST /reader/bookshelf ─────────────────────────────────────────────────
+// Reader thêm truyện vào tủ sách
+// Body: { series_id }
+router.post("/bookshelf", authMiddleware, requireReader, async (req, res, next) => {
+  try {
+    const { series_id } = req.body;
+    if (!series_id) return next(new AppError("series_id is required", 400));
+
+    const series = await Series.findOne({
+      _id: series_id,
+      is_public: true,
+      status: "published",
+    }).select("_id");
+    if (!series) return next(new AppError("Series not found or not published", 404));
+
+    try {
+      const item = await Bookshelf.create({
+        reader_id: req.user.nameid,
+        series_id,
+      });
+      return res.status(201).json({
+        success: true,
+        data: item,
+        in_bookshelf: true,
+        message: "Added to bookshelf",
+      });
+    } catch (err) {
+      // Duplicate key -> đã có sẵn, idempotent
+      if (err && err.code === 11000) {
+        const existing = await Bookshelf.findOne({
+          reader_id: req.user.nameid,
+          series_id,
+        }).lean();
+        return res.status(200).json({
+          success: true,
+          data: existing,
+          in_bookshelf: true,
+          message: "Already in bookshelf",
+        });
+      }
+      throw err;
+    }
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * @swagger
+ * /reader/bookshelf/{seriesId}:
+ *   delete:
+ *     tags: [Readers]
+ *     summary: Xóa 1 truyện khỏi tủ sách
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: seriesId
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Đã xóa khỏi tủ (hoặc không tồn tại)
+ *       401:
+ *         description: Unauthorized
+ */
+// ─── DELETE /reader/bookshelf/:seriesId ─────────────────────────────────────
+// Reader xóa truyện khỏi tủ sách
+router.delete("/bookshelf/:seriesId", authMiddleware, requireReader, async (req, res, next) => {
+  try {
+    const result = await Bookshelf.findOneAndDelete({
+      reader_id: req.user.nameid,
+      series_id: req.params.seriesId,
+    }).lean();
+
+    return res.status(200).json({
+      success: true,
+      removed: !!result,
+      in_bookshelf: false,
+      message: result ? "Removed from bookshelf" : "Was not in bookshelf",
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * @swagger
+ * /reader/bookshelf/check:
+ *   get:
+ *     tags: [Readers]
+ *     summary: Kiểm tra 1 danh sách series_id có nằm trong tủ sách không
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: series_ids
+ *         schema:
+ *           type: string
+ *         description: Danh sách series_id phân cách bằng dấu phẩy
+ *         required: true
+ *     responses:
+ *       200:
+ *         description: Map { series_id: true/false }
+ *       400:
+ *         description: Thiếu series_ids
+ */
+// ─── GET /reader/bookshelf/check?series_ids=id1,id2 ──────────────────────────
+// Reader kiểm tra nhiều series cùng lúc có trong tủ sách không
+router.get("/bookshelf/check", authMiddleware, requireReader, async (req, res, next) => {
+  try {
+    const raw = req.query.series_ids;
+    if (!raw) return next(new AppError("series_ids is required", 400));
+
+    const ids = String(raw)
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (ids.length === 0) return next(new AppError("series_ids is required", 400));
+
+    const saved = await Bookshelf.find({
+      reader_id: req.user.nameid,
+      series_id: { $in: ids },
+    })
+      .select("series_id")
+      .lean();
+
+    const savedSet = new Set(saved.map((s) => String(s.series_id)));
+    const map = {};
+    ids.forEach((id) => {
+      map[id] = savedSet.has(id);
+    });
+
+    return res.status(200).json({ success: true, data: map });
   } catch (error) {
     next(error);
   }
