@@ -28,23 +28,25 @@ const {
  * /te-reviews/pending:
  *   get:
  *     tags: [TEReviews]
- *     summary: Lấy danh sách chapter chờ TE duyệt
+ *     summary: Lấy danh sách chapter chờ TE duyệt (nhóm theo Series)
  *     description: |
  *       TE chỉ thấy chapter:
  *       - Được gán cho mình (te_id = req.user.nameid)
  *       - HOẶC chưa ai gán (te_id = null)
  *       Ở trạng thái `pending_TE` hoặc `approved_by_EB`
  *
- *       Mỗi item có kèm trường `phase` để FE phân biệt 2 giai đoạn:
+ *       Response chia thành 2 nhóm:
  *       - `series_level`: Series chưa EB-approved (status ∈ {draft, submitted, rejected, cancelled})
- *         → TE duyệt cả Series (gửi EB / yêu cầu revision).
+ *         → TE cần review CẢ Series + Chapter (gửi EB / yêu cầu revision).
  *       - `chapter_level`: Series đã EB-approved (status ∈ {approved_by_EB, approved, published})
- *         → TE publish chapter thủ công qua `POST /te-reviews/chapter/:id/publish`.
+ *         → TE chỉ cần publish Chapter thủ công.
+ *
+ *       FE có thể dùng 2 nhóm này để hiển thị tabs riêng biệt.
  *     security:
  *       - BearerAuth: []
  *     responses:
  *       200:
- *         description: Danh sách chapter chờ duyệt
+ *         description: Danh sách chapter nhóm theo Series, chia 2 mục series_level và chapter_level
  *         content:
  *           application/json:
  *             schema:
@@ -52,48 +54,59 @@ const {
  *               properties:
  *                 success: { type: boolean }
  *                 data:
- *                   type: array
- *                   items:
- *                     type: object
- *                     properties:
- *                       _id: { type: string }
- *                       chapter_number: { type: number }
- *                       title: { type: string }
- *                       status:
- *                         type: string
- *                         enum: [pending_TE, approved_by_EB]
- *                       phase:
- *                         type: string
- *                         enum: [series_level, chapter_level]
- *                         description: Giai đoạn review (series_level | chapter_level)
- *                       submitted_by:
- *                         type: object
- *                         properties:
- *                           username: { type: string }
- *                           full_name: { type: string }
- *                           phoneNumber: { type: string }
- *                       series_id:
- *                         type: object
- *                         properties:
- *                           _id: { type: string }
- *                           name: { type: string }
- *                           status: { type: string }
- *                           publication_schedule: { type: string, nullable: true }
- *                           author_id: { type: string }
- *                           cover_image_url: { type: string }
- *                           genre:
- *                             type: array
- *                             items: { type: string }
- *                           tags:
- *                             type: array
- *                             items: { type: string }
- *                           synopsis: { type: string }
- *                       te_assigned_at: { type: string, format: date-time }
- *                       updatedAt: { type: string, format: date-time }
+ *                   type: object
+ *                   properties:
+ *                     series_level:
+ *                       type: object
+ *                       properties:
+ *                         label: { type: string }
+ *                         description: { type: string }
+ *                         count: { type: number }
+ *                         series:
+ *                           type: array
+ *                           items:
+ *                             type: object
+ *                             properties:
+ *                               _id: { type: string }
+ *                               name: { type: string }
+ *                               status: { type: string }
+ *                               cover_image_url: { type: string }
+ *                               genre: { type: array, items: { type: string } }
+ *                               tags: { type: array, items: { type: string } }
+ *                               synopsis: { type: string }
+ *                               author: { type: object }
+ *                               publication_schedule: { type: string }
+ *                               chapter_count: { type: number }
+ *                               chapters:
+ *                                 type: array
+ *                                 items:
+ *                                   type: object
+ *                                   properties:
+ *                                     _id: { type: string }
+ *                                     chapter_number: { type: number }
+ *                                     title: { type: string }
+ *                                     status: { type: string }
+ *                                     te_assigned_at: { type: string }
+ *                                     updatedAt: { type: string }
+ *                                     submitted_by: { type: object }
+ *                                     te_review_id: { type: string }
+ *                     chapter_level:
+ *                       type: object
+ *                       properties:
+ *                         label: { type: string }
+ *                         description: { type: string }
+ *                         count: { type: number }
+ *                         series:
+ *                           type: array
+ *                           items:
+ *                             type: object
+ *                             properties:
+ *                               (giống series_level)
+ *                      
  */
-// TE chỉ thấy chapter được gán cho mình HOẶC chưa ai gán, ở trạng thái pending_TE hoặc approved_by_EB
 router.get("/pending", authMiddleware, requireTE, async (req, res, next) => {
   try {
+    // Lấy tất cả chapters ở trạng thái chờ TE
     const chapters = await Chapter.find({
       status: { $in: [CHAPTER_STATUS.PENDING_TE, CHAPTER_STATUS.APPROVED_BY_EB] },
       $or: [
@@ -106,18 +119,102 @@ router.get("/pending", authMiddleware, requireTE, async (req, res, next) => {
       .sort({ te_assigned_at: 1, updatedAt: 1 })
       .lean();
 
-    // Đính kèm `phase` để FE phân biệt:
-    //   - series_level: Series chưa EB-approved (TE duyệt cả Series, gồm draft/submitted/rejected/cancelled)
-    //   - chapter_level: Series đã EB-approved (TE publish chapter thủ công, gồm approved_by_EB/approved/published)
-    const enriched = chapters.map((c) => {
+    // Định nghĩa Series status nào thuộc giai đoạn nào
+    const CHAPTER_LEVEL_STATUSES = [
+      SERIES_STATUS.APPROVED_BY_EB,
+      SERIES_STATUS.APPROVED,
+      SERIES_STATUS.PUBLISHED,
+    ];
+
+    // Tách chapters vào 2 nhóm
+    const seriesLevelChapters = [];
+    const chapterLevelChapters = [];
+
+    chapters.forEach((c) => {
       const seriesStatus = c.series_id && c.series_id.status;
-      const phase = seriesStatus && [SERIES_STATUS.APPROVED_BY_EB, SERIES_STATUS.APPROVED, SERIES_STATUS.PUBLISHED].includes(seriesStatus)
-        ? "chapter_level"
-        : "series_level";
-      return { ...c, phase };
+      const isChapterLevel = CHAPTER_LEVEL_STATUSES.includes(seriesStatus);
+      const enriched = {
+        _id: c._id,
+        chapter_number: c.chapter_number,
+        title: c.title,
+        status: c.status,
+        te_assigned_at: c.te_assigned_at,
+        updatedAt: c.updatedAt,
+        submitted_by: c.submitted_by,
+        te_review_id: c.te_review_id,
+      };
+      if (isChapterLevel) {
+        chapterLevelChapters.push(enriched);
+      } else {
+        seriesLevelChapters.push(enriched);
+      }
     });
 
-    return res.status(200).json({ success: true, data: enriched });
+    // Helper: nhóm chapters theo series_id
+    const groupBySeries = (chaptersList) => {
+      const seriesMap = {};
+      chaptersList.forEach((chapter) => {
+        const seriesId = chapter.series_id?._id?.toString() || chapter.series_id?.toString();
+        if (!seriesId) return;
+        if (!seriesMap[seriesId]) {
+          seriesMap[seriesId] = {
+            _id: seriesId,
+            name: chapter.series_id?.name || "Unknown Series",
+            status: chapter.series_id?.status || "unknown",
+            cover_image_url: chapter.series_id?.cover_image_url || "",
+            genre: chapter.series_id?.genre || [],
+            tags: chapter.series_id?.tags || [],
+            synopsis: chapter.series_id?.synopsis || "",
+            author: chapter.series_id?.author_id || null,
+            publication_schedule: chapter.series_id?.publication_schedule || null,
+            chapters: [],
+          };
+        }
+        seriesMap[seriesId].chapters.push(chapter);
+      });
+      // Sắp xếp series theo updatedAt của chapter mới nhất
+      const seriesList = Object.values(seriesMap);
+      seriesList.sort((a, b) => {
+        const aUpdated = a.chapters[0]?.updatedAt || new Date(0);
+        const bUpdated = b.chapters[0]?.updatedAt || new Date(0);
+        return new Date(bUpdated) - new Date(aUpdated);
+      });
+      // Thêm chapter_count
+      seriesList.forEach((s) => {
+        s.chapter_count = s.chapters.length;
+      });
+      return seriesList;
+    };
+
+    const seriesLevelSeries = groupBySeries(seriesLevelChapters);
+    const chapterLevelSeries = groupBySeries(chapterLevelChapters);
+
+    // Đếm tổng chapters
+    const seriesLevelCount = seriesLevelChapters.length;
+    const chapterLevelCount = chapterLevelChapters.length;
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        series_level: {
+          label: "Series chưa được duyệt",
+          description: "TE cần review toàn Series + Chapter trước khi gửi EB",
+          count: seriesLevelCount,
+          series: seriesLevelSeries,
+        },
+        chapter_level: {
+          label: "Series đã được duyệt",
+          description: "TE chỉ cần review và publish Chapter",
+          count: chapterLevelCount,
+          series: chapterLevelSeries,
+        },
+        // Metadata tổng
+        meta: {
+          total_chapters: chapters.length,
+          total_series: seriesLevelSeries.length + chapterLevelSeries.length,
+        },
+      },
+    });
   } catch (error) {
     next(error);
   }
@@ -938,6 +1035,270 @@ router.post("/series-review/:seriesId/submit", authMiddleware, requireTE, async 
         },
       });
     }
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ─── POST /te-reviews/series-review/:seriesId/review-chapter ─────────────────
+/**
+ * @swagger
+ * /te-reviews/series-review/{seriesId}/review-chapter:
+ *   post:
+ *     tags: [TEReviews]
+ *     summary: TE review Chapter + Series trong cùng 1 lần (gộp 2 API thành 1)
+ *     description: |
+ *       API này gộp chức năng của 2 API cũ:
+ *       - `POST /te-reviews/chapter/:chapterId/te-action`
+ *       - `POST /te-reviews/series-review/:seriesId/submit`
+ *
+ *       TE chỉ cần gọi 1 lần duy nhất thay vì 2 lần tuần tự. Tránh notify EB trùng lặp,
+ *       tránh inconsistent state khi 1 trong 2 API bị fail giữa chừng.
+ *
+ *       **Flow xử lý:**
+ *       - `action = "approve"`:
+ *         - Lưu SeriesReview.feedback
+ *         - Nếu Series chưa EB-approved → Chapter → "pending_EB" + notify EB (1 LẦN)
+ *         - Nếu Series đã EB-approved (chapter_level) → Chapter → "published" + notify Mangaka
+ *       - `action = "reject"`:
+ *         - Chapter → "TE_revision" + lưu revision_notes
+ *         - Series có revision_notes (lưu revision_feedback)
+ *         - notifySeriesRevision + notifyChapterTERevision (notify Mangaka)
+ *
+ *       **Lợi ích so với 2 API cũ:**
+ *       - 1 HTTP call thay vì 2
+ *       - 1 transaction logic, không sợ 1 bên fail
+ *       - Notify EB chỉ 1 lần (không bị duplicate)
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: seriesId
+ *         required: true
+ *         schema: { type: string }
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [chapter_id, action]
+ *             properties:
+ *               chapter_id: { type: string }
+ *               action: { type: string, enum: [approve, reject] }
+ *               notes:
+ *                 type: array
+ *                 items: { type: string }
+ *                 description: 'Ghi chú nội bộ (dùng cho cả approve/reject)'
+ *               feedback:
+ *                 type: string
+ *                 description: 'Feedback cho Series (vd: Series concept rất tốt)'
+ *               revision_notes:
+ *                 type: string
+ *                 description: 'Ghi chú yêu cầu sửa (chỉ cần khi reject)'
+ *     responses:
+ *       200:
+ *         description: Thành công
+ *       400: { description: Thiếu trường hoặc action không hợp lệ }
+ *       403: { description: TE không được gán chapter }
+ *       404: { description: Series hoặc Chapter không tồn tại }
+ */
+router.post("/series-review/:seriesId/review-chapter", authMiddleware, requireTE, async (req, res, next) => {
+  try {
+    const { seriesId } = req.params;
+    const { chapter_id, action, notes, feedback, revision_notes } = req.body;
+
+    // Validate input
+    if (!chapter_id) {
+      return next(new AppError("chapter_id is required", 400));
+    }
+    if (!action || !["approve", "reject"].includes(action)) {
+      return next(new AppError("action is required and must be 'approve' or 'reject'", 400));
+    }
+
+    // Lấy Series + Chapter
+    const series = await Series.findById(seriesId);
+    if (!series) return next(new AppError("Series not found", 404));
+
+    const chapter = await Chapter.findById(chapter_id);
+    if (!chapter) return next(new AppError("Chapter not found", 404));
+
+    // Check chapter thuộc series
+    if (String(chapter.series_id) !== String(seriesId)) {
+      return next(new AppError("Chapter does not belong to this series", 400));
+    }
+
+    // Check TE có được gán chapter không
+    if (!chapter.te_id || String(chapter.te_id) !== String(req.user.nameid)) {
+      return next(new AppError("Bạn không được gán cho chapter này", 403));
+    }
+
+    // Lưu SeriesReview (dùng chung cho cả approve/reject)
+    let seriesReview = await SeriesReview.findOne({
+      series_id: seriesId,
+      reviewed_by: req.user.nameid,
+    });
+
+    const notesJoined = Array.isArray(notes) ? notes.join("\n") : (notes || "");
+
+    if (!seriesReview) {
+      seriesReview = new SeriesReview({
+        series_id: seriesId,
+        reviewed_by: req.user.nameid,
+        feedback: feedback || "",
+        quick_notes: notesJoined,
+        revision_feedback: revision_notes || "",
+      });
+    } else {
+      if (feedback !== undefined) seriesReview.feedback = feedback;
+      if (notes !== undefined) seriesReview.quick_notes = notesJoined;
+      if (revision_notes !== undefined) seriesReview.revision_feedback = revision_notes;
+    }
+
+    // ─── XỬ LÝ ACTION APPROVE ─────────────────────────────────────
+    if (action === "approve") {
+      // Lưu SeriesReview.decision = "approved"
+      seriesReview.decision = "approved";
+      await seriesReview.save();
+
+      // Kiểm tra Series đã EB duyệt chưa
+      const seriesApproved = [
+        SERIES_STATUS.APPROVED_BY_EB,
+        SERIES_STATUS.APPROVED,
+        SERIES_STATUS.PUBLISHED,
+      ].includes(series.status);
+
+      if (seriesApproved) {
+        // Series đã EB-approved → Publish chapter (chapter_level)
+        chapter.status = CHAPTER_STATUS.PUBLISHED;
+        chapter.is_published = true;
+        chapter.published_at = new Date();
+        chapter.revision_notes = "";
+        chapter.revision_annotations = [];
+        chapter.revision_source = "";
+        await chapter.save();
+
+        const teReview = await TEReview.findOne({ chapter_id: chapter_id });
+        if (teReview) {
+          teReview.decision = TE_DECISION.APPROVED_PUBLISH;
+          await teReview.save();
+        }
+
+        await notifyChapterTEPublished(
+          Notification,
+          chapter.submitted_by,
+          chapter,
+          series.name
+        );
+
+        return res.status(200).json({
+          success: true,
+          message: "Chapter đã được publish.",
+          data: {
+            chapter,
+            series_review: {
+              _id: seriesReview._id,
+              decision: seriesReview.decision,
+              feedback: seriesReview.feedback,
+              quick_notes: seriesReview.quick_notes,
+            },
+          },
+        });
+      } else {
+        // Series chưa EB-approved → Chapter → pending_EB (gửi EB duyệt)
+        chapter.status = CHAPTER_STATUS.PENDING_EB;
+        chapter.revision_notes = "";
+        chapter.revision_annotations = [];
+        chapter.revision_source = "";
+        await chapter.save();
+
+        const teReview = await TEReview.findOne({ chapter_id: chapter_id });
+        if (teReview) {
+          teReview.decision = TE_DECISION.APPROVED;
+          await teReview.save();
+        }
+
+        // Notify EB (CHỈ 1 LẦN)
+        const ebUsers = await require("../models/User").find({ role: ROLES.EB }).lean();
+        for (const eb of ebUsers) {
+          await notifyChapterToEB(Notification, eb._id, chapter, series.name);
+        }
+
+        return res.status(200).json({
+          success: true,
+          message: "Chapter đã được gửi lên EB để duyệt Series.",
+          data: {
+            chapter,
+            series_review: {
+              _id: seriesReview._id,
+              decision: seriesReview.decision,
+              feedback: seriesReview.feedback,
+              quick_notes: seriesReview.quick_notes,
+            },
+          },
+        });
+      }
+    }
+
+    // ─── XỬ LÝ ACTION REJECT ─────────────────────────────────────
+    // (action === "reject")
+    seriesReview.decision = "revision";
+    seriesReview.revision_feedback = revision_notes || seriesReview.revision_feedback || "";
+    await seriesReview.save();
+
+    // Chapter → TE_revision
+    chapter.status = CHAPTER_STATUS.TE_REVISION;
+    chapter.revision_notes = seriesReview.revision_feedback;
+    chapter.revision_source = "TE";
+
+    // Copy TEReview.annotations → chapter.revision_annotations
+    const teReview = await TEReview.findOne({ chapter_id: chapter_id });
+    if (teReview && teReview.annotations.length > 0) {
+      chapter.revision_annotations = teReview.annotations.map((a) => ({
+        page_id: a.page_id,
+        region: {
+          x: a.region.x,
+          y: a.region.y,
+          width: a.region.width,
+          height: a.region.height,
+        },
+        content: a.content,
+        error_type: a.error_type || "other",
+      }));
+    } else {
+      chapter.revision_annotations = [];
+    }
+    await chapter.save();
+
+    if (teReview) {
+      teReview.decision = TE_DECISION.REVISION;
+      teReview.revision_feedback = seriesReview.revision_feedback;
+      await teReview.save();
+    }
+
+    // Gắn revision_notes vào Series (để Mangaka thấy feedback toàn Series)
+    series.revision_notes = seriesReview.revision_feedback;
+    series.revision_source = "TE";
+    await series.save();
+
+    // Notify Mangaka
+    await notifySeriesRevision(Notification, series.author_id, series, seriesReview.revision_feedback);
+    await notifyChapterTERevision(Notification, chapter.submitted_by, chapter, chapter.revision_notes);
+
+    return res.status(200).json({
+      success: true,
+      message: "Đã yêu cầu Mangaka chỉnh sửa chapter + series.",
+      data: {
+        chapter,
+        series_review: {
+          _id: seriesReview._id,
+          decision: seriesReview.decision,
+          feedback: seriesReview.feedback,
+          quick_notes: seriesReview.quick_notes,
+          revision_feedback: seriesReview.revision_feedback,
+        },
+      },
+    });
   } catch (error) {
     next(error);
   }
