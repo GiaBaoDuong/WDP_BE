@@ -11,6 +11,7 @@ const Series = require("../models/Series");
 const Cooperation = require("../models/Cooperation");
 const Notification = require("../models/Notification");
 const upload = require("../middleware/upload");
+const { uploadResult } = require("../middleware/uploadResult");
 const {
   notifyTaskAssigned,
   notifyTaskSubmitted,
@@ -478,6 +479,273 @@ router.post(
 
 /**
  * @swagger
+ * /tasks/{id}/upload-result:
+ *   patch:
+ *     summary: Assistant upload ảnh kết quả lên Cloudinary (Cách 2 - 2 bước)
+ *     description: |
+ *       Bước 1 của flow 2 bước. Upload ảnh đã gộp layer lên Cloudinary,
+ *       LƯU URL vào task nhưng KHÔNG đổi status (vẫn giữ pending/in_progress/revision).
+ *       Sau khi upload xong tất cả task, bấm submit-all để đổi status.
+ *     tags: [Tasks]
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: ID của task
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - result_image_url
+ *             properties:
+ *               result_image_url:
+ *                 type: string
+ *                 description: URL ảnh đã upload lên Cloudinary
+ *     responses:
+ *       200:
+ *         description: Upload thành công, URL đã lưu vào task
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 message:
+ *                   type: string
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     task_id:
+ *                       type: string
+ *                     result_image_url:
+ *                       type: string
+ *                     status:
+ *                       type: string
+ *       400:
+ *         description: Task không hợp lệ để upload (đã submitted/approved)
+ *       403:
+ *         description: Không phải assistant được gán task
+ *       404:
+ *         description: Task không tìm thấy
+ */
+router.patch(
+  "/:id/upload-result",
+  authMiddleware,
+  requireAssistant,
+  async (req, res, next) => {
+    try {
+      const { result_image_url } = req.body;
+
+      if (!result_image_url) {
+        return next(new AppError("result_image_url là bắt buộc", 400));
+      }
+
+      // Validate URL hợp lệ (Cloudinary hoặc bất kỳ URL ảnh nào)
+      try {
+        new URL(result_image_url);
+      } catch {
+        return next(new AppError("result_image_url không hợp lệ", 400));
+      }
+
+      const task = await Task.findOne({
+        _id: req.params.id,
+        assigned_to: req.user.nameid,
+      });
+      if (!task) return next(new AppError("Task not found", 404));
+
+      // Chỉ cho phép upload khi task đang ở trạng thái hợp lệ
+      if (!["pending", "in_progress", "revision"].includes(task.status)) {
+        return next(
+          new AppError(
+            `Task đang ở trạng thái "${task.status}", không thể upload ảnh. Chỉ cho phép: pending, in_progress, revision`,
+            400
+          )
+        );
+      }
+
+      // Lưu URL ảnh, KHÔNG đổi status
+      task.result_image_url = result_image_url;
+      await task.save();
+
+      return res.status(200).json({
+        success: true,
+        message: "Đã lưu URL ảnh, chưa nộp. Bấm submit-all để nộp tất cả.",
+        data: {
+          task_id: task._id,
+          result_image_url: task.result_image_url,
+          status: task.status, // Vẫn giữ nguyên status
+        },
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /tasks/batch-upload-results:
+ *   patch:
+ *     summary: Assistant upload nhiều ảnh cùng lúc (Cách 2 - batch)
+ *     description: |
+ *       Upload nhiều task cùng lúc. Mỗi task gửi kèm URL Cloudinary.
+ *       Dùng khi Assistant đã gộp layer xong nhiều task và muốn upload 1 lần.
+ *     tags: [Tasks]
+ *     security:
+ *       - BearerAuth: []
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - tasks
+ *             properties:
+ *               tasks:
+ *                 type: array
+ *                 items:
+ *                   type: object
+ *                   required:
+ *                     - task_id
+ *                     - result_image_url
+ *                   properties:
+ *                     task_id:
+ *                       type: string
+ *                       description: ID của task
+ *                     result_image_url:
+ *                       type: string
+ *                       description: URL ảnh đã upload lên Cloudinary
+ *     responses:
+ *       200:
+ *         description: Upload thành công
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 message:
+ *                   type: string
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     total:
+ *                       type: integer
+ *                     successful:
+ *                       type: integer
+ *                     failed:
+ *                       type: integer
+ *                     results:
+ *                       type: array
+ *       400:
+ *         description: Dữ liệu không hợp lệ
+ */
+router.patch(
+  "/batch-upload-results",
+  authMiddleware,
+  requireAssistant,
+  async (req, res, next) => {
+    try {
+      const { tasks } = req.body;
+
+      if (!tasks || !Array.isArray(tasks) || tasks.length === 0) {
+        return next(new AppError("tasks phải là mảng không rỗng", 400));
+      }
+
+      const results = {
+        total: tasks.length,
+        successful: 0,
+        failed: 0,
+        results: [],
+      };
+
+      for (const item of tasks) {
+        try {
+          if (!item.task_id || !item.result_image_url) {
+            results.results.push({
+              task_id: item.task_id || "unknown",
+              success: false,
+              error: "Thiếu task_id hoặc result_image_url",
+            });
+            results.failed++;
+            continue;
+          }
+
+          // Validate URL
+          try {
+            new URL(item.result_image_url);
+          } catch {
+            results.results.push({
+              task_id: item.task_id,
+              success: false,
+              error: "URL không hợp lệ",
+            });
+            results.failed++;
+            continue;
+          }
+
+          const task = await Task.findOneAndUpdate(
+            {
+              _id: item.task_id,
+              assigned_to: req.user.nameid,
+              status: { $in: ["pending", "in_progress", "revision"] },
+            },
+            {
+              $set: { result_image_url: item.result_image_url },
+            },
+            { new: true }
+          );
+
+          if (!task) {
+            results.results.push({
+              task_id: item.task_id,
+              success: false,
+              error: "Task không tìm thấy hoặc không ở trạng thái hợp lệ",
+            });
+            results.failed++;
+            continue;
+          }
+
+          results.results.push({
+            task_id: task._id,
+            success: true,
+            status: task.status,
+            result_image_url: task.result_image_url,
+          });
+          results.successful++;
+        } catch (err) {
+          results.results.push({
+            task_id: item.task_id,
+            success: false,
+            error: err.message,
+          });
+          results.failed++;
+        }
+      }
+
+      return res.status(200).json({
+        success: true,
+        message: `Upload ${results.successful}/${results.total} task thành công`,
+        data: results,
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
  * /tasks/{id}/approve:
  *   patch:
  *     summary: Mangaka duyệt task
@@ -781,5 +1049,390 @@ router.get("/pending-review", authMiddleware, requireMangaka, async (req, res, n
     next(error);
   }
 });
+
+// ─── POST /tasks/chapter/:chapterId/submit-all-by-assistant ──────────────────
+// Assistant nộp TOÀN BỘ task của 1 chapter cùng lúc.
+// Dùng SAU KHI đã upload ảnh qua /tasks/:id/upload-result (Cách 2 - 2 bước).
+//
+// Flow:
+//   Bước 1: PATCH /tasks/:id/upload-result → upload ảnh Cloudinary, lưu URL vào task (KHÔNG đổi status)
+//   Bước 2: POST /tasks/chapter/:id/submit-all-by-assistant → đổi status tất cả task → submitted
+//
+// Body: application/json (KHÔNG cần upload file vì ảnh đã có ở bước 1)
+//
+// Logic:
+//   1. Lấy tất cả task của chapter thuộc assistant hiện tại
+//   2. Validate: tất cả task phải có result_image_url (đã upload ở bước 1)
+//   3. Validate: tất cả task phải đang ở trạng thái pending/in_progress/revision
+//   4. Set status: → "submitted"
+//   5. Cập nhật page.status = "submitted"
+//   6. Set chapter.status = "submitted_by_assistant"
+//   7. Notify Mangaka
+router.post(
+  "/chapter/:chapterId/submit-all-by-assistant",
+  authMiddleware,
+  requireAssistant,
+  async (req, res, next) => {
+    try {
+      const { chapterId } = req.params;
+
+      const chapter = await Chapter.findById(chapterId).lean();
+      if (!chapter) return next(new AppError("Chapter not found", 404));
+      if (chapter.assistant_id?.toString() !== req.user.nameid) {
+        return next(new AppError("Bạn không phải assistant của chapter này", 403));
+      }
+
+      // Lấy tất cả tasks của chapter thuộc assistant hiện tại
+      const tasks = await Task.find({
+        chapter_id: chapterId,
+        assigned_to: req.user.nameid,
+      });
+      if (tasks.length === 0) {
+        return next(new AppError("Không có task nào trong chapter", 400));
+      }
+
+      // Lấy tất cả pages (để lấy page_number)
+      const pages = await Page.find({ chapter_id: chapterId }).lean();
+      const pageMap = {};
+      pages.forEach((p) => { pageMap[p._id.toString()] = p; });
+
+      // Validate 1: Tất cả task phải có result_image_url
+      const missingImageTasks = tasks.filter((t) => !t.result_image_url);
+      if (missingImageTasks.length > 0) {
+        return next(
+          new AppError(
+            `${missingImageTasks.length} task chưa có ảnh. Vui lòng upload ảnh qua /tasks/:id/upload-result trước.`,
+            400
+          )
+        );
+      }
+
+      // Validate 2: Chỉ cho phép submit các task đang pending/in_progress/revision
+      const invalidTasks = tasks.filter(
+        (t) => !["pending", "in_progress", "revision"].includes(t.status)
+      );
+      if (invalidTasks.length > 0) {
+        return next(
+          new AppError(
+            `${invalidTasks.length} task không ở trạng thái hợp lệ để submit: ${invalidTasks.map((t) => t.status).join(", ")}`,
+            400
+          )
+        );
+      }
+
+      // Sort tasks theo page.page_number, createdAt để hiển thị đẹp
+      const sortedTasks = tasks
+        .map((t) => ({ ...t.toObject(), _page: pageMap[t.page_id.toString()] }))
+        .sort((a, b) => {
+          const pa = a._page?.page_number || 999;
+          const pb = b._page?.page_number || 999;
+          if (pa !== pb) return pa - pb;
+          return new Date(a.createdAt) - new Date(b.createdAt);
+        });
+
+      // Cập nhật status tất cả task → submitted
+      const updatedTasks = [];
+      for (const task of sortedTasks) {
+        await Task.findByIdAndUpdate(task._id, {
+          status: "submitted",
+          revision_note: "", // Xóa note revision nếu có
+        });
+        updatedTasks.push({
+          ...task,
+          status: "submitted",
+        });
+
+        // Cập nhật page status
+        if (task._page) {
+          await Page.findByIdAndUpdate(task.page_id, { status: "submitted" });
+        }
+      }
+
+      // Cập nhật chapter status
+      await Chapter.findByIdAndUpdate(chapterId, {
+        status: "submitted_by_assistant",
+      });
+
+      // Notify Mangaka (1 lần duy nhất cho cả chapter)
+      await notifyTaskSubmitted(Notification, chapter.submitted_by, {
+        chapter_id: chapter._id,
+        page_count: updatedTasks.length,
+      });
+
+      return res.status(200).json({
+        success: true,
+        message: `Đã nộp ${updatedTasks.length} task(s) thành công.`,
+        data: {
+          chapter_id: chapterId,
+          total_tasks: updatedTasks.length,
+          tasks: updatedTasks.map((t) => ({
+            task_id: t._id,
+            page_number: t._page?.page_number,
+            result_image_url: t.result_image_url,
+            status: t.status,
+          })),
+        },
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /tasks/chapter/{chapterId}/prepare-status:
+ *   get:
+ *     summary: Xem trạng thái chuẩn bị upload ảnh của chapter (Cách 2)
+ *     description: |
+ *       Dùng cho Assistant xem bao nhiêu task đã upload ảnh, bao nhiêu task còn thiếu.
+ *       Giúp theo dõi tiến độ trước khi bấm submit-all.
+ *     tags: [Tasks]
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: chapterId
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: ID của chapter
+ *     responses:
+ *       200:
+ *         description: Trạng thái prepare của chapter
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     chapter_id:
+ *                       type: string
+ *                     total_tasks:
+ *                       type: integer
+ *                     ready_to_submit:
+ *                       type: integer
+ *                       description: Số task đã upload ảnh (có result_image_url)
+ *                     pending_upload:
+ *                       type: integer
+ *                       description: Số task chưa upload ảnh
+ *                     can_submit:
+ *                       type: boolean
+ *                       description: Có thể submit-all hay không
+ *                     tasks:
+ *                       type: array
+ *                       items:
+ *                         type: object
+ *                         properties:
+ *                           task_id:
+ *                             type: string
+ *                           page_number:
+ *                             type: integer
+ *                           status:
+ *                             type: string
+ *                           has_image:
+ *                             type: boolean
+ *                           result_image_url:
+ *                             type: string
+ *       403:
+ *         description: Không phải assistant của chapter
+ *       404:
+ *         description: Chapter không tìm thấy
+ */
+router.get(
+  "/chapter/:chapterId/prepare-status",
+  authMiddleware,
+  requireAssistant,
+  async (req, res, next) => {
+    try {
+      const { chapterId } = req.params;
+
+      const chapter = await Chapter.findById(chapterId).lean();
+      if (!chapter) return next(new AppError("Chapter not found", 404));
+      if (chapter.assistant_id?.toString() !== req.user.nameid) {
+        return next(new AppError("Bạn không phải assistant của chapter này", 403));
+      }
+
+      // Lấy tất cả tasks của chapter thuộc assistant hiện tại
+      const tasks = await Task.find({
+        chapter_id: chapterId,
+        assigned_to: req.user.nameid,
+      })
+        .populate("page_id", "page_number")
+        .lean();
+
+      if (tasks.length === 0) {
+        return res.status(200).json({
+          success: true,
+          data: {
+            chapter_id: chapterId,
+            total_tasks: 0,
+            ready_to_submit: 0,
+            pending_upload: 0,
+            can_submit: false,
+            tasks: [],
+          },
+        });
+      }
+
+      // Lấy tất cả pages (để lấy page_number)
+      const pages = await Page.find({ chapter_id: chapterId }).lean();
+      const pageMap = {};
+      pages.forEach((p) => { pageMap[p._id.toString()] = p; });
+
+      // Sort tasks theo page.page_number, createdAt
+      const sortedTasks = tasks
+        .map((t) => ({ ...t, _page: pageMap[t.page_id?.toString()] }))
+        .sort((a, b) => {
+          const pa = a._page?.page_number || 999;
+          const pb = b._page?.page_number || 999;
+          if (pa !== pb) return pa - pb;
+          return new Date(a.createdAt) - new Date(b.createdAt);
+        });
+
+      const taskDetails = sortedTasks.map((t) => ({
+        task_id: t._id,
+        page_number: t._page?.page_number || "?",
+        status: t.status,
+        has_image: !!t.result_image_url,
+        result_image_url: t.result_image_url || null,
+      }));
+
+      const readyToSubmit = sortedTasks.filter(
+        (t) => t.result_image_url && ["pending", "in_progress", "revision"].includes(t.status)
+      ).length;
+
+      const pendingUpload = sortedTasks.filter(
+        (t) => !t.result_image_url || !["pending", "in_progress", "revision"].includes(t.status)
+      ).length;
+
+      return res.status(200).json({
+        success: true,
+        data: {
+          chapter_id: chapterId,
+          total_tasks: tasks.length,
+          ready_to_submit: readyToSubmit,
+          pending_upload: pendingUpload,
+          can_submit: readyToSubmit === tasks.length,
+          tasks: taskDetails,
+        },
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+// ─── GET /tasks/chapter/:chapterId/ordered-by-page ────────────────────────────
+// Mangaka xem tasks theo thứ tự page (để duyệt từng cái một).
+// Trả về: mỗi page có 1 object, bên trong là các task theo thứ tự createdAt.
+router.get(
+  "/chapter/:chapterId/ordered-by-page",
+  authMiddleware,
+  requireMangaka,
+  async (req, res, next) => {
+    try {
+      const { chapterId } = req.params;
+
+      const chapter = await Chapter.findOne({
+        _id: chapterId,
+        submitted_by: req.user.nameid,
+      }).lean();
+      if (!chapter) {
+        return next(new AppError("Chapter not found or unauthorized", 404));
+      }
+
+      // Lấy tất cả tasks của chapter
+      const tasks = await Task.find({ chapter_id: chapterId })
+        .populate("page_id", "page_number original_image_url result_image_url status")
+        .populate("assigned_to", "username full_name phoneNumber")
+        .populate({ path: "note_ids", select: "text x y w h taskType status" })
+        .lean();
+
+      // Lấy tất cả pages của chapter
+      const pages = await Page.find({ chapter_id: chapterId })
+        .sort({ page_number: 1 })
+        .lean();
+
+      // Gom tasks theo page
+      const tasksByPage = {};
+      for (const t of tasks) {
+        const pid = t.page_id?._id?.toString() || t.page_id?.toString();
+        if (!pid) continue;
+        if (!tasksByPage[pid]) tasksByPage[pid] = [];
+        tasksByPage[pid].push(t);
+      }
+
+      // Sắp xếp task trong mỗi page theo createdAt
+      Object.keys(tasksByPage).forEach((pid) => {
+        tasksByPage[pid].sort(
+          (a, b) => new Date(a.createdAt) - new Date(b.createdAt)
+        );
+      });
+
+      // Build response: danh sách page (theo thứ tự), mỗi page có tasks
+      const orderedPages = pages.map((page) => {
+        const pageTasks = tasksByPage[page._id.toString()] || [];
+        const allApproved = pageTasks.length > 0 && pageTasks.every((t) => t.status === "approved");
+        const anySubmitted = pageTasks.some(
+          (t) => t.status === "submitted" || t.status === "in_review"
+        );
+        const anyRevision = pageTasks.some((t) => t.status === "revision");
+
+        return {
+          _id: page._id,
+          page_number: page.page_number,
+          original_image_url: page.original_image_url,
+          result_image_url: page.result_image_url,
+          status: page.status,
+          tasks: pageTasks,
+          summary: {
+            total_tasks: pageTasks.length,
+            approved: pageTasks.filter((t) => t.status === "approved").length,
+            pending: pageTasks.filter((t) => t.status === "pending").length,
+            in_progress: pageTasks.filter((t) => t.status === "in_progress").length,
+            submitted: pageTasks.filter((t) => t.status === "submitted").length,
+            in_review: pageTasks.filter((t) => t.status === "in_review").length,
+            revision: pageTasks.filter((t) => t.status === "revision").length,
+            can_approve: allApproved,
+            needs_attention: anySubmitted || anyRevision,
+          },
+        };
+      });
+
+      // Thống kê tổng
+      const totalStats = {
+        total_pages: pages.length,
+        total_tasks: tasks.length,
+        approved: tasks.filter((t) => t.status === "approved").length,
+        pending: tasks.filter((t) => t.status === "pending").length,
+        in_progress: tasks.filter((t) => t.status === "in_progress").length,
+        submitted: tasks.filter((t) => t.status === "submitted").length,
+        in_review: tasks.filter((t) => t.status === "in_review").length,
+        revision: tasks.filter((t) => t.status === "revision").length,
+      };
+
+      return res.status(200).json({
+        success: true,
+        data: {
+          chapter: {
+            _id: chapter._id,
+            chapter_number: chapter.chapter_number,
+            title: chapter.title,
+            status: chapter.status,
+          },
+          pages: orderedPages,
+          stats: totalStats,
+        },
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
 
 module.exports = router;
