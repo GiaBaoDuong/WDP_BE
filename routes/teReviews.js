@@ -142,6 +142,8 @@ router.get("/pending", authMiddleware, requireTE, async (req, res, next) => {
         updatedAt: c.updatedAt,
         submitted_by: c.submitted_by,
         te_review_id: c.te_review_id,
+        // QUAN TRỌNG: giữ lại series_id để groupBySeries phía dưới có thể nhóm đúng
+        series_id: c.series_id,
       };
       if (isChapterLevel) {
         chapterLevelChapters.push(enriched);
@@ -182,6 +184,10 @@ router.get("/pending", authMiddleware, requireTE, async (req, res, next) => {
       // Thêm chapter_count
       seriesList.forEach((s) => {
         s.chapter_count = s.chapters.length;
+        // Xóa series_id trong từng chapter (đã có ở level ngoài)
+        s.chapters.forEach((ch) => {
+          delete ch.series_id;
+        });
       });
       return seriesList;
     };
