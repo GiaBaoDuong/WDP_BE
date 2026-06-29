@@ -677,6 +677,15 @@ router.post("/series/:seriesId/evaluate", authMiddleware, requireEB, async (req,
       if (!member_scores || !Array.isArray(member_scores) || member_scores.length === 0) {
         return next(new AppError("member_scores is required for first review", 400));
       }
+      // Giới hạn hội đồng chấm: tối thiểu 3, tối đa 5 người
+      if (member_scores.length < 3 || member_scores.length > 5) {
+        return next(
+          new AppError(
+            "Hội đồng cần tối thiểu 3 và tối đa 5 thành viên",
+            400
+          )
+        );
+      }
       if (!result) return next(new AppError("result is required", 400));
 
       // Nếu approve → BẮT BUỘC chọn publication_schedule (weekly/monthly) trước
@@ -865,11 +874,28 @@ router.post("/chapter/:chapterId/evaluate", authMiddleware, requireEB, async (re
     const series = await Series.findById(chapter.series_id).lean();
     if (!series) return next(new AppError("Series not found", 404));
 
+    // Giới hạn hội đồng chấm (áp dụng cho lần đầu): tối thiểu 3, tối đa 5 người
+    const isFirstReview = series.status === "draft" || series.status === "submitted";
+    if (isFirstReview) {
+      const ms = req.body.member_scores;
+      if (!ms || !Array.isArray(ms) || ms.length === 0) {
+        return next(new AppError("member_scores is required for first review", 400));
+      }
+      if (ms.length < 3 || ms.length > 5) {
+        return next(
+          new AppError(
+            "Hội đồng cần tối thiểu 3 và tối đa 5 thành viên",
+            400
+          )
+        );
+      }
+    }
+
     // Tính điểm từ member_scores (nếu có)
     let councilAvg = 0;
-    const isFirstReview = series.status === "draft" || series.status === "submitted";
-    
-    if (isFirstReview && req.body.member_scores) {
+    const isFirstReviewLocal = series.status === "draft" || series.status === "submitted";
+
+    if (isFirstReviewLocal && req.body.member_scores) {
       const totals = {};
       EB_CRITERIA_KEYS.forEach((k) => {
         totals[k] = req.body.member_scores.reduce((acc, m) => acc + (m.scores?.[k] || 0), 0);
