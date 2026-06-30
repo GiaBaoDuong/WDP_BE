@@ -59,6 +59,7 @@ const TASK_STATUS = {
   SUBMITTED: "submitted",            // Đã nộp kết quả
   APPROVED: "approved",               // Mangaka duyệt
   REVISION: "revision",              // Mangaka yêu sửa
+  ARCHIVED: "archived",              // Task cũ đã hoàn thành từ vòng trước (ẩn khỏi submit)
 };
 
 // ─── Cooperation Request Status ───────────────────────────────────────────────

@@ -397,6 +397,18 @@ router.patch("/:id", authMiddleware, requireMangaka, async (req, res, next) => {
         return next(new AppError("No pages to submit", 400));
       }
 
+      // Archive tất cả task cũ (approved/submitted/in_progress/revision) của chapter
+      // trước khi tạo vòng task mới → tránh submit-all-by-assistant fail vì có task
+      // vòng trước còn approved/revision.
+      const archiveResult = await Task.updateMany(
+        {
+          chapter_id: chapter._id,
+          status: { $in: ["approved", "submitted", "in_progress", "revision"] },
+        },
+        { $set: { status: "archived" } }
+      );
+      const archivedCount = archiveResult.modifiedCount || 0;
+
       // Tạo map page_index → page doc để lookup nhanh
       const pageIndexMap = {};
       pages.forEach((p, idx) => {
@@ -507,7 +519,7 @@ router.patch("/:id", authMiddleware, requireMangaka, async (req, res, next) => {
       return res.status(200).json({
         success: true,
         message: "Chapter submitted to assistant",
-        data: { chapter, tasks_created: createdTasks.length },
+        data: { chapter, tasks_created: createdTasks.length, tasks_archived: archivedCount },
       });
     }
 

@@ -37,7 +37,7 @@ const taskSchema = new mongoose.Schema(
     revision_note: { type: String, default: "" },
     status: {
       type: String,
-      enum: ["pending", "in_progress", "submitted", "in_review", "approved", "revision"],
+      enum: ["pending", "in_progress", "submitted", "in_review", "approved", "revision", "archived"],
       default: "pending",
     },
     result_image_url: { type: String, default: "" },

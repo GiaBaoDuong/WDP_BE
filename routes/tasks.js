@@ -191,7 +191,7 @@ router.get("/my-assignments", authMiddleware, requireAssistant, async (req, res,
   try {
     const { status, chapter_id, page = 1, limit = 20 } = req.query;
 
-    const filter = { assigned_to: req.user.nameid };
+    const filter = { assigned_to: req.user.nameid, status: { $ne: "archived" } };
     if (status) filter.status = status;
     if (chapter_id) filter.chapter_id = chapter_id;
 
@@ -1082,10 +1082,12 @@ router.post(
         return next(new AppError("Bạn không phải assistant của chapter này", 403));
       }
 
-      // Lấy tất cả tasks của chapter thuộc assistant hiện tại
+      // Lấy tất cả task của chapter thuộc assistant hiện tại
+      // Loại bỏ task archived (task cũ từ vòng trước đã được Mangaka archive khi bấm submit lại)
       const tasks = await Task.find({
         chapter_id: chapterId,
         assigned_to: req.user.nameid,
+        status: { $ne: "archived" },
       });
       if (tasks.length === 0) {
         return next(new AppError("Không có task nào trong chapter", 400));
@@ -1257,10 +1259,11 @@ router.get(
         return next(new AppError("Bạn không phải assistant của chapter này", 403));
       }
 
-      // Lấy tất cả tasks của chapter thuộc assistant hiện tại
+      // Lấy tất cả tasks của chapter thuộc assistant hiện tại (bỏ task archived vòng trước)
       const tasks = await Task.find({
         chapter_id: chapterId,
         assigned_to: req.user.nameid,
+        status: { $ne: "archived" },
       })
         .populate("page_id", "page_number")
         .lean();
