@@ -90,4 +90,4 @@ const stopScheduledPublishJob = () => {
   }
 };
 
-module.exports = { startScheduledPublishJob, stopScheduledPublishJob, processScheduledPublish };
+module.exports = { startScheduledPublishJob, stopScheduledPublishJob, processScheduledPublish }; 

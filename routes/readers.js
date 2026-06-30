@@ -765,7 +765,7 @@ router.delete("/bookshelf/:seriesId", authMiddleware, requireReader, async (req,
  *         required: true
  *     responses:
  *       200:
- *         description: Map { series_id: true/false }
+ *         description: Object map series_id sang boolean (true = trong tủ, false = chưa có)
  *       400:
  *         description: Thiếu series_ids
  */
