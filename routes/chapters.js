@@ -397,13 +397,14 @@ router.patch("/:id", authMiddleware, requireMangaka, async (req, res, next) => {
         return next(new AppError("No pages to submit", 400));
       }
 
-      // Archive tất cả task cũ (approved/submitted/in_progress/revision) của chapter
+      // Archive tất cả task cũ (approved/submitted/in_progress/revision/pending) của chapter
       // trước khi tạo vòng task mới → tránh submit-all-by-assistant fail vì có task
-      // vòng trước còn approved/revision.
+      // vòng trước còn approved/revision, và tránh duplicate khi FE gửi revision_annotations
+      // cho page đã có task pending từ POST /chapters.
       const archiveResult = await Task.updateMany(
         {
           chapter_id: chapter._id,
-          status: { $in: ["approved", "submitted", "in_progress", "revision"] },
+          status: { $in: ["approved", "submitted", "in_progress", "revision", "pending"] },
         },
         { $set: { status: "archived" } }
       );
@@ -481,7 +482,11 @@ router.patch("/:id", authMiddleware, requireMangaka, async (req, res, next) => {
       // Fallback: nếu không có revision_annotations, tạo task từ PageNote cũ
       if (chapterAnnotations.length === 0) {
         for (const page of pages) {
-          const existingTask = await Task.findOne({ page_id: page._id });
+          // Chỉ skip nếu đã có task active (≠ archived) cho page này
+          const existingTask = await Task.findOne({
+            page_id: page._id,
+            status: { $ne: "archived" },
+          });
           if (existingTask) continue;
 
           const note = await PageNote.findOne({ page_id: page._id }).lean();
