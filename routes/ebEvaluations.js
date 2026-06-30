@@ -1378,13 +1378,14 @@ router.post("/series/:seriesId/confirm-publish", authMiddleware, requireEB, asyn
     // Chapter 1 (đầu tiên) sẽ là chapter đầu tiên sau khi sắp xếp theo chapter_number
     const orderedChapters = pendingEBChapters.sort((a, b) => (a.chapter_number || 0) - (b.chapter_number || 0));
     if (orderedChapters.length > 0) {
-      // Chỉ chuyển chapter đầu tiên sang approved_by_EB để TE publish thủ công
-      // Các chapter còn lại (nếu có) vẫn ở pending_EB chờ EB duyệt từng chapter
+      // Sau EB Confirm Publish → Chapter trả về cho Mangaka để giao task cho Assistant sửa tiếp.
+      // Flow: pending_assistant → submitted_by_assistant → approved_by_mangaka → pending_TE → TE publish.
+      // Giữ revision_notes/annotations để Mangaka + Assistant biết feedback từ EB.
       const firstChapter = orderedChapters[0];
       await Chapter.findByIdAndUpdate(firstChapter._id, {
-        status: CHAPTER_STATUS.APPROVED_BY_EB,
+        status: CHAPTER_STATUS.PENDING_ASSISTANT,
         is_scheduled: false,
-        // Lưu publication_schedule để TE dùng khi publish chapter
+        // Lưu publication_schedule để dùng khi TE publish chapter
         publication_schedule: finalSchedule,
       });
     }
@@ -1404,11 +1405,12 @@ router.post("/series/:seriesId/confirm-publish", authMiddleware, requireEB, asyn
           scheduled_publish_at: series.scheduled_publish_at,
         },
         chapters_scheduled: 0,
-        chapter_ready_for_te: orderedChapters.length > 0 ? orderedChapters[0]._id : null,
+        chapter_ready_for_mangaka: orderedChapters.length > 0 ? orderedChapters[0]._id : null,
+        chapter_status: CHAPTER_STATUS.PENDING_ASSISTANT,
         council_average: councilAvg,
         message: scheduled_publish_at
-          ? `Series đã được duyệt. Series sẽ tự động chuyển sang "published" vào ${new Date(scheduled_publish_at).toLocaleString("vi-VN")}. Chapter đầu tiên sẽ chờ TE publish thủ công sau khi Mangaka sửa xong.`
-          : `Series đã được duyệt. Chapter đầu tiên sẽ chờ TE publish thủ công sau khi Mangaka sửa xong.`,
+          ? `Series đã được duyệt. Series sẽ tự động chuyển sang "published" vào ${new Date(scheduled_publish_at).toLocaleString("vi-VN")}. Chapter đầu tiên sẽ được trả về cho Mangaka để giao task cho Assistant sửa, sau đó gửi TE review và TE sẽ publish.`
+          : `Series đã được duyệt. Chapter đầu tiên sẽ được trả về cho Mangaka để giao task cho Assistant sửa, sau đó gửi TE review và TE sẽ publish.`,
       },
     });
   } catch (error) {
