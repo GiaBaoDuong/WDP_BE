@@ -173,10 +173,9 @@ router.post("/chapters/:chapterId/approve-by-mangaka", authMiddleware, requireMa
     }
 
     // Kiểm tra tất cả tasks đã approved chưa
-    // (Bỏ qua task archived vòng trước — chỉ check task active)
     const unfinishedTasks = await Task.countDocuments({
       chapter_id: chapter._id,
-      status: { $ne: "approved", $ne: "archived" },
+      status: { $ne: "approved" },
     });
     if (unfinishedTasks > 0) {
       return next(new AppError(`${unfinishedTasks} task chưa được duyệt. Vui lòng duyệt hết trước.`, 400));

@@ -397,25 +397,6 @@ router.patch("/:id", authMiddleware, requireMangaka, async (req, res, next) => {
         return next(new AppError("No pages to submit", 400));
       }
 
-      // Archive task đã "đóng" (approved/submitted/in_review) của chapter trước khi
-      // tạo vòng task mới → tránh submit-all-by-assistant fail vì có task vòng
-      // trước còn approved.
-      //
-      // KHÔNG archive task đang mở (pending/in_progress/revision) — vì:
-      // - pending: task mới từ POST /chapters, vừa gửi cho Assistant, archive = mất task
-      // - in_progress: Assistant đang làm, archive = mất công
-      // - revision: Assistant đang sửa, archive = mất công
-      // Thay vào đó, fix tránh duplicate bằng cách skip nếu đã có active task
-      // cùng page (xem `Task.findOne({ status: { $ne: "archived" } })` ở dưới).
-      const archiveResult = await Task.updateMany(
-        {
-          chapter_id: chapter._id,
-          status: { $in: ["approved", "submitted", "in_review"] },
-        },
-        { $set: { status: "archived" } }
-      );
-      const archivedCount = archiveResult.modifiedCount || 0;
-
       // Tạo map page_index → page doc để lookup nhanh
       const pageIndexMap = {};
       pages.forEach((p, idx) => {
@@ -431,15 +412,6 @@ router.patch("/:id", authMiddleware, requireMangaka, async (req, res, next) => {
         for (const [pageKey, annotations] of Object.entries(revision_annotations)) {
           const page = pageIndexMap[pageKey];
           if (!page || !Array.isArray(annotations)) continue;
-
-          // Nếu page đã có task active (pending/in_progress/revision) thì KHÔNG
-          // tạo task mới — tránh duplicate. FE có thể gửi lại cùng annotation
-          // nhiều lần, hoặc task vòng trước còn pending.
-          const existingActiveTask = await Task.findOne({
-            page_id: page._id,
-            status: { $in: ["pending", "in_progress", "revision"] },
-          });
-          if (existingActiveTask) continue;
 
           for (const ann of annotations) {
             // Map FE work_type → BE error_type enum
@@ -498,14 +470,6 @@ router.patch("/:id", authMiddleware, requireMangaka, async (req, res, next) => {
       // Fallback: nếu không có revision_annotations, tạo task từ PageNote cũ
       if (chapterAnnotations.length === 0) {
         for (const page of pages) {
-          // Chỉ skip nếu đã có task active (pending/in_progress/revision) cho page này
-          // → tránh duplicate khi chapter đã có task pending từ POST /chapters
-          const existingActiveTask = await Task.findOne({
-            page_id: page._id,
-            status: { $in: ["pending", "in_progress", "revision"] },
-          });
-          if (existingActiveTask) continue;
-
           const note = await PageNote.findOne({ page_id: page._id }).lean();
           const assignedTo = req.body.assigned_to || chapter.assistant_id || null;
 
@@ -541,7 +505,7 @@ router.patch("/:id", authMiddleware, requireMangaka, async (req, res, next) => {
       return res.status(200).json({
         success: true,
         message: "Chapter submitted to assistant",
-        data: { chapter, tasks_created: createdTasks.length, tasks_archived: archivedCount },
+        data: { chapter, tasks_created: createdTasks.length },
       });
     }
 
