@@ -1084,11 +1084,27 @@ router.post(
 
       // Lấy tất cả task của chapter thuộc assistant hiện tại
       // Loại bỏ task archived (task cũ từ vòng trước đã được Mangaka archive khi bấm submit lại)
-      const tasks = await Task.find({
+      const allTasks = await Task.find({
         chapter_id: chapterId,
         assigned_to: req.user.nameid,
         status: { $ne: "archived" },
       });
+
+      // Dedupe theo page_id: nếu có nhiều task cùng page (do data cũ hoặc flow
+      // POST /chapters + PATCH submit tạo 2 lần trước đây), chỉ giữ 1 task "active"
+      // (status ưu tiên revision > in_progress > pending > approved) để tránh
+      // submit-all fail vì có 1 task đã approved trùng page.
+      const STATUS_PRIORITY = { revision: 4, in_progress: 3, pending: 2, approved: 1, submitted: 0, in_review: 0 };
+      const dedupeByPage = new Map();
+      for (const t of allTasks) {
+        const key = t.page_id.toString();
+        const existing = dedupeByPage.get(key);
+        if (!existing || (STATUS_PRIORITY[t.status] ?? -1) > (STATUS_PRIORITY[existing.status] ?? -1)) {
+          dedupeByPage.set(key, t);
+        }
+      }
+      const tasks = Array.from(dedupeByPage.values());
+
       if (tasks.length === 0) {
         return next(new AppError("Không có task nào trong chapter", 400));
       }
