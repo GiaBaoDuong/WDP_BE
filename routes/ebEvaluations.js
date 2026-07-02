@@ -1418,4 +1418,208 @@ router.post("/series/:seriesId/confirm-publish", authMiddleware, requireEB, asyn
   }
 });
 
+// ─── GET /eb-evaluations/publication-schedule ───────────────────────────────────
+/**
+ * EB xem lịch phát hành các Series — dạng calendar + list.
+ *
+ * - Series-level events: từ Series.scheduled_publish_at (lúc Series chuyển sang "published").
+ * - Chapter-level events: từ Chapter.scheduled_publish_at (các chapter đã được TE lên lịch — flow cũ).
+ * - Các mốc "phát hành định kỳ" được tính tương đối theo publication_schedule:
+ *   weekly → +7 ngày, monthly → +30 ngày (kể từ scheduled_publish_at gốc).
+ *
+ * Query params:
+ *   from, to      (ISO date, optional)  — Lọc event trong khoảng [from, to].
+ *                                          Mặc định: from = hôm nay − 30 ngày, to = hôm nay + 90 ngày.
+ *   publication_schedule (optional)      — Lọc theo "weekly" | "monthly".
+ *   view          (optional)            — "calendar" (default) | "list"
+ *                                          calendar: gom event theo ngày, kèm danh sách.
+ *                                          list:    trả từng Series kèm mảng event.
+ *   include_overdue (optional, "true")  — include Series đã quá hạn nhưng chưa published.
+ *
+ * Response:
+ *   {
+ *     success: true,
+ *     data: {
+ *       view: "calendar" | "list",
+ *       range: { from, to },
+ *       events: [...]   // calendar: phẳng theo ngày; list: 1 event / Series
+ *     }
+ *   }
+ */
+router.get("/publication-schedule", authMiddleware, requireEB, async (req, res, next) => {
+  try {
+    const now = new Date();
+    const defaultFrom = new Date(now);
+    defaultFrom.setDate(defaultFrom.getDate() - 30);
+    const defaultTo = new Date(now);
+    defaultTo.setDate(defaultTo.getDate() + 90);
+
+    const from = req.query.from ? new Date(req.query.from) : defaultFrom;
+    const to = req.query.to ? new Date(req.query.to) : defaultTo;
+    const view = req.query.view === "list" ? "list" : "calendar";
+    const includeOverdue = req.query.include_overdue === "true";
+    const scheduleFilter = ["weekly", "monthly"].includes(req.query.publication_schedule)
+      ? req.query.publication_schedule
+      : null;
+
+    // ----- Series có lịch phát hành -----
+    // Lấy Series có scheduled_publish_at (set lúc EB confirm-publish).
+    const seriesFilter = {
+      scheduled_publish_at: { $ne: null },
+      status: { $in: [SERIES_STATUS.APPROVED_BY_EB, SERIES_STATUS.PUBLISHED] },
+    };
+    if (scheduleFilter) seriesFilter.publication_schedule = scheduleFilter;
+
+    const seriesList = await Series.find(seriesFilter)
+      .populate("author_id", "username full_name")
+      .select(
+        "name status publication_schedule scheduled_publish_at author_id cover_image_url"
+      )
+      .lean();
+
+    // ----- Chapter có lịch phát hành (flow cũ, tương thích ngược) -----
+    const chapterList = await Chapter.find({
+      is_scheduled: true,
+      scheduled_publish_at: { $ne: null, $gte: from, $lte: to },
+    })
+      .populate("series_id", "name cover_image_url publication_schedule")
+      .select("chapter_number title scheduled_publish_at series_id status is_published published_at")
+      .lean();
+
+    // ----- Tính "next publish date" cho mỗi Series dựa trên publication_schedule -----
+    // Nếu Series.published: next = last_published + 7 (weekly) | 30 (monthly) ngày
+    // Nếu Series.approved_by_EB nhưng chưa published: next = scheduled_publish_at (nếu trong tương lai)
+    const seriesSchedules = seriesList
+      .map((series) => {
+        const intervalDays =
+          series.publication_schedule === "weekly"
+            ? 7
+            : series.publication_schedule === "monthly"
+              ? 30
+              : null;
+
+        // Lấy chapter đã publish gần nhất của Series
+        let lastPublishedChapter = null;
+        // (Không query thêm DB để giữ response nhanh — chỉ dựa vào scheduled_publish_at)
+
+        let nextPublishAt = null;
+
+        if (series.status === SERIES_STATUS.APPROVED_BY_EB) {
+          // Chưa publish → next = scheduled_publish_at gốc (nếu trong tương lai)
+          nextPublishAt = new Date(series.scheduled_publish_at);
+        } else if (series.status === SERIES_STATUS.PUBLISHED && intervalDays) {
+          // Đã publish → next = scheduled_publish_at + N khoảng (7/30 ngày)
+          const base = new Date(series.scheduled_publish_at);
+          // Tính số khoảng đã qua để tìm next trong tương lai
+          const ms = now.getTime() - base.getTime();
+          const passed = Math.floor(ms / (intervalDays * 24 * 60 * 60 * 1000));
+          nextPublishAt = new Date(
+            base.getTime() + (passed + 1) * intervalDays * 24 * 60 * 60 * 1000
+          );
+        }
+
+        if (!nextPublishAt) return null;
+
+        // Lọc theo khoảng [from, to]
+        const inRange = nextPublishAt >= from && nextPublishAt <= to;
+        if (!inRange) {
+          // Nếu overdue và include_overdue=true → include
+          if (includeOverdue && nextPublishAt < now && series.status === SERIES_STATUS.APPROVED_BY_EB) {
+            // vẫn trả event quá khứ
+          } else {
+            return null;
+          }
+        }
+
+        return {
+          type: "series",
+          series_id: series._id,
+          series_name: series.name,
+          cover_image_url: series.cover_image_url || "",
+          author: series.author_id
+            ? { _id: series.author_id._id, name: series.author_id.full_name }
+            : null,
+          status: series.status,
+          publication_schedule: series.publication_schedule,
+          scheduled_publish_at: nextPublishAt,
+          original_scheduled_publish_at: series.scheduled_publish_at,
+          is_overdue: nextPublishAt < now && series.status === SERIES_STATUS.APPROVED_BY_EB,
+        };
+      })
+      .filter(Boolean);
+
+    // ----- Build chapter events -----
+    const chapterEvents = chapterList.map((ch) => ({
+      type: "chapter",
+      chapter_id: ch._id,
+      chapter_number: ch.chapter_number,
+      chapter_title: ch.title,
+      series_id: ch.series_id?._id,
+      series_name: ch.series_id?.name,
+      cover_image_url: ch.series_id?.cover_image_url || "",
+      publication_schedule: ch.series_id?.publication_schedule || null,
+      scheduled_publish_at: ch.scheduled_publish_at,
+      published_at: ch.published_at || null,
+      is_published: !!ch.is_published,
+      status: ch.status,
+    }));
+
+    // ----- Gộp & sort -----
+    const allEvents = [...seriesSchedules, ...chapterEvents].sort(
+      (a, b) => new Date(a.scheduled_publish_at) - new Date(b.scheduled_publish_at)
+    );
+
+    // ----- Format theo view -----
+    let formatted;
+    if (view === "calendar") {
+      // Gom theo YYYY-MM-DD
+      const grouped = {};
+      for (const ev of allEvents) {
+        const d = new Date(ev.scheduled_publish_at);
+        const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+        if (!grouped[key]) grouped[key] = { date: key, events: [] };
+        grouped[key].events.push(ev);
+      }
+      formatted = Object.values(grouped).sort((a, b) => a.date.localeCompare(b.date));
+    } else {
+      // List view: group theo series
+      const seriesMap = {};
+      for (const ev of allEvents) {
+        const sid = ev.series_id?.toString() || "unknown";
+        if (!seriesMap[sid]) {
+          seriesMap[sid] = {
+            series_id: ev.series_id,
+            series_name: ev.series_name,
+            cover_image_url: ev.cover_image_url,
+            author: ev.author,
+            publication_schedule: ev.publication_schedule,
+            events: [],
+          };
+        }
+        seriesMap[sid].events.push(ev);
+      }
+      formatted = Object.values(seriesMap).sort((a, b) =>
+        (a.series_name || "").localeCompare(b.series_name || "")
+      );
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        view,
+        range: {
+          from: from.toISOString(),
+          to: to.toISOString(),
+        },
+        total: allEvents.length,
+        series_count: seriesSchedules.length,
+        chapter_count: chapterEvents.length,
+        events: formatted,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 module.exports = router;
