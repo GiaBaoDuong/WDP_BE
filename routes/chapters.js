@@ -250,6 +250,8 @@ router.post("/", authMiddleware, requireMangaka, uploadPages.array("pages", 50),
           description: md.note || "",
           note_ids: note ? [note._id] : [],
           status: "pending",
+          round: 1,
+          is_current_round: true,
         });
         createdTasks.push(task);
       }
@@ -308,9 +310,9 @@ router.get("/:id", authMiddleware, async (req, res, next) => {
       .select("_id chapter_id page_number original_image_url result_image_url status current_version")
       .lean();
 
-    // Load tasks cho chapter + populate note_ids (ảnh+tọa độ+note)
+    // Load tasks vòng hiện tại cho chapter + populate note_ids (ảnh+tọa độ+note)
     const Task = require("../models/Task");
-    const tasks = await Task.find({ chapter_id: chapter._id })
+    const tasks = await Task.find({ chapter_id: chapter._id, is_current_round: true })
       .populate("note_ids")
       .populate("assigned_to", "username full_name")
       .lean();
@@ -397,6 +399,25 @@ router.patch("/:id", authMiddleware, requireMangaka, async (req, res, next) => {
         return next(new AppError("No pages to submit", 400));
       }
 
+      // 1) Tìm round hiện tại lớn nhất của chapter → round mới = max + 1
+      const lastTask = await Task.findOne({ chapter_id: chapter._id })
+        .sort({ round: -1 })
+        .select("round")
+        .lean();
+      const nextRound = (lastTask?.round ?? 0) + 1;
+
+      // 2) Mark các task vòng cũ (is_current_round=true + chưa approved/submitted) thành inactive
+      //    → chỉ mark những task đang mở, task đã đóng (approved/submitted) giữ nguyên
+      const markInactiveResult = await Task.updateMany(
+        {
+          chapter_id: chapter._id,
+          is_current_round: true,
+          status: { $in: ["pending", "in_progress", "revision"] },
+        },
+        { $set: { is_current_round: false } }
+      );
+      const inactiveCount = markInactiveResult.modifiedCount || 0;
+
       // Tạo map page_index → page doc để lookup nhanh
       const pageIndexMap = {};
       pages.forEach((p, idx) => {
@@ -441,7 +462,7 @@ router.patch("/:id", authMiddleware, requireMangaka, async (req, res, next) => {
             };
             chapterAnnotations.push(chapterAnn);
 
-            // Tạo Task cho annotation
+            // Tạo Task cho annotation — round mới, is_current_round=true
             // Ưu tiên: ann.assigned_to (per-note) → req.body.assigned_to (top-level) → chapter.assistant_id (từ API /assign)
             const assignedTo = ann.assigned_to || req.body.assigned_to || chapter.assistant_id || null;
             if (assignedTo) {
@@ -460,6 +481,8 @@ router.patch("/:id", authMiddleware, requireMangaka, async (req, res, next) => {
                 description: ann.text || ann.content || "",
                 revision_note: revision_notes || "",
                 status: "pending",
+                round: nextRound,
+                is_current_round: true,
               });
               createdTasks.push(task);
             }
@@ -490,6 +513,8 @@ router.patch("/:id", authMiddleware, requireMangaka, async (req, res, next) => {
               revision_note: revision_notes || "",
               note_ids: [note._id],
               status: "pending",
+              round: nextRound,
+              is_current_round: true,
             });
             createdTasks.push(task);
           }
@@ -505,7 +530,12 @@ router.patch("/:id", authMiddleware, requireMangaka, async (req, res, next) => {
       return res.status(200).json({
         success: true,
         message: "Chapter submitted to assistant",
-        data: { chapter, tasks_created: createdTasks.length },
+        data: {
+          chapter,
+          round: nextRound,
+          tasks_created: createdTasks.length,
+          tasks_marked_inactive: inactiveCount,
+        },
       });
     }
 
@@ -978,9 +1008,9 @@ router.post("/:id/assign", authMiddleware, requireMangaka, async (req, res, next
       notesByPageId[pid].push(note);
     }
 
-    // Lấy các page đã có task (tránh tạo trùng khi re-assign)
+    // Lấy các page đã có task vòng hiện tại (tránh tạo trùng khi re-assign)
     const existingTaskPageIds = (
-      await Task.find({ chapter_id: chapter._id, assigned_to: assistant_id }).distinct("page_id")
+      await Task.find({ chapter_id: chapter._id, assigned_to: assistant_id, is_current_round: true }).distinct("page_id")
     ).map((id) => id.toString());
 
     const newTasks = [];
@@ -1002,6 +1032,8 @@ router.post("/:id/assign", authMiddleware, requireMangaka, async (req, res, next
             region: { x: 0, y: 0, width: 100, height: 100 },
             description: `Task cho trang ${page.page_number} - chapter #${chapter.chapter_number}`,
             status: "pending",
+            round: 1,
+            is_current_round: true,
           });
           newTasks.push(task);
           await Page.findByIdAndUpdate(page._id, { status: "has_task" });
@@ -1026,6 +1058,8 @@ router.post("/:id/assign", authMiddleware, requireMangaka, async (req, res, next
           description: (note.text || "").trim(),
           note_ids: [note._id],
           status: "pending",
+          round: 1,
+          is_current_round: true,
         });
         newTasks.push(task);
         usedNoteIds.push(note._id);

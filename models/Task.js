@@ -40,6 +40,14 @@ const taskSchema = new mongoose.Schema(
       enum: ["pending", "in_progress", "submitted", "in_review", "approved", "revision", "archived"],
       default: "pending",
     },
+    round: {
+      type: Number,
+      default: 1,
+    },
+    is_current_round: {
+      type: Boolean,
+      default: true,
+    },
     result_image_url: { type: String, default: "" },
     note_ids: [{
       type: mongoose.Schema.Types.ObjectId,
@@ -51,6 +59,8 @@ const taskSchema = new mongoose.Schema(
 
 taskSchema.index({ assigned_to: 1, status: 1 });
 taskSchema.index({ chapter_id: 1, status: 1 });
+taskSchema.index({ chapter_id: 1, is_current_round: 1 });
+taskSchema.index({ chapter_id: 1, round: 1 });
 taskSchema.index({ page_id: 1 });
 taskSchema.index({ assigned_by: 1 });
 

@@ -172,9 +172,10 @@ router.post("/chapters/:chapterId/approve-by-mangaka", authMiddleware, requireMa
       return next(new AppError(`Không thể duyệt chapter ở trạng thái "${chapter.status}"`, 400));
     }
 
-    // Kiểm tra tất cả tasks đã approved chưa
+    // Kiểm tra tất cả tasks đã approved chưa (chỉ check vòng hiện tại)
     const unfinishedTasks = await Task.countDocuments({
       chapter_id: chapter._id,
+      is_current_round: true,
       status: { $ne: "approved" },
     });
     if (unfinishedTasks > 0) {
@@ -345,6 +346,7 @@ router.post("/chapters/:chapterId/submit-to-te", authMiddleware, requireMangaka,
 
     const unfinishedTasks = await Task.countDocuments({
       chapter_id: chapter._id,
+      is_current_round: true,
       status: { $in: ["submitted", "revision"] },
     });
     if (unfinishedTasks > 0) {

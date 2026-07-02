@@ -191,7 +191,11 @@ router.get("/my-assignments", authMiddleware, requireAssistant, async (req, res,
   try {
     const { status, chapter_id, page = 1, limit = 20 } = req.query;
 
-    const filter = { assigned_to: req.user.nameid, status: { $ne: "archived" } };
+    const filter = {
+      assigned_to: req.user.nameid,
+      is_current_round: true,
+      status: { $ne: "archived" },
+    };
     if (status) filter.status = status;
     if (chapter_id) filter.chapter_id = chapter_id;
 
@@ -279,7 +283,7 @@ router.get("/chapter/:chapterId", authMiddleware, requireMangaka, async (req, re
     });
     if (!chapter) return next(new AppError("Chapter not found or unauthorized", 404));
 
-    const tasks = await Task.find({ chapter_id: chapter._id })
+    const tasks = await Task.find({ chapter_id: chapter._id, is_current_round: true })
       .populate("page_id", "page_number original_image_url result_image_url status")
       .populate("assigned_to", "username full_name phoneNumber")
       .populate("note_ids")
@@ -330,7 +334,7 @@ router.get("/page/:pageId", authMiddleware, async (req, res, next) => {
       return next(new AppError("Không có quyền xem tasks của page này", 403));
     }
 
-    const tasks = await Task.find({ page_id: page._id })
+    const tasks = await Task.find({ page_id: page._id, is_current_round: true })
       .populate("assigned_by", "username full_name phoneNumber")
       .populate("note_ids")
       .sort({ createdAt: 1 })
@@ -953,6 +957,7 @@ router.get("/stats", authMiddleware, requireAssistant, async (req, res, next) =>
 
     const filter = {
       assigned_to: req.user.nameid,
+      is_current_round: true,
       status: "approved",
       updatedAt: { $gte: startDate, $lte: endDate },
     };
@@ -1024,6 +1029,7 @@ router.get("/pending-review", authMiddleware, requireMangaka, async (req, res, n
     const { chapter_id, page = 1, limit = 20 } = req.query;
     const filter = {
       assigned_by: req.user.nameid,
+      is_current_round: true,
       status: { $in: ["submitted", "in_review"] },
     };
     if (chapter_id) filter.chapter_id = chapter_id;
@@ -1275,11 +1281,11 @@ router.get(
         return next(new AppError("Bạn không phải assistant của chapter này", 403));
       }
 
-      // Lấy tất cả tasks của chapter thuộc assistant hiện tại (bỏ task archived vòng trước)
+      // Lấy tất cả tasks vòng hiện tại của chapter thuộc assistant
       const tasks = await Task.find({
         chapter_id: chapterId,
         assigned_to: req.user.nameid,
-        status: { $ne: "archived" },
+        is_current_round: true,
       })
         .populate("page_id", "page_number")
         .lean();
