@@ -1,5 +1,6 @@
 const express = require("express");
 const router = express.Router();
+const mongoose = require("mongoose");
 const authMiddleware = require("../middleware/auth");
 const { requireMangakaOrAssistant } = require("../middleware/roles");
 const { AppError } = require("../middleware/errorHandler");
@@ -134,6 +135,9 @@ router.get("/pages/:pageId/layers", authMiddleware, requireMangakaOrAssistant, a
 // PUT /chapters/layers/:id
 router.put("/layers/:id", authMiddleware, requireMangakaOrAssistant, async (req, res, next) => {
   try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+      return next(new AppError("Invalid layer id", 400));
+    }
     const layer = await PageLayer.findById(req.params.id).lean();
     if (!layer) return next(new AppError("Layer not found", 404));
 
@@ -154,6 +158,9 @@ router.put("/layers/:id", authMiddleware, requireMangakaOrAssistant, async (req,
 // PATCH /chapters/layers/:id
 async function patchLayerHandler(req, res, next) {
   try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+      return next(new AppError("Invalid layer id", 400));
+    }
     const layer = await PageLayer.findById(req.params.id).lean();
     if (!layer) return next(new AppError("Layer not found", 404));
 
@@ -186,6 +193,9 @@ router.patch("/layers/:id", authMiddleware, requireMangakaOrAssistant, patchLaye
 // DELETE /chapters/layers/:id
 async function deleteLayerHandler(req, res, next) {
   try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+      return next(new AppError("Invalid layer id", 400));
+    }
     const layer = await PageLayer.findById(req.params.id).lean();
     if (!layer) return next(new AppError("Layer not found", 404));
 
