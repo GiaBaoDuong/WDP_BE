@@ -226,6 +226,13 @@ router.get("/my-assignments", authMiddleware, requireAssistant, async (req, res,
 // Lấy full detail 1 task (ảnh gốc, tọa độ, note) — FE dùng khi mở chi tiết task
 router.get("/:id", authMiddleware, async (req, res, next) => {
   try {
+    // Reserved sub-paths (e.g. /tasks/stats, /tasks/my-assignments, /tasks/pending-review)
+    // must not be cast to ObjectId.
+    const reserved = new Set(["stats", "my-assignments", "pending-review"]);
+    if (reserved.has(req.params.id)) {
+      return next();
+    }
+
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
       return next(new AppError("Invalid task id", 400));
     }
@@ -380,6 +387,9 @@ router.get("/page/:pageId", authMiddleware, async (req, res, next) => {
  */
 router.patch("/:id/start", authMiddleware, requireAssistant, async (req, res, next) => {
   try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+      return next(new AppError("Invalid task id", 400));
+    }
     const task = await Task.findOne({
       _id: req.params.id,
       assigned_to: req.user.nameid,
@@ -557,6 +567,10 @@ router.patch(
         new URL(result_image_url);
       } catch {
         return next(new AppError("result_image_url không hợp lệ", 400));
+      }
+
+      if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+        return next(new AppError("Invalid task id", 400));
       }
 
       const task = await Task.findOne({
@@ -782,6 +796,9 @@ router.patch(
  */
 router.patch("/:id/approve", authMiddleware, requireMangaka, async (req, res, next) => {
   try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+      return next(new AppError("Invalid task id", 400));
+    }
     const task = await Task.findOne({
       _id: req.params.id,
       assigned_by: req.user.nameid,
@@ -878,6 +895,9 @@ router.patch("/:id/approve", authMiddleware, requireMangaka, async (req, res, ne
  */
 router.patch("/:id/revision", authMiddleware, requireMangaka, async (req, res, next) => {
   try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+      return next(new AppError("Invalid task id", 400));
+    }
     const { note } = req.body;
     const task = await Task.findOne({
       _id: req.params.id,
@@ -993,6 +1013,9 @@ router.get("/stats", authMiddleware, requireAssistant, async (req, res, next) =>
 // Bước trung gian trước khi approve/revision.
 router.patch("/:id/acknowledge", authMiddleware, requireMangaka, async (req, res, next) => {
   try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+      return next(new AppError("Invalid task id", 400));
+    }
     const task = await Task.findOne({
       _id: req.params.id,
       assigned_by: req.user.nameid,
@@ -1088,12 +1111,11 @@ router.post(
         return next(new AppError("Bạn không phải assistant của chapter này", 403));
       }
 
-      // Lấy tất cả task của chapter thuộc assistant hiện tại
-      // Loại bỏ task archived (task cũ từ vòng trước đã được Mangaka archive khi bấm submit lại)
+      // Lấy tất cả task vòng hiện tại của chapter thuộc assistant
       const allTasks = await Task.find({
         chapter_id: chapterId,
         assigned_to: req.user.nameid,
-        status: { $ne: "archived" },
+        is_current_round: true,
       });
 
       // Dedupe theo page_id: nếu có nhiều task cùng page (do data cũ hoặc flow

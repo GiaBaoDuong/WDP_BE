@@ -293,6 +293,12 @@ router.post("/", authMiddleware, requireMangaka, uploadPages.array("pages", 50),
  */
 router.get("/:id", authMiddleware, async (req, res, next) => {
   try {
+    // Reserved sub-paths (e.g. /chapters/my-assignments) must not be cast to ObjectId.
+    const reserved = new Set(["my-assignments"]);
+    if (reserved.has(req.params.id)) {
+      return next();
+    }
+
     const chapter = await Chapter.findById(req.params.id)
       .populate("series_id", "name author_id")
       .lean();
@@ -379,6 +385,12 @@ router.get("/:id", authMiddleware, async (req, res, next) => {
  */
 router.patch("/:id", authMiddleware, requireMangaka, async (req, res, next) => {
   try {
+    // Reserved sub-paths guard (defensive — không có route conflict hiện tại nhưng để chắc)
+    const reserved = new Set(["my-assignments"]);
+    if (reserved.has(req.params.id)) {
+      return next();
+    }
+
     const chapter = await Chapter.findOne({
       _id: req.params.id,
       submitted_by: req.user.nameid,
@@ -1208,7 +1220,7 @@ router.get("/my-assignments", authMiddleware, requireAssistant, async (req, res,
         { $group: { _id: "$chapter_id", total: { $sum: 1 } } },
       ]),
       Task.aggregate([
-        { $match: { chapter_id: { $in: chapterIds } } },
+        { $match: { chapter_id: { $in: chapterIds }, is_current_round: true } },
         {
           $group: {
             _id: "$chapter_id",
