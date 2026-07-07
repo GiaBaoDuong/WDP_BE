@@ -1090,10 +1090,11 @@ router.get("/pending-review", authMiddleware, requireMangaka, async (req, res, n
 // Body: application/json (KHÔNG cần upload file vì ảnh đã có ở bước 1)
 //
 // Logic:
-//   1. Lấy tất cả task của chapter thuộc assistant hiện tại
-//   2. Validate: tất cả task phải có result_image_url (đã upload ở bước 1)
-//   3. Validate: tất cả task phải đang ở trạng thái pending/in_progress/revision
-//   4. Set status: → "submitted"
+//   1. Lấy tất cả task vòng hiện tại (is_current_round: true) của chapter thuộc assistant
+//   2. Validate: task chưa approved phải có result_image_url
+//   3. Validate: task phải ở trạng thái pending/in_progress/revision/approved
+//      (approved được phép — nộp lại cả task đã duyệt vòng trước để Mangaka duyệt lại)
+//   4. Set status: → "submitted" (reset cả approved về submitted)
 //   5. Cập nhật page.status = "submitted"
 //   6. Set chapter.status = "submitted_by_assistant"
 //   7. Notify Mangaka
@@ -1142,25 +1143,31 @@ router.post(
       const pageMap = {};
       pages.forEach((p) => { pageMap[p._id.toString()] = p; });
 
-      // Validate 1: Tất cả task phải có result_image_url
-      const missingImageTasks = tasks.filter((t) => !t.result_image_url);
-      if (missingImageTasks.length > 0) {
-        return next(
-          new AppError(
-            `${missingImageTasks.length} task chưa có ảnh. Vui lòng upload ảnh qua /tasks/:id/upload-result trước.`,
-            400
-          )
-        );
-      }
-
-      // Validate 2: Chỉ cho phép submit các task đang pending/in_progress/revision
+      // Validate 2: Cho phép submit task ở pending/in_progress/revision VÀ cả approved
+      // (vòng duyệt lại: trang đã approved ở vòng trước vẫn phải gửi lại cùng chapter
+      //  để Mangaka duyệt lại từ đầu — chỉ là không bắt buộc upload ảnh mới nếu không sửa)
+      const SUBMITTABLE_STATUSES = ["pending", "in_progress", "revision", "approved"];
       const invalidTasks = tasks.filter(
-        (t) => !["pending", "in_progress", "revision"].includes(t.status)
+        (t) => !SUBMITTABLE_STATUSES.includes(t.status)
       );
       if (invalidTasks.length > 0) {
         return next(
           new AppError(
             `${invalidTasks.length} task không ở trạng thái hợp lệ để submit: ${invalidTasks.map((t) => t.status).join(", ")}`,
+            400
+          )
+        );
+      }
+
+      // Validate 3 (chỉ áp dụng task CHƯA approved): phải có result_image_url
+      // Task đã approved ở vòng trước có thể giữ nguyên ảnh cũ → không bắt buộc có ảnh mới.
+      const missingImageTasks = tasks.filter(
+        (t) => t.status !== "approved" && !t.result_image_url
+      );
+      if (missingImageTasks.length > 0) {
+        return next(
+          new AppError(
+            `${missingImageTasks.length} task chưa có ảnh. Vui lòng upload ảnh qua /tasks/:id/upload-result trước.`,
             400
           )
         );
@@ -1176,19 +1183,24 @@ router.post(
           return new Date(a.createdAt) - new Date(b.createdAt);
         });
 
-      // Cập nhật status tất cả task → submitted
+      // Cập nhật status tất cả task → submitted (reset cả task đã approved ở vòng trước)
       const updatedTasks = [];
+      let resubmittedCount = 0;
       for (const task of sortedTasks) {
+        const previousStatus = task.status;
         await Task.findByIdAndUpdate(task._id, {
           status: "submitted",
           revision_note: "", // Xóa note revision nếu có
         });
         updatedTasks.push({
           ...task,
+          previous_status: previousStatus,
           status: "submitted",
         });
+        if (previousStatus === "approved") resubmittedCount += 1;
 
-        // Cập nhật page status
+        // Cập nhật page status — kể cả page đã approved ở vòng trước,
+        // để Mangaka thấy toàn bộ page trong danh sách duyệt lại.
         if (task._page) {
           await Page.findByIdAndUpdate(task.page_id, { status: "submitted" });
         }
@@ -1207,14 +1219,18 @@ router.post(
 
       return res.status(200).json({
         success: true,
-        message: `Đã nộp ${updatedTasks.length} task(s) thành công.`,
+        message: `Đã nộp ${updatedTasks.length} task(s) thành công (${resubmittedCount} task đã duyệt vòng trước được gửi lại).`,
         data: {
           chapter_id: chapterId,
+          chapter_status: "submitted_by_assistant",
           total_tasks: updatedTasks.length,
+          resubmitted_count: resubmittedCount,
           tasks: updatedTasks.map((t) => ({
             task_id: t._id,
+            page_id: t.page_id,
             page_number: t._page?.page_number,
             result_image_url: t.result_image_url,
+            previous_status: t.previous_status,
             status: t.status,
           })),
         },
