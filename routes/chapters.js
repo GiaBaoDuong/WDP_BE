@@ -1190,7 +1190,38 @@ router.delete("/:id/assign", authMiddleware, requireMangaka, async (req, res, ne
  *           default: 20
  *     responses:
  *       200:
- *         description: Danh sách chapter kèm số pages và tiến độ tasks
+ *         description: Danh sách chapter kèm số pages, tiến độ tasks và ảnh cover
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                 data:
+ *                   type: array
+ *                   items:
+ *                     type: object
+ *                     properties:
+ *                       _id: { type: string }
+ *                       series_id: { type: string }
+ *                       chapter_number: { type: integer }
+ *                       title: { type: string }
+ *                       status: { type: string }
+ *                       page_count: { type: integer, description: "Tổng số page trong chapter" }
+ *                       tasks:
+ *                         type: object
+ *                         description: Thống kê task vòng hiện tại (total/pending/in_progress/submitted/approved)
+ *                       cover_url:
+ *                         type: string
+ *                         nullable: true
+ *                         description: |
+ *                           URL ảnh thumbnail đại diện cho chapter. Lấy theo thứ tự ưu tiên:
+ *                             1. original_image_url của page đầu tiên (page_number nhỏ nhất) trong chapter
+ *                             2. cover_image_url của series (series_id) nếu chapter chưa có page
+ *                             3. null nếu không có gì
+ *                 pagination:
+ *                   type: object
  *       401:
  *         description: Unauthorized
  */
@@ -1212,9 +1243,9 @@ router.get("/my-assignments", authMiddleware, requireAssistant, async (req, res,
       Chapter.countDocuments(filter),
     ]);
 
-    // Lấy số pages và tasks cho mỗi chapter
+    // Lấy số pages, tasks, và ảnh cover (page đầu tiên theo page_number) cho mỗi chapter
     const chapterIds = chapters.map((c) => c._id);
-    const [pageCounts, taskStats] = await Promise.all([
+    const [pageCounts, taskStats, firstPages] = await Promise.all([
       Page.aggregate([
         { $match: { chapter_id: { $in: chapterIds } } },
         { $group: { _id: "$chapter_id", total: { $sum: 1 } } },
@@ -1232,16 +1263,39 @@ router.get("/my-assignments", authMiddleware, requireAssistant, async (req, res,
           },
         },
       ]),
+      // Lấy page có page_number nhỏ nhất của mỗi chapter để dùng làm cover_url.
+      // Dùng $sort + $group với $first để tận dụng index { chapter_id: 1, page_number: 1 }.
+      Page.aggregate([
+        { $match: { chapter_id: { $in: chapterIds } } },
+        { $sort: { chapter_id: 1, page_number: 1 } },
+        {
+          $group: {
+            _id: "$chapter_id",
+            original_image_url: { $first: "$original_image_url" },
+          },
+        },
+      ]),
     ]);
 
     const pageCountMap = Object.fromEntries(pageCounts.map((p) => [p._id.toString(), p.total]));
     const taskStatMap = Object.fromEntries(taskStats.map((t) => [t._id.toString(), t]));
+    const firstPageMap = Object.fromEntries(
+      firstPages.map((p) => [p._id.toString(), p.original_image_url])
+    );
 
-    const enriched = chapters.map((c) => ({
-      ...c,
-      page_count: pageCountMap[c._id.toString()] || 0,
-      tasks: taskStatMap[c._id.toString()] || { total: 0, pending: 0, in_progress: 0, submitted: 0, approved: 0 },
-    }));
+    const enriched = chapters.map((c) => {
+      // Fallback chain cho cover_url: first page → series.cover_image_url → null
+      const firstPageUrl = firstPageMap[c._id.toString()];
+      const seriesCover = c.series_id?.cover_image_url;
+      const cover_url = firstPageUrl || seriesCover || null;
+
+      return {
+        ...c,
+        page_count: pageCountMap[c._id.toString()] || 0,
+        tasks: taskStatMap[c._id.toString()] || { total: 0, pending: 0, in_progress: 0, submitted: 0, approved: 0 },
+        cover_url,
+      };
+    });
 
     return res.status(200).json({
       success: true,
