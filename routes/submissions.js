@@ -172,14 +172,45 @@ router.post("/chapters/:chapterId/approve-by-mangaka", authMiddleware, requireMa
       return next(new AppError(`Không thể duyệt chapter ở trạng thái "${chapter.status}"`, 400));
     }
 
-    // Kiểm tra tất cả tasks đã approved chưa (chỉ check vòng hiện tại)
-    const unfinishedTasks = await Task.countDocuments({
+    // Kiểm tra tất cả tasks đã approved chưa (chỉ check vòng hiện tại).
+    // Dedupe theo page_id: 1 page = 1 task đại diện (ưu tiên status "cao nhất") để tránh
+    // fail vì task trùng/ẩn do flow POST /chapters + submit tạo 2 lần hoặc task cũ chưa archive.
+    const unfinishedRaw = await Task.find({
       chapter_id: chapter._id,
       is_current_round: true,
       status: { $ne: "approved" },
-    });
-    if (unfinishedTasks > 0) {
-      return next(new AppError(`${unfinishedTasks} task chưa được duyệt. Vui lòng duyệt hết trước.`, 400));
+    })
+      .populate("page_id", "page_number")
+      .select("_id page_id status revision_round assigned_to")
+      .lean();
+
+    const STATUS_PRIORITY = { revision: 4, in_progress: 3, submitted: 2, in_review: 2, pending: 1 };
+    const dedupeByPage = new Map();
+    for (const t of unfinishedRaw) {
+      const key = t.page_id?._id?.toString() ?? "orphan";
+      const existing = dedupeByPage.get(key);
+      const tPri = STATUS_PRIORITY[t.status] ?? 0;
+      const ePri = STATUS_PRIORITY[existing?.status] ?? -1;
+      if (!existing || tPri > ePri) dedupeByPage.set(key, t);
+    }
+    const unfinished = Array.from(dedupeByPage.values());
+
+    if (unfinished.length > 0) {
+      return next(new AppError(
+        `${unfinished.length} trang còn task chưa được duyệt. Vui lòng duyệt hết trước.`,
+        400,
+        {
+          total_unfinished: unfinishedRaw.length,
+          affected_pages: unfinished.length,
+          missing_tasks: unfinished.map((t) => ({
+            task_id: t._id,
+            page_id: t.page_id?._id ?? null,
+            page_number: t.page_id?.page_number ?? null,
+            status: t.status,
+            revision_round: t.revision_round ?? null,
+          })),
+        }
+      ));
     }
 
     // Cập nhật status

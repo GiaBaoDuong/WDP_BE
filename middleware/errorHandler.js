@@ -15,14 +15,21 @@ const errorHandler = (err, req, res, next) => {
   res.status(statusCode).json({
     success: false,
     message,
+    ...(err.data && { data: err.data }),
     ...(process.env.NODE_ENV === "development" && { stack: err.stack }),
   });
 };
 
 class AppError extends Error {
-  constructor(message, statusCode) {
+  /**
+   * @param {string} message
+   * @param {number} statusCode
+   * @param {object|null} [data=null] - Dữ liệu bổ sung trả kèm response (vd: missing_task_ids)
+   */
+  constructor(message, statusCode, data = null) {
     super(message);
     this.statusCode = statusCode;
+    this.data = data;
   }
 }
 
