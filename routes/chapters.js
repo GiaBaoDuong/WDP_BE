@@ -213,17 +213,21 @@ router.post("/", authMiddleware, requireMangaka, uploadPages.array("pages", 50),
         width: u.width || 0,
         height: u.height || 0,
         uploaded_by: req.user.nameid,
-        status: "has_task",
+        // status: chỉ "has_task" nếu assigned_to có, ngược lại để Mongoose dùng default
+        ...(md.assigned_to ? { status: "has_task" } : {}),
       });
       createdPages.push(page);
 
-      // Tạo PageNote (note + tọa độ)
+      // Tạo PageNote (note + tọa độ) — CHỈ khi có note thực từ user
+      // Tránh tạo note placeholder full-page khi user chỉ upload ảnh thuần
       let note = null;
-      if (md.note || md.x !== undefined) {
+      const noteText = (md.note || "").trim();
+      const hasRealNote = noteText.length > 0 || (md.assigned_to && md.assigned_to.trim().length > 0);
+      if (hasRealNote) {
         note = await PageNote.create({
           page_id: page._id,
           author_id: req.user.nameid,
-          text: md.note || "",
+          text: noteText,
           x: Number(md.x ?? 0),
           y: Number(md.y ?? 0),
           w: Number(md.w ?? 100),
@@ -335,9 +339,34 @@ router.get("/:id", authMiddleware, async (req, res, next) => {
       tasks: tasksByPage[String(p._id)] || [],
     }));
 
+    // Build revision_annotations_by_page (page_N: [...]) từ chapter.revision_annotations
+    const pageIndexMap = {};
+    pages.forEach((p, idx) => { pageIndexMap[String(p._id)] = idx; });
+    const revision_annotations_by_page = {};
+    (chapter.revision_annotations || []).forEach((ann) => {
+      const idx = pageIndexMap[ann.page_id?.toString()];
+      if (idx === undefined) return;
+      const key = `page_${idx}`;
+      if (!revision_annotations_by_page[key]) revision_annotations_by_page[key] = [];
+      revision_annotations_by_page[key].push({
+        text: ann.content,
+        x: ann.region?.x,
+        y: ann.region?.y,
+        w: ann.region?.width,
+        h: ann.region?.height,
+        error_type: ann.error_type,
+      });
+    });
+
     return res.status(200).json({
       success: true,
-      data: { ...chapter, pages: pagesWithTasks },
+      data: {
+        ...chapter,
+        pages: pagesWithTasks,
+        revision_notes: chapter.revision_notes || null,
+        revision_annotations: chapter.revision_annotations || [],
+        revision_annotations_by_page,
+      },
       seriesName: chapter.series_id ? chapter.series_id.name : "",
     });
   } catch (error) {
@@ -375,6 +404,31 @@ router.get("/:id", authMiddleware, async (req, res, next) => {
  *               revision_notes:
  *                 type: string
  *                 description: Ghi chú sửa đổi
+ *               action:
+ *                 type: string
+ *                 enum: [submit]
+ *                 description: >
+ *                   "submit" = gửi cả chapter cho Assistant (kèm revision_annotations
+ *                   optional nếu muốn tạo task từ annotations).
+ *                   Vòng revision 2+ cũng dùng action=submit với revision_annotations
+ *                   (mỗi lần submit sẽ tạo round mới, mark task vòng cũ inactive).
+ *               assigned_to:
+ *                 type: string
+ *                 description: User ID của Assistant (khi action=submit)
+ *               revision_annotations:
+ *                 type: object
+ *                 description: >
+ *                   Annotations theo page key (page_0, page_1...).
+ *                   Value = array of { text, x, y, w, h, taskType, error_type }.
+ *                 example:
+ *                   page_0:
+ *                     - text: "Sửa shading vùng mặt"
+ *                       x: 12.5
+ *                       y: 30.0
+ *                       w: 25.0
+ *                       h: 18.0
+ *                       taskType: "shading"
+ *                       error_type: "art"
  *     responses:
  *       200:
  *         description: Cập nhật thành công
@@ -562,6 +616,299 @@ router.patch("/:id", authMiddleware, requireMangaka, async (req, res, next) => {
   }
 });
 
+// ─── POST /chapters/:id/submit-revision ─────────────────────────────────────
+// Mangaka gửi lại chapter cho Assistant sau khi yêu cầu sửa (round 2+)
+// Body: { revision_notes, revision_annotations, action }
+// action=submit-revision: chuyển chapter sang pending_assistant, tạo task mới cho annotations
+/**
+ * @swagger
+ * /chapters/{id}/submit-revision:
+ *   post:
+ *     summary: Mangaka gửi yêu cầu sửa (round 2+) cho Assistant
+ *     tags: [Chapters]
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Chapter ID
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               revision_notes:
+ *                 type: string
+ *                 description: Ghi chú tổng hợp cho toàn chapter
+ *               revision_annotations:
+ *                 type: object
+ *                 description: >
+ *                   Annotations theo page key. Key = page_{index} (0-based).
+ *                   Value = array of { text, x, y, w, h, taskType, error_type }
+ *                 example:
+ *                   page_0:
+ *                     - text: "Sửa shading vùng mặt"
+ *                       x: 12.5
+ *                       y: 30.0
+ *                       w: 25.0
+ *                       h: 18.0
+ *                       taskType: "shading"
+ *                       error_type: "art"
+ *                   page_1: []
+ *     responses:
+ *       200:
+ *         description: Yêu cầu sửa đã được gửi cho Assistant
+ *       400:
+ *         description: Chapter không ở trạng thái hợp lệ để submit revision
+ *       403:
+ *         description: Không có quyền
+ *       404:
+ *         description: Chapter not found
+ */
+// ─── DELETE /chapters/:id ───────────────────────────────────────────────────
+// Mangaka xóa chapter (chỉ khi status === "draft")
+// Cascade: Chapter → Page → Task → PageNote → PageLayer (toàn bộ dữ liệu liên quan)
+/**
+ * @swagger
+ * /chapters/{id}:
+ *   delete:
+ *     summary: Xóa chapter (chỉ ở trạng thái draft)
+ *     description: >
+ *       Mangaka sở hữu chapter xóa khi chapter còn ở trạng thái "draft".
+ *       Cascade xóa toàn bộ: Page, Task, PageNote (note của page),
+ *       PageLayer (ảnh lớp). Sau khi chapter được gửi cho Assistant
+ *       (status !== draft) thì không xóa được.
+ *     tags: [Chapters]
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Chapter ID
+ *     responses:
+ *       200:
+ *         description: Chapter đã được xóa
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success: { type: boolean }
+ *                 message: { type: string }
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     id: { type: string }
+ *                     pages_deleted: { type: integer }
+ *                     tasks_deleted: { type: integer }
+ *                     notes_deleted: { type: integer }
+ *                     layers_deleted: { type: integer }
+ *       400:
+ *         description: Chỉ xóa được chapter ở trạng thái draft
+ *       403:
+ *         description: Không có quyền xóa chapter này
+ *       404:
+ *         description: Chapter not found
+ */
+router.delete("/:id", authMiddleware, requireMangaka, async (req, res, next) => {
+  try {
+    // Reserved sub-paths guard
+    const reserved = new Set(["my-assignments"]);
+    if (reserved.has(req.params.id)) {
+      return next();
+    }
+
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+      return next(new AppError("Invalid chapter id", 400));
+    }
+
+    const chapter = await Chapter.findOne({
+      _id: req.params.id,
+      submitted_by: req.user.nameid,
+    });
+    if (!chapter) return next(new AppError("Chapter not found or unauthorized", 404));
+
+    if (chapter.status !== "draft") {
+      return next(
+        new AppError(
+          `Chỉ xóa được chapter ở trạng thái draft (hiện tại: "${chapter.status}")`,
+          400
+        )
+      );
+    }
+
+    // ─── Cascade delete ────────────────────────────────────────────────────
+    // 1) Lấy tất cả page ids của chapter
+    const pageIds = await Page.find({ chapter_id: chapter._id })
+      .select("_id")
+      .lean();
+    const pageIdStrs = pageIds.map((p) => p._id);
+
+    // 2) Xóa tasks (theo chapter_id, tránh ảnh hưởng chapter khác)
+    const tasksDeleteResult = await Task.deleteMany({ chapter_id: chapter._id });
+
+    // 3) Xóa notes & layers của các page thuộc chapter (chỉ trong các page này)
+    let notesDeleteResult = { deletedCount: 0 };
+    let layersDeleteResult = { deletedCount: 0 };
+    if (pageIdStrs.length > 0) {
+      notesDeleteResult = await PageNote.deleteMany({ page_id: { $in: pageIdStrs } });
+      const PageLayer = require("../models/PageLayer");
+      layersDeleteResult = await PageLayer.deleteMany({ page_id: { $in: pageIdStrs } });
+    }
+
+    // 4) Xóa pages
+    const pagesDeleteResult = await Page.deleteMany({ chapter_id: chapter._id });
+
+    // 5) Xóa chapter
+    await Chapter.deleteOne({ _id: chapter._id });
+
+    return res.status(200).json({
+      success: true,
+      message: "Chapter đã được xóa",
+      data: {
+        id: chapter._id,
+        pages_deleted: pagesDeleteResult.deletedCount || 0,
+        tasks_deleted: tasksDeleteResult.deletedCount || 0,
+        notes_deleted: notesDeleteResult.deletedCount || 0,
+        layers_deleted: layersDeleteResult.deletedCount || 0,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post("/:id/submit-revision", authMiddleware, requireMangaka, async (req, res, next) => {
+  try {
+    if (req.params.id && typeof req.params.id === "string" && req.params.id.includes(":")) {
+      // Prevent route collision with paths that contain colons
+    }
+
+    const chapter = await Chapter.findOne({
+      _id: req.params.id,
+      submitted_by: req.user.nameid,
+    });
+    if (!chapter) return next(new AppError("Chapter not found or unauthorized", 404));
+
+    // Chỉ cho phép submit-revision khi chapter đang ở trạng thái revision
+    const revisionAllowedStatuses = ["revision", "submitted_by_assistant", "in_review"];
+    if (!revisionAllowedStatuses.includes(chapter.status)) {
+      return next(new AppError(`Không thể submit revision: chapter đang ở trạng thái "${chapter.status}"`, 400));
+    }
+
+    const { revision_notes, revision_annotations } = req.body;
+    const pages = await Page.find({ chapter_id: chapter._id }).lean();
+
+    // Xác định round mới
+    const lastTask = await Task.findOne({ chapter_id: chapter._id })
+      .sort({ round: -1 })
+      .select("round")
+      .lean();
+    const nextRound = (lastTask?.round ?? 0) + 1;
+
+    // Mark các task vòng cũ thành inactive
+    await Task.updateMany(
+      {
+        chapter_id: chapter._id,
+        is_current_round: true,
+        status: { $in: ["pending", "in_progress", "revision"] },
+      },
+      { $set: { is_current_round: false } }
+    );
+
+    // Map page_index → page doc
+    const pageIndexMap = {};
+    pages.forEach((p, idx) => {
+      pageIndexMap[`page_${idx}`] = p;
+    });
+
+    const chapterAnnotations = [];
+    const createdTasks = [];
+
+    if (revision_annotations && typeof revision_annotations === "object") {
+      for (const [pageKey, annotations] of Object.entries(revision_annotations)) {
+        const page = pageIndexMap[pageKey];
+        if (!page || !Array.isArray(annotations)) continue;
+
+        for (const ann of annotations) {
+          if (!ann.text || ann.text.trim() === "") continue;
+
+          const workTypeToErrorType = {
+            background: "art", shading: "art", effects: "art",
+            details: "art", fill: "art", content: "content",
+            dialogue: "dialogue", script: "script", other: "other",
+          };
+
+          const chapterAnn = {
+            page_id: page._id,
+            region: {
+              x: Number(ann.x ?? 0),
+              y: Number(ann.y ?? 0),
+              width: Number(ann.w ?? ann.width ?? 100),
+              height: Number(ann.h ?? ann.height ?? 100),
+            },
+            content: ann.text,
+            error_type: ann.error_type || workTypeToErrorType[ann.taskType] || "other",
+          };
+          chapterAnnotations.push(chapterAnn);
+
+          const assignedTo = ann.assigned_to || chapter.assistant_id || null;
+          if (assignedTo) {
+            const task = await Task.create({
+              page_id: page._id,
+              chapter_id: chapter._id,
+              assigned_by: req.user.nameid,
+              assigned_to: assignedTo,
+              work_type: ann.taskType || "other",
+              region: { ...chapterAnn.region },
+              description: ann.text,
+              revision_note: revision_notes || "",
+              status: "pending",
+              round: nextRound,
+              is_current_round: true,
+            });
+            createdTasks.push(task);
+          }
+        }
+      }
+    }
+
+    // Cập nhật chapter
+    chapter.status = "pending_assistant";
+    if (revision_notes !== undefined) chapter.revision_notes = revision_notes;
+    chapter.revision_annotations = chapterAnnotations;
+    chapter.revision_source = "Mangaka";
+    await chapter.save();
+
+    // Update pages status
+    await Page.updateMany(
+      { chapter_id: chapter._id },
+      { $set: { status: "has_task" } }
+    );
+
+    return res.status(200).json({
+      success: true,
+      message: "Revision submitted to assistant",
+      data: {
+        chapter_id: chapter._id,
+        round: nextRound,
+        tasks_created: createdTasks.length,
+        revision_annotations: chapterAnnotations,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 // ─── POST /chapters/:id/pages ─────────────────────────────────────────────────
 // Mangaka upload từng page lên Cloudinary, kèm note + tọa độ (lưu ngay vào DB)
 // Body: multipart/form-data
@@ -626,7 +973,7 @@ router.post(
       const uploadResult = req.file; // CloudinaryStorage đã trả kết quả upload sẵn
 
       // Lấy metadata từ body
-      const noteText = req.body.note || "";
+      const noteText = (req.body.note || "").trim();
       const workType = req.body.work_type || "other";
       const x = Number(req.body.x ?? 0);
       const y = Number(req.body.y ?? 0);
@@ -643,11 +990,15 @@ router.post(
         width: uploadResult.width || uploadResult.metadata?.width || 0,
         height: uploadResult.height || uploadResult.metadata?.height || 0,
         uploaded_by: req.user.nameid,
-        status: "has_task",
+        // status: chỉ "has_task" nếu có assigned_to, ngược lại dùng default của schema
+        ...(assignedTo ? { status: "has_task" } : {}),
       });
 
+      // Tạo PageNote (note + tọa độ) — CHỈ khi user thực sự gửi note hoặc có assigned_to
+      // Tránh tạo note placeholder full-page khi user chỉ upload ảnh thuần
       let note = null;
-      if (noteText || true) {
+      const hasRealNote = noteText.length > 0 || (assignedTo && String(assignedTo).trim().length > 0);
+      if (hasRealNote) {
         note = await PageNote.create({
           page_id: page._id,
           author_id: req.user.nameid,
@@ -1190,7 +1541,11 @@ router.delete("/:id/assign", authMiddleware, requireMangaka, async (req, res, ne
  *           default: 20
  *     responses:
  *       200:
- *         description: Danh sách chapter kèm số pages và tiến độ tasks
+ *         description: >
+ *           Danh sách chapter kèm số pages, tiến độ tasks, cover_url,
+ *           revision_notes, revision_annotations, revision_annotations_by_page
+ *           (key page_N: { text, x, y, w, h, error_type }) và notes (đầy đủ fields
+ *           từ task.note_ids, có note_kind, revision_round, x, y, w, h, taskType)
  *       401:
  *         description: Unauthorized
  */
@@ -1212,9 +1567,9 @@ router.get("/my-assignments", authMiddleware, requireAssistant, async (req, res,
       Chapter.countDocuments(filter),
     ]);
 
-    // Lấy số pages và tasks cho mỗi chapter
+    // Lấy số pages, tasks, cover và note_ids của current round cho mỗi chapter
     const chapterIds = chapters.map((c) => c._id);
-    const [pageCounts, taskStats] = await Promise.all([
+    const [pageCounts, taskStats, firstPages, taskNoteIds] = await Promise.all([
       Page.aggregate([
         { $match: { chapter_id: { $in: chapterIds } } },
         { $group: { _id: "$chapter_id", total: { $sum: 1 } } },
@@ -1232,16 +1587,95 @@ router.get("/my-assignments", authMiddleware, requireAssistant, async (req, res,
           },
         },
       ]),
+      // Lấy page đầu tiên (page_number nhỏ nhất) mỗi chapter để làm cover
+      Page.aggregate([
+        { $match: { chapter_id: { $in: chapterIds } } },
+        { $sort: { page_number: 1 } },
+        { $group: { _id: "$chapter_id", firstPageUrl: { $first: "$original_image_url" } } },
+      ]),
+      // Lấy note_ids từ tasks current round để populate notes cho Assistant
+      Task.find({ chapter_id: { $in: chapterIds }, is_current_round: true })
+        .select("chapter_id note_ids")
+        .lean(),
     ]);
 
     const pageCountMap = Object.fromEntries(pageCounts.map((p) => [p._id.toString(), p.total]));
     const taskStatMap = Object.fromEntries(taskStats.map((t) => [t._id.toString(), t]));
+    const firstPageMap = Object.fromEntries(firstPages.map((p) => [p._id.toString(), p.firstPageUrl]));
 
-    const enriched = chapters.map((c) => ({
-      ...c,
-      page_count: pageCountMap[c._id.toString()] || 0,
-      tasks: taskStatMap[c._id.toString()] || { total: 0, pending: 0, in_progress: 0, submitted: 0, approved: 0 },
-    }));
+    // Build map chapterId → all note_ids from current round tasks
+    const noteIdsByChapter = {};
+    for (const task of taskNoteIds) {
+      const cid = task.chapter_id.toString();
+      if (!noteIdsByChapter[cid]) noteIdsByChapter[cid] = [];
+      noteIdsByChapter[cid].push(...(task.note_ids || []));
+    }
+
+    // Populate notes in 1 batch
+    const allNoteIds = [...new Set(Object.values(noteIdsByChapter).flat())];
+    const notesMap = {};
+    if (allNoteIds.length > 0) {
+      const notes = await PageNote.find({ _id: { $in: allNoteIds } })
+        .populate("author_id", "username full_name phoneNumber")
+        .lean();
+      for (const n of notes) {
+        notesMap[n._id.toString()] = n;
+      }
+    }
+
+    // Build page index map (page_id → page_index) cho mỗi chapter
+    const allPages = await Page.find({ chapter_id: { $in: chapterIds } })
+      .select("_id chapter_id page_number")
+      .lean();
+    const pageIndexByChapter = {};
+    for (const p of allPages) {
+      const cid = p.chapter_id.toString();
+      if (!pageIndexByChapter[cid]) pageIndexByChapter[cid] = [];
+      pageIndexByChapter[cid].push(p);
+    }
+    for (const cid of Object.keys(pageIndexByChapter)) {
+      pageIndexByChapter[cid].sort((a, b) => a.page_number - b.page_number);
+    }
+
+    const enriched = chapters.map((c) => {
+      const cid = c._id.toString();
+      const firstPageUrl = firstPageMap[cid];
+      const cover_url = firstPageUrl || c.series_id?.cover_image_url || null;
+      const noteIds = noteIdsByChapter[cid] || [];
+      const populatedNotes = noteIds.map((nid) => notesMap[nid.toString()]).filter(Boolean);
+
+      // Build revision_annotations_by_page (page_N: [...]) từ revision_annotations array
+      const pageIndexMap = {};
+      (pageIndexByChapter[cid] || []).forEach((p, idx) => {
+        pageIndexMap[p._id.toString()] = idx;
+      });
+      const revision_annotations_by_page = {};
+      (c.revision_annotations || []).forEach((ann) => {
+        const idx = pageIndexMap[ann.page_id?.toString()];
+        if (idx === undefined) return;
+        const key = `page_${idx}`;
+        if (!revision_annotations_by_page[key]) revision_annotations_by_page[key] = [];
+        revision_annotations_by_page[key].push({
+          text: ann.content,
+          x: ann.region?.x,
+          y: ann.region?.y,
+          w: ann.region?.width,
+          h: ann.region?.height,
+          error_type: ann.error_type,
+        });
+      });
+
+      return {
+        ...c,
+        page_count: pageCountMap[cid] || 0,
+        tasks: taskStatMap[cid] || { total: 0, pending: 0, in_progress: 0, submitted: 0, approved: 0 },
+        cover_url,
+        revision_notes: c.revision_notes || null,
+        revision_annotations: c.revision_annotations || [],
+        revision_annotations_by_page,
+        notes: populatedNotes,
+      };
+    });
 
     return res.status(200).json({
       success: true,
@@ -1359,13 +1793,25 @@ router.post(
  *                 type: string
  *                 enum: [background, shading, fx, other]
  *                 description: Loại công việc
+ *               note_kind:
+ *                 type: string
+ *                 enum: [brief, revision]
+ *                 default: brief
+ *                 description: Loại note (brief = gửi lần đầu, revision = yêu cầu sửa)
+ *               revision_round:
+ *                 type: integer
+ *                 default: 1
+ *                 description: Vòng sửa (tự động tăng nếu không truyền)
  *     responses:
  *       201:
  *         description: Note đã được tạo
  */
 router.post("/pages/:id/notes", authMiddleware, requireMangaka, async (req, res, next) => {
   try {
-    const { text, x, y, w, h, taskType } = req.body;
+    const { text, x, y, w, h, taskType, note_kind, revision_round } = req.body;
+    if (!text || typeof text !== "string" || text.trim() === "") {
+      return next(new AppError("text is required", 400));
+    }
     if ([x, y, w, h].some((v) => v === undefined || v === null)) {
       return next(new AppError("x, y, w, h are required", 400));
     }
@@ -1380,6 +1826,16 @@ router.post("/pages/:id/notes", authMiddleware, requireMangaka, async (req, res,
       return next(new AppError("Bạn không có quyền gửi note cho page này", 403));
     }
 
+    // Auto-detect revision_round from chapter's latest task round if not provided
+    let resolvedRound = revision_round || 1;
+    if (note_kind === "revision" && !revision_round) {
+      const latestTask = await Task.findOne({ chapter_id: chapter._id })
+        .sort({ round: -1 })
+        .select("round")
+        .lean();
+      resolvedRound = (latestTask?.round ?? 0) + 1;
+    }
+
     const note = await PageNote.create({
       page_id: page._id,
       author_id: req.user.nameid,
@@ -1389,6 +1845,9 @@ router.post("/pages/:id/notes", authMiddleware, requireMangaka, async (req, res,
       w,
       h,
       taskType: taskType || "other",
+      note_kind: note_kind || "brief",
+      author_role: "mangaka",
+      revision_round: resolvedRound,
     });
 
     res.status(201).json({
@@ -1418,12 +1877,26 @@ router.post("/pages/:id/notes", authMiddleware, requireMangaka, async (req, res,
  *         schema:
  *           type: string
  *         description: Page ID
+ *       - in: query
+ *         name: note_kind
+ *         schema:
+ *           type: string
+ *           enum: [brief, revision]
+ *         description: Lọc theo loại note (brief = gửi lần đầu, revision = yêu cầu sửa)
+ *       - in: query
+ *         name: revision_round
+ *         schema:
+ *           type: integer
+ *         description: Lọc theo vòng sửa
  *     responses:
  *       200:
- *         description: Danh sách note
+ *         description: >
+ *           Danh sách note. Response có dạng { data: { page, notes: [{ _id, text, x, y, w, h,
+ *           taskType, note_kind, author_role, revision_round, author_id }] } }
  */
 router.get("/pages/:id/notes", authMiddleware, requireMangakaOrAssistant, async (req, res, next) => {
   try {
+    const { note_kind, revision_round } = req.query;
     const page = await Page.findById(req.params.id).lean();
     if (!page) {
       return next(new AppError("Page not found", 404));
@@ -1442,7 +1915,15 @@ router.get("/pages/:id/notes", authMiddleware, requireMangakaOrAssistant, async 
       return next(new AppError("Bạn không có quyền xem note của page này", 403));
     }
 
-    const notes = await PageNote.find({ page_id: page._id })
+    const noteFilter = { page_id: page._id };
+    if (note_kind && ["brief", "revision"].includes(note_kind)) {
+      noteFilter.note_kind = note_kind;
+    }
+    if (revision_round && !isNaN(parseInt(revision_round))) {
+      noteFilter.revision_round = parseInt(revision_round);
+    }
+
+    const notes = await PageNote.find(noteFilter)
       .populate("author_id", "username full_name phoneNumber")
       .sort({ createdAt: 1 })
       .lean();
@@ -1735,6 +2216,9 @@ router.delete(
 router.put("/pages/:id/notes/:noteId", authMiddleware, requireMangaka, async (req, res, next) => {
   try {
     const { text, x, y, w, h, taskType } = req.body;
+    if (!text || typeof text !== "string" || text.trim() === "") {
+      return next(new AppError("text is required", 400));
+    }
     if ([x, y, w, h].some((v) => v === undefined || v === null)) {
       return next(new AppError("x, y, w, h are required", 400));
     }
@@ -1744,12 +2228,15 @@ router.put("/pages/:id/notes/:noteId", authMiddleware, requireMangaka, async (re
       const note = await PageNote.create({
         page_id: req.params.id,
         author_id: req.user.nameid,
-        text: (text || '').trim(),
+        text: text.trim(),
         x,
         y,
         w,
         h,
         taskType: taskType || "other",
+        note_kind: "brief",
+        author_role: "mangaka",
+        revision_round: 1,
       });
       return res.status(200).json({ success: true, message: "Note đã được tạo từ client ID", data: note });
     }

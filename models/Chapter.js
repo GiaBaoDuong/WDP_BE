@@ -23,6 +23,7 @@ const chapterSchema = new mongoose.Schema(
         "approved_by_EB",
         "published",
         "review",
+        "revision_requested",
       ],
       default: "draft",
     },

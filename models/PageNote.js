@@ -50,6 +50,20 @@ const pageNoteSchema = new mongoose.Schema(
       enum: ["active", "used_in_task"],
       default: "active",
     },
+    note_kind: {
+      type: String,
+      enum: ["brief", "revision"],
+      default: "brief",
+    },
+    author_role: {
+      type: String,
+      enum: ["mangaka", "assistant", "te", "eb"],
+      default: "mangaka",
+    },
+    revision_round: {
+      type: Number,
+      default: 1,
+    },
   },
   { timestamps: true }
 );
