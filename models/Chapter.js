@@ -23,6 +23,7 @@ const chapterSchema = new mongoose.Schema(
         "approved_by_EB",
         "published",
         "review",
+        "revision_requested",
       ],
       default: "draft",
     },
@@ -53,6 +54,7 @@ const chapterSchema = new mongoose.Schema(
       default: null,
     },
     revision_notes: { type: String, default: "" },
+    revision_round: { type: Number, default: 1 },
     revision_annotations: {
       type: [
         {
