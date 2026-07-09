@@ -388,7 +388,7 @@ router.post("/pages/:pageId/finalize", authMiddleware, requireMangakaOrAssistant
  *         description: Loai anh can tai (original = anh goc, merged = anh gop sau finalize)
  *     responses:
  *       200:
- *         description: Stream anh binary voi Content-Disposition: attachment
+ *         description: "Stream anh binary voi Content-Disposition attachment"
  *         content:
  *           application/octet-stream:
  *             schema:
