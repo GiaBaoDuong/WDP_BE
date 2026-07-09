@@ -374,6 +374,59 @@ router.get("/:id", authMiddleware, async (req, res, next) => {
   }
 });
 
+// ─── DELETE /chapters/:id ───────────────────────────────────────────────────
+// Mangaka xóa chapter ở trạng thái draft
+/**
+ * @swagger
+ * /chapters/{id}:
+ *   delete:
+ *     summary: Xóa chapter ở trạng thái draft
+ *     tags: [Chapters]
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Chapter ID
+ *     responses:
+ *       200:
+ *         description: Chapter đã được xóa
+ *       400:
+ *         description: Chỉ xóa được chapter ở trạng thái draft
+ *       403:
+ *         description: Không có quyền xóa chapter này
+ *       404:
+ *         description: Chapter not found
+ */
+router.delete("/:id", authMiddleware, requireMangaka, async (req, res, next) => {
+  try {
+    const chapter = await Chapter.findOne({
+      _id: req.params.id,
+      submitted_by: req.user.nameid,
+    });
+    if (!chapter) return next(new AppError("Chapter not found", 404));
+
+    if (chapter.status !== "draft") {
+      return next(new AppError("Chỉ xóa được chapter ở trạng thái draft", 400));
+    }
+
+    await Page.deleteMany({ chapter_id: chapter._id });
+    await Task.deleteMany({ chapter_id: chapter._id });
+    await Chapter.findByIdAndDelete(chapter._id);
+
+    res.json({
+      success: true,
+      message: "Chapter đã được xóa",
+      data: { id: chapter._id },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 // ─── PATCH /chapters/:id ────────────────────────────────────────────────────
 // Mangaka sửa chapter
 /**
