@@ -2538,6 +2538,7 @@ router.post(
         pageUpdates.push(
           Page.findByIdAndUpdate(page._id, {
             result_image_url: imageUrl,
+            final_image_url: imageUrl,
             status: "submitted",
           }).then(() => {
             result_image_urls.push(imageUrl);

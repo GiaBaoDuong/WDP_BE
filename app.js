@@ -52,6 +52,7 @@ mongoose
       "users", "series", "chapters", "pages", "tasks",
       "cooperationrequests", "cooperations", "tereviews",
       "ebevaluations", "votes", "notifications", "pagenotes", "otps",
+      "comments", "readinghistories",
     ];
     await Promise.all(collections.map((c) => mongoose.connection.db.createCollection(c).catch(() => {})));
     console.log("Collections initialized");
@@ -81,6 +82,7 @@ app.use("/te-reviews", require("./routes/teReviews"));
 app.use("/eb-evaluations", require("./routes/ebEvaluations"));
 app.use("/eb-scores", require("./routes/ebScores"));
 app.use("/reader", require("./routes/readers"));
+app.use("/comments", require("./routes/comments"));
 app.use("/admin", require("./routes/admin"));
 
 // Health check

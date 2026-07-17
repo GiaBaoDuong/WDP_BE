@@ -81,6 +81,7 @@ const chapterSchema = new mongoose.Schema(
     },
     is_published: { type: Boolean, default: false },
     published_at: { type: Date, default: null },
+    views_count: { type: Number, default: 0 },
     // Scheduling fields
     scheduled_publish_at: { type: Date, default: null },
     publication_duration_days: {

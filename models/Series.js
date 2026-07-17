@@ -48,7 +48,7 @@ const seriesSchema = new mongoose.Schema(
     },
     scheduled_publish_at: { type: Date, default: null },
     is_public: { type: Boolean, default: false },
-    average_score: { type: Number, default: 0, min: 0, max: 10 },
+    average_score: { type: Number, default: 0, min: 0, max: 5 },
     total_votes: { type: Number, default: 0 },
     views_count: { type: Number, default: 0 },
     cover_image_url: { type: String, default: "" },

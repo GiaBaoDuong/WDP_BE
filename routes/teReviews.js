@@ -2378,6 +2378,32 @@ router.post("/chapter/:chapterId/publish", authMiddleware, requireTE, async (req
     chapter.revision_source = "";
     await chapter.save();
 
+    // Snapshot ảnh cuối cho Reader (set final_image_url lúc publish để freeze giá trị)
+    // Ưu tiên result_image_url (ảnh assistant render), fallback original_image_url (ảnh gốc)
+    // Không ảnh hưởng luồng nội bộ - chỉ set sau khi đã publish thành công
+    // Bỏ qua nếu lỗi (chapter đã published, không làm fail cả request)
+    await Page.updateMany(
+      { chapter_id: chapter._id },
+      [
+        {
+          $set: {
+            final_image_url: {
+              $cond: [
+                { $ne: ["$result_image_url", ""] },
+                "$result_image_url",
+                "$original_image_url",
+              ],
+            },
+          },
+        },
+      ],
+    ).catch((err) =>
+      console.warn(
+        `[publish] Failed to snapshot final_image_url for chapter ${chapter._id}:`,
+        err.message
+      )
+    );
+
     const review = await TEReview.findOne({ chapter_id: chapterId });
     if (review) {
       review.decision = TE_DECISION.APPROVED_PUBLISH;

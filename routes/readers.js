@@ -6,8 +6,10 @@ const { AppError } = require("../middleware/errorHandler");
 const Series = require("../models/Series");
 const Chapter = require("../models/Chapter");
 const Vote = require("../models/Vote");
+const { SCORE_LABELS } = require("../models/Vote");
 const Page = require("../models/Page");
 const Bookshelf = require("../models/Bookshelf");
+const ReadingHistory = require("../models/ReadingHistory");
 const { getCurrentPeriod } = require("../utils/helpers");
 
 /**
@@ -68,12 +70,42 @@ const { getCurrentPeriod } = require("../utils/helpers");
  */
 // ─── GET /reader/series ───────────────────────────────────────────────────────
 // Reader xem danh sách series đã publish
+// Query params:
+//   - genre    : string | string[]  → lọc theo 1 hoặc nhiều genre (match trong mảng `genre` của Series)
+//   - tags     : string | string[]  → lọc theo 1 hoặc nhiều tag   (match trong mảng `tags`  của Series)
+//   - title    : string             → regex search theo `name`
+//   - sort     : string             → field để sort, default 'average_score'
+//   - page     : int                → trang, default 1
+//   - limit    : int                → số item/trang, default 20
 router.get("/series", authMiddleware, requireReader, async (req, res, next) => {
   try {
-    const { genre, sort = "average_score", page = 1, limit = 20 } = req.query;
+    const { title, sort = "average_score", page = 1, limit = 20 } = req.query;
+
+    // Genre: chấp nhận string, CSV, hoặc mảng query (?genre=A&genre=B)
+    const rawGenres = req.query.genre;
+    const { GENRES } = require("../models/Series");
+    let genreArr = [];
+    if (rawGenres !== undefined) {
+      genreArr = Array.isArray(rawGenres)
+        ? rawGenres
+        : String(rawGenres).split(",").map((g) => g.trim()).filter(Boolean);
+      // Loại bỏ genre không nằm trong whitelist để tránh query vô nghĩa trả 0 kết quả
+      genreArr = genreArr.filter((g) => GENRES.includes(g));
+    }
+
+    // Tags: CSV hoặc mảng
+    const rawTags = req.query.tags;
+    let tagArr = [];
+    if (rawTags !== undefined) {
+      tagArr = Array.isArray(rawTags)
+        ? rawTags
+        : String(rawTags).split(",").map((t) => t.trim()).filter(Boolean);
+    }
 
     const filter = { is_public: true, status: "published" };
-    if (genre) filter.genre = genre;
+    if (genreArr.length > 0) filter.genre = { $in: genreArr };
+    if (tagArr.length > 0) filter.tags = { $in: tagArr };
+    if (title) filter.name = { $regex: String(title), $options: "i" };
 
     const [series, total] = await Promise.all([
       Series.find(filter)
@@ -107,6 +139,80 @@ router.get("/series", authMiddleware, requireReader, async (req, res, next) => {
       data: enriched,
       pagination: { total, page: parseInt(page), limit: parseInt(limit) },
     });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * @swagger
+ * /reader/genres:
+ *   get:
+ *     tags: [Readers]
+ *     summary: Get the whitelist of valid genres for Series
+ *     security:
+ *       - BearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Array of genre names that are accepted by Series model
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success: { type: boolean }
+ *                 data:
+ *                   type: array
+ *                   items: { type: string }
+ */
+// ─── GET /reader/genres ─────────────────────────────────────────────────────
+// Trả về whitelist thể loại hợp lệ của Series (Series.GENRES) — client dùng để render checkbox lọc.
+router.get("/genres", authMiddleware, requireReader, (req, res) => {
+  const { GENRES } = require("../models/Series");
+  return res.status(200).json({ success: true, data: GENRES });
+});
+
+/**
+ * @swagger
+ * /reader/tags:
+ *   get:
+ *     tags: [Readers]
+ *     summary: Get distinct tags currently used by published series
+ *     security:
+ *       - BearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Sorted distinct tags collected from published public series
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success: { type: boolean }
+ *                 data:
+ *                   type: array
+ *                   items: { type: string }
+ *       401:
+ *         description: Unauthorized
+ *       403:
+ *         description: Forbidden - Reader role required
+ */
+// ─── GET /reader/tags ───────────────────────────────────────────────────────
+// Trả về danh sách tag hiện đang được sử dụng bởi các series public & published.
+// Dùng distinct để chỉ trả tag thật (không kèm whitelist cứng).
+router.get("/tags", authMiddleware, requireReader, async (req, res, next) => {
+  try {
+    const tags = await Series.distinct("tags", {
+      is_public: true,
+      status: "published",
+      tags: { $exists: true, $ne: [] },
+    });
+    const cleaned = (Array.isArray(tags) ? tags : [])
+      .filter(Boolean)
+      .map((t) => String(t).trim())
+      .filter(Boolean)
+      .sort((a, b) => a.localeCompare(b, "vi"));
+    return res.status(200).json({ success: true, data: cleaned });
   } catch (error) {
     next(error);
   }
@@ -236,7 +342,14 @@ router.get("/series/:id/chapters", authMiddleware, requireReader, async (req, re
 
     return res.status(200).json({
       success: true,
-      data: chapters,
+      data: chapters.map((c) => ({
+        _id: c._id,
+        chapter_number: c.chapter_number,
+        title: c.title,
+        published_at: c.published_at,
+        views_count: c.views_count || 0,
+        submitted_by: c.submitted_by,
+      })),
       seriesName: series.name,
     });
   } catch (error) {
@@ -321,7 +434,8 @@ router.get("/chapters/:id", authMiddleware, requireReader, async (req, res, next
  *               score:
  *                 type: number
  *                 minimum: 1
- *                 maximum: 10
+ *                 maximum: 5
+ *                 description: Score from 1 to 5 (1=Rất dở, 2=Dở, 3=Bình thường, 4=Hay, 5=Xuất sắc)
  *               comment:
  *                 type: string
  *     responses:
@@ -358,18 +472,19 @@ router.post("/votes", authMiddleware, requireReader, async (req, res, next) => {
     if (!series_id || score === undefined) {
       return next(new AppError("series_id and score are required", 400));
     }
-    if (score < 1 || score > 10) {
-      return next(new AppError("Score must be between 1 and 10", 400));
+    if (score < 1 || score > 5) {
+      return next(new AppError("Score must be between 1 and 5", 400));
     }
 
     const series = await Series.findOne({ _id: series_id, is_public: true });
     if (!series) return next(new AppError("Series not found", 404));
 
     const release_period = getCurrentPeriod();
+    const score_label = SCORE_LABELS[score] || "Bình thường";
 
     const vote = await Vote.findOneAndUpdate(
       { series_id, reader_id: req.user.nameid, release_period },
-      { score, comment: comment || "", release_period },
+      { score, score_label, comment: comment || "", release_period },
       { upsert: true, returnDocument: "after" }
     );
 
@@ -387,6 +502,7 @@ router.post("/votes", authMiddleware, requireReader, async (req, res, next) => {
         average_score: series.average_score,
         total_votes: series.total_votes,
       },
+      score_label,
     });
   } catch (error) {
     next(error);
@@ -534,6 +650,166 @@ router.get("/chapters/:id/pages", authMiddleware, requireReader, async (req, res
         _id: chapter.series_id._id,
         name: chapter.series_id.name,
       },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ─── POST /reader/chapters/:id/view ──────────────────────────────────────────
+// Reader đánh dấu 1 lượt đọc cho chapter (mobile chỉ gọi sau khi đọc ≥ 15s).
+// - Tăng `Chapter.views_count` bằng `$inc` để tránh race condition.
+// - Trả về `views_count` mới để mobile cập nhật cache ngay.
+router.post("/chapters/:id/view", authMiddleware, requireReader, async (req, res, next) => {
+  try {
+    const chapter = await Chapter.findOneAndUpdate(
+      { _id: req.params.id, is_published: true },
+      { $inc: { views_count: 1 } },
+      { new: true, projection: { _id: 1, views_count: 1, series_id: 1 } }
+    ).lean();
+
+    if (!chapter) {
+      return next(new AppError("Chapter not found or not published", 404));
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        chapter_id: chapter._id,
+        series_id: chapter.series_id,
+        views_count: chapter.views_count,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// READING HISTORY - Lịch sử đọc của reader (lưu DB, dùng chung cho mọi thiết bị)
+// ════════════════════════════════════════════════════════════════════════════
+
+const READING_HISTORY_DEFAULT_LIMIT = 50;
+const READING_HISTORY_MAX_LIMIT = 100;
+
+/**
+ * @swagger
+ * /reader/history:
+ *   get:
+ *     tags: [Readers]
+ *     summary: Lấy lịch sử đọc của reader hiện tại (sort theo read_at desc)
+ *     security:
+ *       - BearerAuth: []
+ */
+router.get("/history", authMiddleware, requireReader, async (req, res, next) => {
+  try {
+    const limit = Math.min(
+      READING_HISTORY_MAX_LIMIT,
+      Math.max(1, parseInt(req.query.limit) || READING_HISTORY_DEFAULT_LIMIT)
+    );
+
+    const items = await ReadingHistory.find({ reader_id: req.user.nameid })
+      .sort({ read_at: -1 })
+      .limit(limit)
+      .populate({
+        path: "series_id",
+        select:
+          "name cover_image_url genre total_chapters views_count status is_public",
+        populate: { path: "author_id", select: "username full_name avatar_url" },
+      })
+      .lean();
+
+    // Bỏ các entry có series đã bị ẩn / gỡ
+    const data = items
+      .filter((it) => it.series_id && it.series_id.is_public && it.series_id.status === "published")
+      .map((it) => ({
+        _id: it._id,
+        series_id: it.series_id._id,
+        last_read_chapter: it.last_read_chapter || 0,
+        read_at: it.read_at,
+        series: it.series_id,
+      }));
+
+    return res.status(200).json({ success: true, data });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * @swagger
+ * /reader/history:
+ *   post:
+ *     tags: [Readers]
+ *     summary: Ghi nhận / cập nhật lịch sử đọc (idempotent theo (reader, series))
+ */
+router.post("/history", authMiddleware, requireReader, async (req, res, next) => {
+  try {
+    const { series_id, last_read_chapter } = req.body;
+    if (!series_id) {
+      return next(new AppError("series_id is required", 400));
+    }
+
+    const series = await Series.findOne({
+      _id: series_id,
+      is_public: true,
+      status: "published",
+    }).select("_id");
+    if (!series) {
+      return next(new AppError("Series not found or not published", 404));
+    }
+
+    const chapterNum = Number.isFinite(Number(last_read_chapter))
+      ? Math.max(0, parseInt(last_read_chapter))
+      : 0;
+
+    const entry = await ReadingHistory.findOneAndUpdate(
+      { reader_id: req.user.nameid, series_id },
+      {
+        $set: { last_read_chapter: chapterNum, read_at: new Date() },
+      },
+      { upsert: true, new: true, setDefaultsOnInsert: true }
+    ).lean();
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        _id: entry._id,
+        series_id,
+        last_read_chapter: entry.last_read_chapter,
+        read_at: entry.read_at,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.delete("/history/:seriesId", authMiddleware, requireReader, async (req, res, next) => {
+  try {
+    const result = await ReadingHistory.findOneAndDelete({
+      reader_id: req.user.nameid,
+      series_id: req.params.seriesId,
+    }).lean();
+
+    return res.status(200).json({
+      success: true,
+      removed: !!result,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.delete("/history", authMiddleware, requireReader, async (req, res, next) => {
+  try {
+    const result = await ReadingHistory.deleteMany({
+      reader_id: req.user.nameid,
+    });
+
+    return res.status(200).json({
+      success: true,
+      deleted: result.deletedCount || 0,
     });
   } catch (error) {
     next(error);
