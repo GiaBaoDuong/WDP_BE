@@ -54,6 +54,7 @@ const chapterSchema = new mongoose.Schema(
       default: null,
     },
     revision_notes: { type: String, default: "" },
+    revision_round: { type: Number, default: 1 },
     revision_annotations: {
       type: [
         {

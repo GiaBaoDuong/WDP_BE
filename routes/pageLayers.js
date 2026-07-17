@@ -364,4 +364,111 @@ router.post("/pages/:pageId/finalize", authMiddleware, requireMangakaOrAssistant
   }
 });
 
+/**
+ * @swagger
+ * /chapters/pages/{pageId}/download/{type}:
+ *   get:
+ *     summary: Tải ảnh gốc hoặc ảnh gộp của page
+ *     tags: [Pages]
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: pageId
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Page ID
+ *       - in: path
+ *         name: type
+ *         required: true
+ *         schema:
+ *           type: string
+ *           enum: [original, merged]
+ *         description: Loai anh can tai (original = anh goc, merged = anh gop sau finalize)
+ *     responses:
+ *       200:
+ *         description: "Stream anh binary voi Content-Disposition attachment"
+ *         content:
+ *           application/octet-stream:
+ *             schema:
+ *               type: string
+ *               format: binary
+ *       400:
+ *         description: Loai download khong hop le
+ *       401:
+ *         description: Unauthorized
+ *       403:
+ *         description: Khong co quyen truy cap chapter
+ *       404:
+ *         description: Page khong ton tai hoac anh chua co
+ */
+// GET /chapters/pages/:pageId/download/:type
+// Tai anh goc (original) hoac anh gop (merged) cua page.
+// Proxy stream qua BE de kiem soat quyen + header download, khong buffer full file vao memory.
+router.get("/pages/:pageId/download/:type", authMiddleware, requireMangakaOrAssistant, async (req, res, next) => {
+  try {
+    const { pageId, type } = req.params;
+
+    if (!["original", "merged"].includes(type)) {
+      return next(new AppError("Loai download khong hop le, chi cho phep original hoac merged", 400));
+    }
+
+    const { page } = await checkChapterAccess(req.user.nameid, pageId);
+
+    const url = type === "original" ? page.original_image_url : page.result_image_url;
+    if (!url) {
+      return next(new AppError(type === "original" ? "Page chua co anh goc" : "Page chua co anh gop", 404));
+    }
+
+    // Build filename tu URL de nguoi dung biet dang download gi
+    const pathname = url.split("?")[0];
+    const base = pathname.split("/").pop() || `page-${pageId}`;
+    const filename = `${type === "original" ? "original" : "merged"}-${base}`;
+
+    res.setHeader("Content-Type", "application/octet-stream");
+    res.setHeader("Content-Disposition", `attachment; filename*=UTF-8''${encodeURIComponent(filename)}`);
+    res.setHeader("Cache-Control", "no-cache");
+
+    let handled = false;
+    const done = (err) => {
+      if (handled) return;
+      handled = true;
+      if (!res.writableEnded) res.end();
+      if (err) next(err);
+    };
+
+    const follow = (current) => {
+      const protocol = current.startsWith("https") ? https : require("http");
+      const request = protocol.get(current, { headers: { "User-Agent": "WDP-BE/1.0" } }, (response) => {
+        if (response.statusCode >= 300 && response.statusCode < 400 && response.headers.location) {
+          response.resume();
+          return follow(response.headers.location);
+        }
+        if (response.statusCode < 200 || response.statusCode >= 300) {
+          response.resume();
+          if (!res.headersSent) {
+            res.status(response.statusCode).json({ success: false, message: "Khong the tai anh tu Cloudinary" });
+          }
+          done();
+          return;
+        }
+        response.pipe(res);
+        response.on("error", done);
+        response.on("end", done);
+      });
+
+      request.on("error", done);
+      request.setTimeout(30000, () => {
+        request.destroy();
+        done(new AppError("Download timeout", 504));
+      });
+    };
+
+    follow(url);
+  } catch (err) {
+    next(err);
+  }
+});
+
 module.exports = router;

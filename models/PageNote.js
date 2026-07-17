@@ -45,6 +45,21 @@ const pageNoteSchema = new mongoose.Schema(
       enum: ["background", "shading", "fx", "other"],
       default: "other",
     },
+    note_kind: {
+      type: String,
+      enum: ["brief", "revision"],
+      default: "brief",
+      index: true,
+    },
+    author_role: {
+      type: String,
+      enum: ["mangaka", "assistant"],
+      default: "mangaka",
+    },
+    revision_round: {
+      type: Number,
+      default: 1,
+    },
     status: {
       type: String,
       enum: ["active", "used_in_task"],
@@ -69,6 +84,7 @@ const pageNoteSchema = new mongoose.Schema(
 );
 
 pageNoteSchema.index({ page_id: 1, createdAt: -1 });
+pageNoteSchema.index({ page_id: 1, note_kind: 1, revision_round: 1 });
 
 const PageNote = mongoose.model("PageNote", pageNoteSchema);
 module.exports = PageNote;
