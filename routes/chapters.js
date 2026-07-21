@@ -88,6 +88,36 @@ async function getImageDimensions(url) {
   }
 }
 
+// ─── Helpers: revision_annotations derivation (mirror of routes/tasks.js) ────
+function toApiRevisionAnnotation(noteDoc, taskId) {
+  return {
+    _id: noteDoc._id,
+    task_id: taskId,
+    page_id: noteDoc.page_id,
+    content: noteDoc.text,
+    error_type: noteDoc.taskType,
+    region: {
+      x: noteDoc.x,
+      y: noteDoc.y,
+      width: noteDoc.w,
+      height: noteDoc.h,
+    },
+    status: noteDoc.status === "used_in_task" ? "resolved" : "open",
+    note_kind: noteDoc.note_kind,
+    revision_round: noteDoc.revision_round,
+    author_role: noteDoc.author_role,
+    created_at: noteDoc.createdAt,
+  };
+}
+
+function deriveRevisionAnnotations(task) {
+  if (!task || !Array.isArray(task.note_ids)) return [];
+  const currentRound = task.round || 1;
+  return task.note_ids
+    .filter((n) => n && n.note_kind === "revision" && n.revision_round === currentRound)
+    .map((n) => toApiRevisionAnnotation(n, task._id));
+}
+
 // ─── POST /chapters ──────────────────────────────────────────────────────────
 // Mangaka tạo chapter thuộc series
 /**
@@ -359,7 +389,10 @@ router.get("/:id", authMiddleware, async (req, res, next) => {
     // Load tasks vòng hiện tại cho chapter + populate note_ids (ảnh+tọa độ+note)
     const Task = require("../models/Task");
     const tasks = await Task.find({ chapter_id: chapter._id, is_current_round: true })
-      .populate("note_ids")
+      .populate({
+        path: "note_ids",
+        select: "text x y w h taskType note_kind author_role revision_round status createdAt",
+      })
       .populate("assigned_to", "username full_name")
       .lean();
 
@@ -367,7 +400,11 @@ router.get("/:id", authMiddleware, async (req, res, next) => {
     for (const t of tasks) {
       const key = String(t.page_id);
       if (!tasksByPage[key]) tasksByPage[key] = [];
-      tasksByPage[key].push(t);
+      tasksByPage[key].push({
+        ...t,
+        revision_round: t.round,
+        revision_annotations: deriveRevisionAnnotations(t),
+      });
     }
     const pagesWithTasks = pages.map((p) => ({
       ...p,

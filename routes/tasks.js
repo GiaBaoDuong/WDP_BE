@@ -10,6 +10,7 @@ const Chapter = require("../models/Chapter");
 const Series = require("../models/Series");
 const Cooperation = require("../models/Cooperation");
 const Notification = require("../models/Notification");
+const PageNote = require("../models/PageNote");
 const upload = require("../middleware/upload");
 const { uploadResult } = require("../middleware/uploadResult");
 const {
@@ -20,6 +21,142 @@ const {
   notifyTaskAcknowledged,
   notifyChapterAllTasksApproved,
 } = require("../services/notificationService");
+
+// ─── Helpers: revision_annotations derivation ────────────────────────────────
+// PageNote hiện dùng x/y/w/h. FE spec muốn region { x, y, width, height } +
+// status "open" | "resolved" (map từ PageNote.status).
+const REVISION_TASKTYPE_MAP = {
+  art: "other",
+  lineart: "other",
+  paint: "other",
+  shading: "shading",
+  effects: "fx",
+  fx: "fx",
+  background: "background",
+  details: "other",
+  fill: "other",
+  content: "other",
+  dialogue: "other",
+  script: "other",
+  other: "other",
+};
+
+function mapErrorTypeToTaskType(errorType) {
+  if (!errorType || typeof errorType !== "string") return "other";
+  const key = String(errorType).toLowerCase().trim();
+  return REVISION_TASKTYPE_MAP[key] || "other";
+}
+
+function toApiAnnotation(noteDoc, taskId) {
+  return {
+    _id: noteDoc._id,
+    task_id: taskId,
+    page_id: noteDoc.page_id,
+    content: noteDoc.text,
+    error_type: noteDoc.taskType,
+    region: {
+      x: noteDoc.x,
+      y: noteDoc.y,
+      width: noteDoc.w,
+      height: noteDoc.h,
+    },
+    status: noteDoc.status === "used_in_task" ? "resolved" : "open",
+    note_kind: noteDoc.note_kind,
+    revision_round: noteDoc.revision_round,
+    author_role: noteDoc.author_role,
+    created_at: noteDoc.createdAt,
+  };
+}
+
+// Derive revision_annotations cho 1 task dựa trên note_ids đã populate.
+// Chỉ lấy PageNote có note_kind="revision" và revision_round === task.round (vòng hiện tại).
+// `task` đã được .populate("note_ids") hoặc .lean() có note_ids là array id/object.
+function deriveRevisionAnnotations(task) {
+  if (!task || !Array.isArray(task.note_ids)) return [];
+  const currentRound = task.round || 1;
+  const notes = task.note_ids.filter(
+    (n) => n && n.note_kind === "revision" && n.revision_round === currentRound
+  );
+  return notes.map((n) => toApiAnnotation(n, task._id));
+}
+
+// Validate 1 annotation. Trả về null nếu OK, hoặc string mô tả lỗi.
+function validateAnnotationShape(ann, idx, taskPageId) {
+  if (!ann || typeof ann !== "object") {
+    return `annotation[${idx}] phải là object`;
+  }
+  // page_id optional — nếu có phải khớp task.page_id
+  if (ann.page_id !== undefined && ann.page_id !== null) {
+    if (!mongoose.Types.ObjectId.isValid(ann.page_id)) {
+      return `annotation[${idx}].page_id không phải ObjectId hợp lệ`;
+    }
+    if (String(ann.page_id) !== String(taskPageId)) {
+      return `annotation[${idx}].page_id không thuộc task/chapter`;
+    }
+  }
+  // content (alias: text) bắt buộc
+  const content = ann.content !== undefined ? ann.content : ann.text;
+  if (typeof content !== "string" || content.trim() === "") {
+    return `annotation[${idx}].content không được rỗng`;
+  }
+  // x, y bắt buộc
+  const x = Number(ann.x);
+  const y = Number(ann.y);
+  if (!Number.isFinite(x) || x < 0 || x > 100) {
+    return `annotation[${idx}].x phải nằm trong khoảng 0-100`;
+  }
+  if (!Number.isFinite(y) || y < 0 || y > 100) {
+    return `annotation[${idx}].y phải nằm trong khoảng 0-100`;
+  }
+  // width/w (alias: w) > 0
+  const width = Number(ann.w !== undefined ? ann.w : ann.width);
+  const height = Number(ann.h !== undefined ? ann.h : ann.height);
+  if (!Number.isFinite(width) || width <= 0) {
+    return `annotation[${idx}].width phải > 0`;
+  }
+  if (!Number.isFinite(height) || height <= 0) {
+    return `annotation[${idx}].height phải > 0`;
+  }
+  if (width > 100) return `annotation[${idx}].width không được vượt quá 100`;
+  if (height > 100) return `annotation[${idx}].height không được vượt quá 100`;
+  if (x + width > 100 + 1e-9) return `annotation[${idx}] x + width vượt quá 100`;
+  if (y + height > 100 + 1e-9) return `annotation[${idx}] y + height vượt quá 100`;
+  return null;
+}
+
+// Chuẩn hóa input revision_annotations — chấp nhận cả 2 format:
+//  - flat array: [ { content, x, y, w, h, error_type } ]
+//  - object map (cũ): { page_0: [...], page_1: [...] }
+// Trả về { normalized, warnings }
+function normalizeRevisionAnnotations(rawInput, taskPageId) {
+  if (rawInput === undefined || rawInput === null) {
+    return { normalized: [], warnings: [] };
+  }
+  const warnings = [];
+  let flat = [];
+  if (Array.isArray(rawInput)) {
+    flat = rawInput;
+  } else if (typeof rawInput === "object") {
+    // Format cũ { page_X: [ ... ] } → ép thành flat array (mọi annotation đều gán task.page_id)
+    // Bỏ qua key không khớp "page_0"
+    const pages = Object.keys(rawInput);
+    if (pages.length > 0 && pages[0].startsWith("page_") && Array.isArray(rawInput[pages[0]])) {
+      flat = pages.flatMap((k) => Array.isArray(rawInput[k]) ? rawInput[k] : []);
+      warnings.push(`revision_annotations ở format cũ { page_N: [...] } — chỉ ghi nhận annotation cho page của task`);
+    } else {
+      // Không rõ format → trả empty + warning
+      warnings.push("revision_annotations không đúng định dạng (mong đợi array)");
+    }
+  } else {
+    warnings.push("revision_annotations không đúng định dạng (mong đợi array)");
+  }
+  // Mỗi ann có thể kèm page_id; nếu không thì BE tự gán task.page_id
+  const normalized = flat.map((a) => ({
+    ...a,
+    page_id: a && a.page_id ? a.page_id : taskPageId,
+  }));
+  return { normalized, warnings };
+}
 
 /**
  * @swagger
@@ -204,7 +341,7 @@ router.get("/my-assignments", authMiddleware, requireAssistant, async (req, res,
         .populate("page_id", "page_number original_image_url chapter_id result_image_url status")
         .populate("chapter_id", "chapter_number title series_id")
         .populate("assigned_by", "username full_name phoneNumber")
-        .populate({ path: "note_ids", select: "text x y w h taskType note_kind author_role revision_round" })
+        .populate({ path: "note_ids", select: "text x y w h taskType note_kind author_role revision_round status createdAt" })
         .sort({ createdAt: -1 })
         .skip((page - 1) * limit)
         .limit(parseInt(limit))
@@ -212,9 +349,15 @@ router.get("/my-assignments", authMiddleware, requireAssistant, async (req, res,
       Task.countDocuments(filter),
     ]);
 
+    const tasksWithAnnotations = tasks.map((t) => ({
+      ...t,
+      revision_round: t.round,
+      revision_annotations: deriveRevisionAnnotations(t),
+    }));
+
     return res.status(200).json({
       success: true,
-      data: tasks,
+      data: tasksWithAnnotations,
       pagination: { total, page: parseInt(page), limit: parseInt(limit) },
     });
   } catch (error) {
@@ -244,7 +387,14 @@ router.get("/:id", authMiddleware, async (req, res, next) => {
       .populate({ path: "note_ids", select: "text x y w h taskType note_kind author_role revision_round status createdAt" })
       .lean();
     if (!task) return next(new AppError("Task not found", 404));
-    return res.status(200).json({ success: true, data: task });
+    return res.status(200).json({
+      success: true,
+      data: {
+        ...task,
+        revision_round: task.round,
+        revision_annotations: deriveRevisionAnnotations(task),
+      },
+    });
   } catch (error) {
     next(error);
   }
@@ -293,11 +443,20 @@ router.get("/chapter/:chapterId", authMiddleware, requireMangaka, async (req, re
     const tasks = await Task.find({ chapter_id: chapter._id, is_current_round: true })
       .populate("page_id", "page_number original_image_url result_image_url status")
       .populate("assigned_to", "username full_name phoneNumber")
-      .populate("note_ids")
+      .populate({
+        path: "note_ids",
+        select: "text x y w h taskType note_kind author_role revision_round status createdAt",
+      })
       .sort({ "page_id.page_number": 1, createdAt: 1 })
       .lean();
 
-    return res.status(200).json({ success: true, data: tasks });
+    const tasksWithAnnotations = tasks.map((t) => ({
+      ...t,
+      revision_round: t.round,
+      revision_annotations: deriveRevisionAnnotations(t),
+    }));
+
+    return res.status(200).json({ success: true, data: tasksWithAnnotations });
   } catch (error) {
     next(error);
   }
@@ -933,115 +1092,213 @@ router.patch("/:id/revision", authMiddleware, requireMangaka, async (req, res, n
       _id: req.params.id,
       assigned_by: req.user.nameid,
     });
-    if (!task) return next(new AppError("Task not found", 404));
+    if (!task) return next(new AppError("Task not found or unauthorized", 404));
     if (task.status !== "submitted" && task.status !== "in_review") {
-      return next(new AppError("Task must be submitted or in_review to request revision", 400));
+      return next(
+        new AppError(
+          `Task hiện ở trạng thái '${task.status}' — chỉ chấp nhận submitted hoặc in_review`,
+          400
+        )
+      );
     }
 
-    // Validate revision_annotations nếu được truyền (backward-compatible)
-    if (revision_annotations && typeof revision_annotations === "object") {
-      for (const [pageKey, anns] of Object.entries(revision_annotations)) {
-        if (!Array.isArray(anns)) {
-          return next(new AppError(`revision_annotations.${pageKey} phải là array`, 400));
-        }
-        for (const a of anns) {
-          if (a.text !== undefined && typeof a.text === "string" && a.text.trim() === "" &&
-              [a.x, a.y, a.w, a.h].some((v) => v !== undefined && v !== null)) {
-            return next(new AppError("revision_annotations item có vùng nhưng text rỗng", 400));
-          }
-        }
-      }
+    // 1. Chuẩn hóa + validate revision_annotations (backward-compat)
+    const { normalized: annsInput, warnings: annWarnings } = normalizeRevisionAnnotations(
+      revision_annotations,
+      task.page_id
+    );
+    const validationErrors = [];
+    for (let i = 0; i < annsInput.length; i++) {
+      const err = validateAnnotationShape(annsInput[i], i, task.page_id);
+      if (err) validationErrors.push(err);
+    }
+    if (validationErrors.length > 0) {
+      return res.status(400).json({
+        success: false,
+        code: "INVALID_REVISION_ANNOTATIONS",
+        message: "Tọa độ revision annotation không hợp lệ",
+        errors: validationErrors,
+      });
     }
 
+    // 2. Tính vòng revision mới
+    const nextRound = (task.round || 1) + 1;
+
+    // 3. Cập nhật task + page (status → revision, round tăng 1, note)
     task.status = "revision";
+    task.round = nextRound;
     task.revision_note = note || revision_notes || "";
     task.result_image_url = "";
     await task.save();
 
     await Page.findByIdAndUpdate(task.page_id, { status: "revision" });
 
-    // Cập nhật chapter (backward-compatible)
+    // 4. Tạo PageNote (idempotent) + cập nhật chapter
+    const createdNoteIds = [];
     const chapter = await Chapter.findById(task.chapter_id);
-    if (chapter) {
-      // Lưu revision_notes nếu có
-      if (revision_notes !== undefined) chapter.revision_notes = revision_notes;
-      // Append revision_annotations (FE format page_N → BE format array of { page_id, region, content, error_type })
-      if (revision_annotations && typeof revision_annotations === "object") {
-        const pages = await Page.find({ chapter_id: chapter._id }).sort({ page_number: 1 }).lean();
-        const pageIndexMap = {};
-        pages.forEach((p, idx) => { pageIndexMap[`page_${idx}`] = p; });
+    let createdNotes = [];
 
-        const workTypeToErrorType = {
-          background: "art", shading: "art", effects: "art",
-          details: "art", fill: "art", content: "content",
-          dialogue: "dialogue", script: "script", other: "other",
-        };
+    if (annsInput.length > 0) {
+      // Dedupe: query PageNote đã tồn tại cho round mới
+      const existingNotes = await PageNote.find({
+        page_id: task.page_id,
+        note_kind: "revision",
+        author_id: req.user.nameid,
+        revision_round: nextRound,
+        text: { $in: annsInput.map((a) => String(a.content ?? a.text).trim()) },
+      }).lean();
 
-        const newAnns = [];
-        const createdNoteIds = [];
-        const PageNote = require("../models/PageNote");
-        for (const [pageKey, anns] of Object.entries(revision_annotations)) {
-          const page = pageIndexMap[pageKey];
-          if (!page || !Array.isArray(anns)) continue;
-          for (const ann of anns) {
-            if (!ann.text || ann.text.trim() === "") continue;
-            const chapterAnn = {
-              page_id: page._id,
-              region: {
-                x: Number(ann.x ?? 0),
-                y: Number(ann.y ?? 0),
-                width: Number(ann.w ?? ann.width ?? 100),
-                height: Number(ann.h ?? ann.height ?? 100),
-              },
-              content: ann.text,
-              error_type: ann.error_type || workTypeToErrorType[ann.taskType] || "other",
-            };
-            newAnns.push(chapterAnn);
+      const existingKeySet = new Set(
+        existingNotes.map((n) =>
+          `${n.text}|${n.x}|${n.y}|${n.w}|${n.h}|${n.taskType}`
+        )
+      );
 
-            // Tạo PageNote + gắn vào task.note_ids
-            const noteDoc = await PageNote.create({
-              page_id: page._id,
+      // 4a. Tạo các annotation chưa tồn tại (trong transaction nếu được)
+      const toCreate = annsInput
+        .map((a) => {
+          const content = String(a.content ?? a.text).trim();
+          const x = Number(a.x);
+          const y = Number(a.y);
+          const width = Number(a.w !== undefined ? a.w : a.width);
+          const height = Number(a.h !== undefined ? a.h : a.height);
+          const taskType = mapErrorTypeToTaskType(a.error_type || a.taskType);
+          return { content, x, y, width, height, taskType };
+        })
+        .filter((a) => !existingKeySet.has(`${a.content}|${a.x}|${a.y}|${a.width}|${a.height}|${a.taskType}`));
+
+      let session = null;
+      try {
+        session = await mongoose.startSession();
+        await session.withTransaction(async () => {
+          if (toCreate.length > 0) {
+            const docs = toCreate.map((a) => ({
+              page_id: task.page_id,
               author_id: req.user.nameid,
-              text: ann.text,
-              x: chapterAnn.region.x,
-              y: chapterAnn.region.y,
-              w: chapterAnn.region.width,
-              h: chapterAnn.region.height,
-              taskType: ann.taskType || "other",
+              text: a.content,
+              x: a.x,
+              y: a.y,
+              w: a.width,
+              h: a.height,
+              taskType: a.taskType,
               note_kind: "revision",
               author_role: "mangaka",
-              revision_round: task.round || 1,
-            });
-            createdNoteIds.push(noteDoc._id);
+              revision_round: nextRound,
+              status: "active",
+            }));
+            const inserted = await PageNote.create(docs, { session });
+            createdNotes = inserted;
+            createdNoteIds.push(...inserted.map((n) => n._id));
           }
+        });
+      } catch (txErr) {
+        // Fallback: chạy tuần tự (Mongo standalone không hỗ trợ transaction)
+        if (session) {
+          try { session.endSession(); } catch {}
+          session = null;
         }
-        if (newAnns.length > 0) {
-          chapter.revision_annotations = [...(chapter.revision_annotations || []), ...newAnns];
+        if (toCreate.length > 0) {
+          const docs = toCreate.map((a) => ({
+            page_id: task.page_id,
+            author_id: req.user.nameid,
+            text: a.content,
+            x: a.x,
+            y: a.y,
+            w: a.width,
+            h: a.height,
+            taskType: a.taskType,
+            note_kind: "revision",
+            author_role: "mangaka",
+            revision_round: nextRound,
+            status: "active",
+          }));
+          const inserted = await PageNote.create(docs);
+          createdNotes = inserted;
+          createdNoteIds.push(...inserted.map((n) => n._id));
         }
-        if (createdNoteIds.length > 0) {
-          task.note_ids = [...(task.note_ids || []), ...createdNoteIds];
-          await task.save();
+      } finally {
+        if (session) {
+          try { session.endSession(); } catch {}
         }
       }
 
-      // Append vào revision_history
+      // 4b. Gộp ID mới + cũ vào task.note_ids (idempotent — set unique)
+      const existingIds = (task.note_ids || []).map((id) => String(id));
+      const allIds = [
+        ...new Set([
+          ...existingIds,
+          ...createdNoteIds.map((id) => String(id)),
+          ...existingNotes.map((n) => String(n._id)),
+        ]),
+      ];
+      task.note_ids = allIds;
+      await task.save();
+
+      // 4c. Append vào chapter.revision_annotations (giữ logic cũ — dùng để hiển thị lịch sử)
+      if (chapter) {
+        const newAnns = [...createdNotes, ...existingNotes].map((n) => ({
+          page_id: n.page_id,
+          region: {
+            x: n.x,
+            y: n.y,
+            width: n.w,
+            height: n.h,
+          },
+          content: n.text,
+          error_type: n.taskType,
+        }));
+        chapter.revision_annotations = [
+          ...(chapter.revision_annotations || []),
+          ...newAnns,
+        ];
+      }
+    }
+
+    // 5. Chapter update (giữ logic cũ)
+    if (chapter) {
+      if (revision_notes !== undefined) chapter.revision_notes = revision_notes;
       chapter.revision_history = [
         ...(chapter.revision_history || []),
-        { at: new Date(), by: req.user.nameid, note: note || revision_notes || "Yêu cầu sửa" },
+        {
+          at: new Date(),
+          by: req.user.nameid,
+          round: nextRound,
+          note: note || revision_notes || "Yêu cầu sửa",
+          annotation_count: annsInput.length,
+        },
       ];
-      // Nếu chapter đang ở trạng thái in_review/submitted → chuyển sang revision_requested
       if (["in_review", "submitted_by_assistant"].includes(chapter.status)) {
         chapter.status = "revision_requested";
       }
       await chapter.save();
     }
 
-    await notifyTaskRevision(Notification, task.assigned_to, task, note);
+    // 6. Notification
+    await notifyTaskRevision(Notification, task.assigned_to, task, task.revision_note);
+
+    // 7. Reload task có note_ids populate để trả về
+    const taskForResponse = await Task.findById(task._id)
+      .populate({
+        path: "note_ids",
+        select: "text x y w h taskType note_kind author_role revision_round status createdAt",
+      })
+      .lean();
+    const revisionAnnotations = deriveRevisionAnnotations(taskForResponse);
 
     return res.status(200).json({
       success: true,
-      data: task,
-      chapter: chapter ? { _id: chapter._id, status: chapter.status, revision_notes: chapter.revision_notes } : undefined,
+      message: `Đã gửi yêu cầu sửa vòng ${nextRound} cho Assistant`,
+      warnings: annWarnings,
+      data: {
+        task: {
+          ...taskForResponse,
+          revision_round: taskForResponse.round,
+          revision_annotations: revisionAnnotations,
+        },
+      },
+      chapter: chapter
+        ? { _id: chapter._id, status: chapter.status, revision_notes: chapter.revision_notes }
+        : undefined,
     });
   } catch (error) {
     next(error);
