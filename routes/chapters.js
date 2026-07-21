@@ -101,7 +101,7 @@ async function getImageDimensions(url) {
  *     requestBody:
  *       required: true
  *       content:
- *         application/json:
+ *         multipart/form-data:
  *           schema:
  *             type: object
  *             required:
@@ -112,11 +112,14 @@ async function getImageDimensions(url) {
  *                 type: string
  *                 description: ID của series
  *               chapter_number:
- *                 type: integer
- *                 description: Số thứ tự chapter
+ *                 type: string
+ *                 description: Số thứ tự chapter (number string)
  *               title:
  *                 type: string
  *                 description: Tiêu đề chapter (optional)
+ *               assistant_id:
+ *                 type: string
+ *                 description: User ID của assistant (optional, nhưng bắt buộc khi series đã publish). Sẽ set chapter.assistant_id ngay khi tạo.
  *     responses:
  *       201:
  *         description: Chapter được tạo thành công
@@ -133,15 +136,17 @@ router.post("/", authMiddleware, requireMangaka, uploadPages.array("pages", 50),
     //   series_id          (text)
     //   chapter_number     (text)
     //   title              (text, optional)
+    //   assistant_id       (text, optional, user_id của assistant — set chapter.assistant_id ngay khi tạo)
     //   pages[0].image     (file)         ← ảnh gốc page 1
     //   pages[0].note      (text, optional)
     //   pages[0].work_type (text, optional: background|shading|effects|details|other)
-    //   pages[0].assigned_to (text, optional, user_id của assistant)
+    //   pages[0].assigned_to (text, optional, user_id của assistant cho task per-page)
     //   pages[0].x, .y, .w, .h             ← 0-100 (% của ảnh)
     //   pages[1]...                         (nhiều page)
     const seriesId = req.body.series_id;
     const chapterNumber = req.body.chapter_number;
     const title = req.body.title || "";
+    const assistantIdTopLevel = req.body.assistant_id || "";
 
     if (!seriesId || chapterNumber === undefined) {
       return next(new AppError("series_id and chapter_number are required", 400));
@@ -150,8 +155,34 @@ router.post("/", authMiddleware, requireMangaka, uploadPages.array("pages", 50),
     const series = await Series.findOne({ _id: seriesId, author_id: req.user.nameid });
     if (!series) return next(new AppError("Series not found or unauthorized", 404));
 
-    // Nếu series đã publish → bắt buộc phải có assistant (assigned_to ở pages)
-    if (series.status === "published") {
+    // Nếu FE gửi assistant_id ở top-level → validate User + Cooperation ngay tại đây
+    // để set chapter.assistant_id ngay khi tạo (FE đã gửi sẵn theo contract mới).
+    let validatedAssistantId = null;
+    if (assistantIdTopLevel) {
+      if (!mongoose.Types.ObjectId.isValid(assistantIdTopLevel)) {
+        return next(new AppError("assistant_id không hợp lệ", 400));
+      }
+      const assistant = await User.findById(assistantIdTopLevel);
+      if (!assistant || assistant.role !== "Assistant") {
+        return next(new AppError("User không phải là Assistant", 400));
+      }
+      const cooperation = await Cooperation.findOne({
+        mangaka_id: req.user.nameid,
+        assistant_id: assistantIdTopLevel,
+        agreed_at: { $ne: null },
+        $or: [{ series_id: seriesId }, { series_id: null }],
+      });
+      if (!cooperation) {
+        return next(new AppError("Assistant chưa ký hợp đồng hợp tác với bạn", 403));
+      }
+      validatedAssistantId = assistantIdTopLevel;
+    }
+
+    // Series đã publish → bắt buộc phải có assistant.
+    // Chấp nhận 1 trong 2:
+    //   - assistant_id ở top-level body (sẽ được set vào chapter.assistant_id)
+    //   - assigned_to per-page (giữ flow cũ, FE gửi pages[i].assigned_to)
+    if (series.status === "published" && !validatedAssistantId) {
       const hasAnyAssistant = req.files && req.files.some((f) => {
         const i = req.files.indexOf(f);
         return req.body[`pages[${i}].assigned_to`];
@@ -170,7 +201,8 @@ router.post("/", authMiddleware, requireMangaka, uploadPages.array("pages", 50),
         chapter_number: Number(chapterNumber),
         title,
         submitted_by: req.user.nameid,
-        status: "draft",
+        assistant_id: validatedAssistantId,
+        status: validatedAssistantId ? "pending_assistant" : "draft",
       });
       return res.status(201).json({ success: true, data: chapter, pages: [], tasks: [] });
     }
@@ -186,6 +218,7 @@ router.post("/", authMiddleware, requireMangaka, uploadPages.array("pages", 50),
       chapter_number: Number(chapterNumber),
       title,
       submitted_by: req.user.nameid,
+      assistant_id: validatedAssistantId,
       status: "pending_assistant",
     });
 
@@ -196,10 +229,13 @@ router.post("/", authMiddleware, requireMangaka, uploadPages.array("pages", 50),
       const f = req.files[i];
       const u = uploadResults[i];
       const get = (k) => req.body[`pages[${i}].${k}`];
+      // Per-page: ưu tiên pages[i].assigned_to; KHÔNG fallback về top-level assistant_id ở đây
+      // (Task là opt-in per-page, có note/region mới nên tạo).
+      // assistant_id top-level chỉ set vào chapter.assistant_id — đủ để pass check published.
       const md = {
         note: get("note"),
         work_type: get("work_type"),
-        assigned_to: get("assigned_to"),
+        assigned_to: get("assigned_to") || null,
         x: get("x"),
         y: get("y"),
         w: get("w"),
