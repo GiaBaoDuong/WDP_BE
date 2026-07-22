@@ -64,6 +64,11 @@ const seriesSchema = new mongoose.Schema(
       ref: "EBEvaluation",
       default: null,
     },
+    publication_status: {
+      type: String,
+      enum: ["upcoming", "ongoing", "hiatus", "completed", "dropped", null],
+      default: null,
+    },
   },
   { timestamps: true }
 );

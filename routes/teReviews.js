@@ -2433,4 +2433,112 @@ router.post("/chapter/:chapterId/publish", authMiddleware, requireTE, async (req
   }
 });
 
+// ════════════════════════════════════════════════════════════════════════════
+//  SERIES PUBLICATION STATUS — TE chuyển trạng thái phát hành
+// ════════════════════════════════════════════════════════════════════════════
+
+const VALID_TRANSITIONS = {
+  ongoing: ["hiatus", "completed", "dropped"],
+  hiatus: ["ongoing"],
+  dropped: ["ongoing"],
+  upcoming: [],
+  completed: [],
+};
+
+const PUBLICATION_STATUS_VALUES = ["upcoming", "ongoing", "hiatus", "completed", "dropped"];
+
+/**
+ * @swagger
+ * /te-reviews/series/:seriesId/publication-status:
+ *   patch:
+ *     tags: [TEReviews]
+ *     summary: TE chuyển publication_status của series
+ *     description: |
+ *       TE chuyển trạng thái phát hành của series.
+ *
+ *       **Transition rules:**
+ *       - ongoing → hiatus, completed, dropped ✅
+ *       - hiatus → ongoing ✅
+ *       - dropped → ongoing ✅
+ *       - completed → * ❌ (read-only)
+ *       - upcoming → * ❌ (auto từ job)
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: seriesId
+ *         required: true
+ *         schema:
+ *           type: string
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [publication_status]
+ *             properties:
+ *               publication_status:
+ *                 type: string
+ *                 enum: [ongoing, hiatus, completed, dropped]
+ *     responses:
+ *       200:
+ *         description: Publication status updated
+ *       400:
+ *         description: Invalid transition
+ *       403:
+ *         description: Not authorized
+ */
+router.patch("/series/:seriesId/publication-status", authMiddleware, requireTE, async (req, res, next) => {
+  try {
+    const { seriesId } = req.params;
+    const { publication_status } = req.body;
+
+    if (!publication_status || !PUBLICATION_STATUS_VALUES.includes(publication_status)) {
+      return next(new AppError("publication_status is required and must be one of: ongoing, hiatus, completed, dropped", 400));
+    }
+
+    const series = await Series.findById(seriesId).lean();
+    if (!series) return next(new AppError("Series not found", 404));
+
+    const currentStatus = series.publication_status || null;
+
+    // completed is read-only
+    if (currentStatus === "completed") {
+      return next(new AppError("Không thể thay đổi trạng thái của series đã completed", 400));
+    }
+
+    // upcoming is auto-set by job, not manually changeable
+    if (currentStatus === "upcoming") {
+      return next(new AppError("Series đang ở trạng thái upcoming. Trạng thái sẽ tự chuyển sang ongoing khi đến ngày publish.", 400));
+    }
+
+    // Validate transition
+    const allowed = currentStatus ? (VALID_TRANSITIONS[currentStatus] || []) : ["ongoing"];
+    if (!allowed.includes(publication_status)) {
+      return next(
+        new AppError(
+          `Không thể chuyển từ "${currentStatus || 'null'}" sang "${publication_status}". ` +
+          `Các transition hợp lệ: ${allowed.join(", ") || "không có"}.`,
+          400
+        )
+      );
+    }
+
+    await Series.findByIdAndUpdate(seriesId, { publication_status });
+
+    return res.status(200).json({
+      success: true,
+      message: `Publication status đã chuyển từ "${currentStatus || 'null'}" sang "${publication_status}".`,
+      data: {
+        _id: seriesId,
+        previous_status: currentStatus,
+        publication_status,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 module.exports = router;

@@ -90,7 +90,7 @@ const cloudinary = require("../config/cloudinary");
  */
 router.get("/", authMiddleware, async (req, res, next) => {
   try {
-    const { genre, status, sort = "createdAt", order = "desc", page = 1, limit = 20 } = req.query;
+    const { genre, status, sort = "createdAt", order = "desc", page = 1, limit = 20, publication_status } = req.query;
 
     const filter = {};
     // Reader chỉ thấy published, Mangaka thấy draft của mình, EB/TE thấy tất cả
@@ -105,6 +105,7 @@ router.get("/", authMiddleware, async (req, res, next) => {
       filter.genre = { $in: genres };
     }
     if (status) filter.status = status;
+    if (publication_status) filter.publication_status = publication_status;
 
     const sortObj = { [sort]: order === "asc" ? 1 : -1 };
 

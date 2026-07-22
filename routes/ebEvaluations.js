@@ -1094,6 +1094,7 @@ router.patch("/series/:seriesId/decision", authMiddleware, requireEB, async (req
     if (decision === "cancelled") {
       series.status = "cancelled";
       series.is_public = false;
+      series.publication_status = "dropped";
       await series.save();
 
       await notifyRankingWarning(
@@ -1358,6 +1359,8 @@ router.post("/series/:seriesId/confirm-publish", authMiddleware, requireEB, asyn
     series.is_public = true;
     // publication_schedule: dùng finalSchedule đã validate ở trên
     series.publication_schedule = finalSchedule;
+    // publication_status = upcoming: chờ đến ngày publish → job tự chuyển sang ongoing
+    series.publication_status = "upcoming";
     // scheduled_publish_at là ngày cụ thể - lưu vào Series
     if (scheduled_publish_at) {
       series.scheduled_publish_at = new Date(scheduled_publish_at);
@@ -1402,6 +1405,7 @@ router.post("/series/:seriesId/confirm-publish", authMiddleware, requireEB, asyn
           status: series.status,
           is_public: series.is_public,
           publication_schedule: series.publication_schedule,
+          publication_status: series.publication_status,
           scheduled_publish_at: series.scheduled_publish_at,
         },
         chapters_scheduled: 0,

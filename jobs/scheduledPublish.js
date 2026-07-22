@@ -26,7 +26,7 @@ const processScheduledPublish = async () => {
       console.log(`[ScheduledPublish] Auto-publishing ${dueSeries.length} series...`);
       await Series.updateMany(
         { _id: { $in: dueSeries.map((s) => s._id) } },
-        { status: SERIES_STATUS.PUBLISHED }
+        { status: SERIES_STATUS.PUBLISHED, publication_status: "ongoing" }
       );
     }
 
