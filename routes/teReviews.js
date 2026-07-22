@@ -20,6 +20,7 @@ const {
   notifyChapterTERejected,
   notifyChapterTEPublished,
   notifySeriesRevision,
+  notifyFollowersNewChapter,
 } = require("../services/notificationService");
 
 // ─── GET /te-reviews/pending ─────────────────────────────────────────────────
@@ -1204,6 +1205,9 @@ router.post("/series-review/:seriesId/review-chapter", authMiddleware, requireTE
           series.name
         );
 
+        // Hook notify cho reader đã subscribe series này (Risk C: defensive trong service)
+        await notifyFollowersNewChapter(Notification, chapter, series);
+
         return res.status(200).json({
           success: true,
           message: "Chapter đã được publish.",
@@ -2228,6 +2232,9 @@ router.post("/chapter/:chapterId/te-action", authMiddleware, requireTE, async (r
           series.name
         );
 
+        // Hook notify cho reader đã subscribe (Risk C: service tự load lại series nếu thiếu field)
+        await notifyFollowersNewChapter(Notification, chapter, series);
+
         return res.status(200).json({
           success: true,
           message: "Chapter đã được publish.",
@@ -2419,6 +2426,9 @@ router.post("/chapter/:chapterId/publish", authMiddleware, requireTE, async (req
       chapter,
       series.name
     );
+
+    // Hook notify cho reader đã subscribe (Risk C: service tự load lại series nếu thiếu field)
+    await notifyFollowersNewChapter(Notification, chapter, series);
 
     return res.status(200).json({
       success: true,

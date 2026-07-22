@@ -1,6 +1,8 @@
 const express = require("express");
 const router = express.Router();
 const authMiddleware = require("../middleware/auth");
+const { requireReader } = require("../middleware/roles");
+const { AppError } = require("../middleware/errorHandler");
 const Notification = require("../models/Notification");
 
 /**
@@ -223,5 +225,165 @@ router.delete("/:id", authMiddleware, async (req, res) => {
     return res.status(500).json({ success: false, message: error.message });
   }
 });
+
+// ════════════════════════════════════════════════════════════════════════════
+// SUBSCRIBE / UNSUBSCRIBE NOTIFICATION CHO 1 SERIES
+// (Chỉ Reader mới được subscribe - Risk E)
+// Cho phép subscribe cả series ở "approved_by_EB" (đã được EB duyệt, chờ publish theo lịch)
+// lẫn "published" (đã public) để Reader bấm được nút khi được bạn bè share link sớm (Risk A)
+// ════════════════════════════════════════════════════════════════════════════
+
+/**
+ * @swagger
+ * /notifications/{seriesId}/status:
+ *   get:
+ *     tags: [Notifications]
+ *     summary: Check whether the current user has subscribed to notifications for a series
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: seriesId
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Trả về isSubscribed
+ *       401:
+ *         description: Unauthorized
+ *       403:
+ *         description: Forbidden - Reader only
+ */
+router.get(
+  "/:seriesId/status",
+  authMiddleware,
+  requireReader,
+  async (req, res, next) => {
+    try {
+      const NotificationSubscription = require("../models/NotificationSubscription");
+      const sub = await NotificationSubscription.findOne({
+        reader_id: req.user.nameid,
+        series_id: req.params.seriesId,
+      }).lean();
+      return res.status(200).json({
+        success: true,
+        isSubscribed: !!(sub && sub.notify_new_chapter),
+        data: sub,
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /notifications/{seriesId}/subscribe:
+ *   post:
+ *     tags: [Notifications]
+ *     summary: Subscribe to new-chapter notifications for a series
+ *     description: |
+ *       Bật notify khi có chapter mới. Upsert theo (reader, series).
+ *       Chỉ cho phép với series đã is_public=true và ở status
+ *       "approved_by_EB" (đã EB duyệt, chờ publish theo lịch) hoặc
+ *       "published" (đã public).
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: seriesId
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Đã bật thông báo cho series
+ *       404:
+ *         description: Series not found
+ *       401:
+ *         description: Unauthorized
+ *       403:
+ *         description: Forbidden - Reader only
+ */
+router.post(
+  "/:seriesId/subscribe",
+  authMiddleware,
+  requireReader,
+  async (req, res, next) => {
+    try {
+      const NotificationSubscription = require("../models/NotificationSubscription");
+      const Series = require("../models/Series");
+      const series = await Series.findOne({
+        _id: req.params.seriesId,
+        is_public: true,
+        status: { $in: ["approved_by_EB", "published"] },
+      })
+        .select("_id name author_id")
+        .lean();
+      if (!series) return next(new AppError("Series not found", 404));
+
+      const sub = await NotificationSubscription.findOneAndUpdate(
+        { reader_id: req.user.nameid, series_id: series._id },
+        {
+          $set: { notify_new_chapter: true, notify_series_update: false },
+          $setOnInsert: { created_at: new Date() },
+        },
+        { upsert: true, returnDocument: "after", setDefaultsOnInsert: true }
+      );
+      return res.status(200).json({
+        success: true,
+        message: "Đã bật thông báo cho series",
+        data: sub,
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+/**
+ * @swagger
+ * /notifications/{seriesId}/subscribe:
+ *   delete:
+ *     tags: [Notifications]
+ *     summary: Unsubscribe from notifications for a series
+ *     description: Tắt notify_new_chapter nhưng giữ record (để hiển thị "đã từng subscribe")
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: seriesId
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Đã tắt thông báo cho series
+ *       401:
+ *         description: Unauthorized
+ *       403:
+ *         description: Forbidden - Reader only
+ */
+router.delete(
+  "/:seriesId/subscribe",
+  authMiddleware,
+  requireReader,
+  async (req, res, next) => {
+    try {
+      const NotificationSubscription = require("../models/NotificationSubscription");
+      await NotificationSubscription.updateOne(
+        { reader_id: req.user.nameid, series_id: req.params.seriesId },
+        { $set: { notify_new_chapter: false } }
+      );
+      return res.status(200).json({
+        success: true,
+        message: "Đã tắt thông báo cho series",
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
 
 module.exports = router;

@@ -4,10 +4,13 @@
  *  1. Auto set Series.status = "published" theo Series.scheduled_publish_at (kể cả khi Series chưa có chapter nào publish).
  *  2. KHÔNG auto-publish chapter nữa — chapter sẽ được TE publish thủ công qua POST /te-reviews/chapter/:id/publish.
  *     (Giữ job này để tương thích ngược với những chapter cũ đã được schedule trước đó.)
+ *  3. (Risk B) Sau khi series chuyển sang "published" → notify tất cả follower của author.
  */
 const Chapter = require("../models/Chapter");
 const Series = require("../models/Series");
+const Notification = require("../models/Notification");
 const { SERIES_STATUS, CHAPTER_STATUS } = require("../utils/constants");
+const { notifyFollowersAuthorNewSeries } = require("../services/notificationService");
 
 let intervalHandle = null;
 
@@ -17,10 +20,13 @@ const processScheduledPublish = async () => {
 
     // 1. Auto set Series.status = "published" khi đến scheduled_publish_at
     //    Áp dụng cho Series đang ở APPROVED_BY_EB — Reader sẽ thấy Series kể cả khi chưa có chapter nào publish.
+    //    Query full doc (kèm name + author_id) để dùng cho notify hook sau khi update.
     const dueSeries = await Series.find({
       status: SERIES_STATUS.APPROVED_BY_EB,
       scheduled_publish_at: { $lte: now, $ne: null },
-    }).select("_id");
+    })
+      .select("_id name author_id")
+      .lean();
 
     if (dueSeries.length > 0) {
       console.log(`[ScheduledPublish] Auto-publishing ${dueSeries.length} series...`);
@@ -28,6 +34,25 @@ const processScheduledPublish = async () => {
         { _id: { $in: dueSeries.map((s) => s._id) } },
         { status: SERIES_STATUS.PUBLISHED, publication_status: "ongoing" }
       );
+
+      // (Risk B) Notify follower của author khi series chính thức public.
+      // Lỗi hook không làm fail job (đã wrap try/catch bên trong service).
+      for (const series of dueSeries) {
+        try {
+          const populated = await Series.findById(series._id)
+            .populate("author_id", "username full_name")
+            .lean();
+          if (!populated) continue;
+          populated.author_name =
+            populated.author_id?.full_name || populated.author_id?.username || "Tác giả";
+          await notifyFollowersAuthorNewSeries(Notification, populated);
+        } catch (err) {
+          console.error(
+            `[ScheduledPublish] notify hook error for series ${series._id}:`,
+            err.message
+          );
+        }
+      }
     }
 
     // 2. Auto-publish chapter cũ (tương thích ngược) — chỉ áp dụng khi chapter đã is_scheduled = true

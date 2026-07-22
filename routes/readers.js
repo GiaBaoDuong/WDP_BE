@@ -10,6 +10,7 @@ const { SCORE_LABELS } = require("../models/Vote");
 const Page = require("../models/Page");
 const Bookshelf = require("../models/Bookshelf");
 const ReadingHistory = require("../models/ReadingHistory");
+const NotificationSubscription = require("../models/NotificationSubscription");
 const { getCurrentPeriod } = require("../utils/helpers");
 
 /**
@@ -877,9 +878,11 @@ router.get("/bookshelf", authMiddleware, requireReader, async (req, res, next) =
     ]);
 
     // Chỉ trả về các series vẫn còn public + published
-    const validSeriesIds = items
-      .filter((it) => it.series_id && it.series_id.is_public && it.series_id.status === "published")
-      .map((it) => it.series_id._id);
+    const validItems = items.filter(
+      (it) =>
+        it.series_id && it.series_id.is_public && it.series_id.status === "published"
+    );
+    const validSeriesIds = validItems.map((it) => it.series_id._id);
 
     const chapterStats = await Chapter.aggregate([
       { $match: { series_id: { $in: validSeriesIds }, is_published: true } },
@@ -893,20 +896,46 @@ router.get("/bookshelf", authMiddleware, requireReader, async (req, res, next) =
     ]);
     const statsMap = new Map(chapterStats.map((c) => [String(c._id), c]));
 
-    const data = items
-      .filter((it) => it.series_id && it.series_id.is_public && it.series_id.status === "published")
-      .map((it) => {
-        const stats = statsMap.get(String(it.series_id._id));
-        return {
-          _id: it._id,
-          added_at: it.added_at,
-          series: {
-            ...it.series_id,
-            total_chapters: stats?.count || 0,
-            latest_chapter_number: stats?.latest_chapter_number || null,
-          },
-        };
-      });
+    // Enrich: last_read_chapter (từ ReadingHistory), subscribed (từ NotificationSubscription)
+    // → tính new_chapters_count = max(0, latest_chapter_number - last_read_chapter)
+    const [histories, subs] = await Promise.all([
+      ReadingHistory.find({
+        reader_id: req.user.nameid,
+        series_id: { $in: validSeriesIds },
+      })
+        .select("series_id last_read_chapter")
+        .lean(),
+      NotificationSubscription.find({
+        reader_id: req.user.nameid,
+        series_id: { $in: validSeriesIds },
+        notify_new_chapter: true,
+      })
+        .select("series_id")
+        .lean(),
+    ]);
+    const historyMap = new Map(
+      histories.map((h) => [String(h.series_id), h.last_read_chapter || 0])
+    );
+    const subSet = new Set(subs.map((s) => String(s.series_id)));
+
+    const data = validItems.map((it) => {
+      const sid = String(it.series_id._id);
+      const stats = statsMap.get(sid);
+      const lastRead = historyMap.get(sid) || 0;
+      const latest = stats?.latest_chapter_number || 0;
+      return {
+        _id: it._id,
+        added_at: it.added_at,
+        last_read_chapter: lastRead,
+        subscribed: subSet.has(sid),
+        new_chapters_count: Math.max(0, latest - lastRead),
+        series: {
+          ...it.series_id,
+          total_chapters: stats?.count || 0,
+          latest_chapter_number: stats?.latest_chapter_number || null,
+        },
+      };
+    });
 
     return res.status(200).json({
       success: true,

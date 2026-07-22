@@ -259,6 +259,122 @@ const notifyChapterPublishConfirmed = async (Notification, mangakaId, chapter, s
   });
 };
 
+/**
+ * Notify tất cả reader đã subscribe 1 series khi có chapter mới được publish.
+ *
+ * Defensive load: nếu caller truyền series thiếu `name` hoặc `author_id`,
+ * service tự query lại từ DB để tránh notification bị content hỏng.
+ *
+ * KHÔNG notify cho chính tác giả (dù author có subscribe).
+ * Hook fail cũng không làm fail request chính (đã wrap try/catch).
+ */
+const notifyFollowersNewChapter = async (Notification, chapter, seriesOpt) => {
+  try {
+    const NotificationSubscription = require("../models/NotificationSubscription");
+    const Series = require("../models/Series");
+
+    let series = seriesOpt;
+    if (!series || !series.name || !series.author_id) {
+      series = await Series.findById(chapter.series_id)
+        .select("_id name author_id")
+        .lean();
+    }
+    if (!series) return [];
+
+    const subs = await NotificationSubscription.find({
+      series_id: series._id,
+      notify_new_chapter: true,
+      reader_id: { $ne: series.author_id },
+    }).lean();
+
+    if (subs.length === 0) return [];
+
+    const docs = subs.map((s) => ({
+      user_id: s.reader_id,
+      type: "new_chapter_published",
+      title: `Chapter mới: ${series.name}`,
+      message: `Chapter #${chapter.chapter_number}${
+        chapter.title ? ` - "${chapter.title}"` : ""
+      } vừa được xuất bản.`,
+      related_entity_type: "chapter",
+      related_entity_id: chapter._id,
+      meta: {
+        series_id: series._id,
+        series_name: series.name,
+        chapter_id: chapter._id,
+        chapter_number: chapter.chapter_number,
+      },
+    }));
+
+    const created = await Notification.insertMany(docs, { ordered: false });
+    for (const notif of created) {
+      sendToUser(notif.user_id, "notification", notif);
+    }
+    return created;
+  } catch (e) {
+    console.error("[notifyFollowersNewChapter] error:", e.message);
+    return [];
+  }
+};
+
+/**
+ * Notify tất cả follower của author khi author ra series mới.
+ *
+ * Được gọi từ jobs/scheduledPublish.js khi series chuyển sang status="published",
+ * đảm bảo notify đúng lúc Reader bắt đầu thấy series.
+ *
+ * KHÔNG notify cho chính tác giả.
+ */
+const notifyFollowersAuthorNewSeries = async (Notification, series) => {
+  try {
+    const FollowAuthor = require("../models/FollowAuthor");
+
+    if (!series || !series._id || !series.author_id) return [];
+
+    const followers = await FollowAuthor.find({
+      author_id: series.author_id,
+      reader_id: { $ne: series.author_id },
+    }).lean();
+
+    if (followers.length === 0) return [];
+
+    const docs = followers.map((f) => ({
+      user_id: f.reader_id,
+      type: "new_series_from_author",
+      title: `Tác giả ra series mới`,
+      message: `${series.author_name || "Tác giả"} vừa cho ra series "${
+        series.name
+      }".`,
+      related_entity_type: "series",
+      related_entity_id: series._id,
+      meta: {
+        series_id: series._id,
+        series_name: series.name,
+        author_id: series.author_id,
+      },
+    }));
+
+    const created = await Notification.insertMany(docs, { ordered: false });
+    for (const notif of created) {
+      sendToUser(notif.user_id, "notification", notif);
+    }
+    return created;
+  } catch (e) {
+    console.error("[notifyFollowersAuthorNewSeries] error:", e.message);
+    return [];
+  }
+};
+
+/**
+ * Đếm số subscriber thực sự nhận notify cho 1 series (FE dùng để hiển thị badge).
+ */
+const getFollowerCount = async (NotificationSubscription, seriesId) => {
+  return await NotificationSubscription.countDocuments({
+    series_id: seriesId,
+    notify_new_chapter: true,
+  });
+};
+
 module.exports = {
   sendToUser,
   notifyUser,
@@ -284,4 +400,7 @@ module.exports = {
   notifyChapterAssigned,
   notifyChapterScheduledPublish,
   notifyChapterPublishConfirmed,
+  notifyFollowersNewChapter,
+  notifyFollowersAuthorNewSeries,
+  getFollowerCount,
 };
