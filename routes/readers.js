@@ -674,7 +674,7 @@ router.post("/chapters/:id/view", authMiddleware, requireReader, async (req, res
     const chapter = await Chapter.findOneAndUpdate(
       { _id: req.params.id, is_published: true },
       { $inc: { views_count: 1 } },
-      { new: true, projection: { _id: 1, views_count: 1, series_id: 1 } }
+      { returnDocument: 'after', projection: { _id: 1, views_count: 1, series_id: 1 } }
     ).lean();
 
     if (!chapter) {
@@ -777,7 +777,7 @@ router.post("/history", authMiddleware, requireReader, async (req, res, next) =>
       {
         $set: { last_read_chapter: chapterNum, read_at: new Date() },
       },
-      { upsert: true, new: true, setDefaultsOnInsert: true }
+      { upsert: true, returnDocument: 'after', setDefaultsOnInsert: true }
     ).lean();
 
     return res.status(200).json({

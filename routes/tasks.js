@@ -880,7 +880,7 @@ router.patch(
             {
               $set: { result_image_url: item.result_image_url },
             },
-            { new: true }
+            { returnDocument: 'after' }
           );
 
           if (!task) {

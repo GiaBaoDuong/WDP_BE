@@ -1899,7 +1899,7 @@ router.post("/chapter/:chapterId/annotations", authMiddleware, requireTE, async 
           quick_notes: "",
         },
       },
-      { new: true, upsert: true, runValidators: true }
+      { returnDocument: 'after', upsert: true, runValidators: true }
     );
 
     const pageAnns = review.annotations.filter((a) => String(a.page_id) === String(pageId));
