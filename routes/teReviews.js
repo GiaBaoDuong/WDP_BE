@@ -2388,15 +2388,12 @@ router.post("/chapter/:chapterId/publish", authMiddleware, requireTE, async (req
         {
           $set: {
             final_image_url: {
-              $cond: [
-                { $ne: ["$result_image_url", ""] },
-                "$result_image_url",
-                "$original_image_url",
-              ],
+              $ifNull: ["$result_image_url", "$original_image_url"],
             },
           },
         },
       ],
+      { updatePipeline: true },
     ).catch((err) =>
       console.warn(
         `[publish] Failed to snapshot final_image_url for chapter ${chapter._id}:`,

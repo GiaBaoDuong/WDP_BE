@@ -634,13 +634,22 @@ router.get("/chapters/:id/pages", authMiddleware, requireReader, async (req, res
     }
 
     const pages = await Page.find({ chapter_id: req.params.id })
-      .select("page_number final_image_url width height")
+      .select("page_number final_image_url result_image_url original_image_url width height")
       .sort({ page_number: 1 })
       .lean();
 
+    // Fallback: nếu final_image_url rỗng thì dùng result_image_url hoặc original_image_url
+    const pagesWithFallback = pages.map((p) => ({
+      _id: p._id,
+      page_number: p.page_number,
+      final_image_url: p.final_image_url || p.result_image_url || p.original_image_url,
+      width: p.width,
+      height: p.height,
+    }));
+
     return res.status(200).json({
       success: true,
-      data: pages,
+      data: pagesWithFallback,
       chapter: {
         _id: chapter._id,
         chapter_number: chapter.chapter_number,
