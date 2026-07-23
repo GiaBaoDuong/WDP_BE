@@ -491,12 +491,15 @@ router.post("/votes", authMiddleware, requireReader, async (req, res, next) => {
       { upsert: true, returnDocument: "after" }
     );
 
-    // Tính lại average
+    // Tính lại average (không dùng series.save() để tránh update updatedAt)
     const allVotes = await Vote.find({ series_id, release_period });
     const avg = allVotes.reduce((s, v) => s + v.score, 0) / allVotes.length;
-    series.average_score = Math.round(avg * 10) / 10;
-    series.total_votes = allVotes.length;
-    await series.save();
+    await Series.findByIdAndUpdate(series_id, {
+      $set: {
+        average_score: Math.round(avg * 10) / 10,
+        total_votes: allVotes.length,
+      },
+    });
 
     // Cập nhật SeriesStats (fire-and-forget)
     const { updateSeriesStats } = require("../helpers/updateSeriesStats");
