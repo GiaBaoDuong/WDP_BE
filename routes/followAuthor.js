@@ -20,7 +20,7 @@ async function getMangaka(authorId) {
 
 /**
  * @swagger
- * /follow-author/{authorId}:
+ * '/follow-author/{authorId}':
  *   post:
  *     tags: [FollowAuthors]
  *     summary: Follow a Mangaka (reader only)
@@ -86,7 +86,7 @@ router.post(
 
 /**
  * @swagger
- * /follow-author/{authorId}:
+ * '/follow-author/{authorId}':
  *   delete:
  *     tags: [FollowAuthors]
  *     summary: Unfollow a Mangaka (reader only)
@@ -121,7 +121,7 @@ router.delete(
 
 /**
  * @swagger
- * /follow-author/{authorId}/status:
+ * '/follow-author/{authorId}/status':
  *   get:
  *     tags: [FollowAuthors]
  *     summary: Check whether the current reader is following an author (Risk D: có check role Mangaka)
@@ -162,7 +162,7 @@ router.get(
 
 /**
  * @swagger
- * /follow-author/mine:
+ * '/follow-author/mine':
  *   get:
  *     tags: [FollowAuthors]
  *     summary: List các Mangaka mà reader hiện tại đang theo dõi (kèm series_count)
