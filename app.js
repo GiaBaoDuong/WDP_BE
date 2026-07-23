@@ -88,6 +88,7 @@ app.use("/reader", require("./routes/readers"));
 app.use("/mangaka", require("./routes/mangakas"));
 app.use("/authors", require("./routes/authors"));
 app.use("/comments", require("./routes/comments"));
+app.use("/votes", require("./routes/votes"));
 app.use("/admin", require("./routes/admin"));
 
 // Health check
