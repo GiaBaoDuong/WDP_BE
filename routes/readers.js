@@ -1,6 +1,7 @@
 const express = require("express");
 const router = express.Router();
 const authMiddleware = require("../middleware/auth");
+const { optionalAuth } = require("../middleware/auth");
 const { requireReader } = require("../middleware/roles");
 const { AppError } = require("../middleware/errorHandler");
 const Series = require("../models/Series");
@@ -78,7 +79,7 @@ const { getCurrentPeriod } = require("../utils/helpers");
 //   - sort     : string             → field để sort, default 'average_score'
 //   - page     : int                → trang, default 1
 //   - limit    : int                → số item/trang, default 20
-router.get("/series", authMiddleware, requireReader, async (req, res, next) => {
+router.get("/series", optionalAuth, async (req, res, next) => {
   try {
     const { title, sort = "average_score", page = 1, limit = 20 } = req.query;
 
@@ -168,7 +169,8 @@ router.get("/series", authMiddleware, requireReader, async (req, res, next) => {
  */
 // ─── GET /reader/genres ─────────────────────────────────────────────────────
 // Trả về whitelist thể loại hợp lệ của Series (Series.GENRES) — client dùng để render checkbox lọc.
-router.get("/genres", authMiddleware, requireReader, (req, res) => {
+// Endpoint này public - không yêu cầu đăng nhập
+router.get("/genres", optionalAuth, (req, res) => {
   const { GENRES } = require("../models/Series");
   return res.status(200).json({ success: true, data: GENRES });
 });
