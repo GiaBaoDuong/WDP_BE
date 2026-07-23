@@ -1,6 +1,7 @@
 const express = require("express");
 const router = express.Router();
 const authMiddleware = require("../middleware/auth");
+const { optionalAuth } = require("../middleware/auth");
 const { requireMangaka, requireMangakaOrAssistant } = require("../middleware/roles");
 const { AppError } = require("../middleware/errorHandler");
 const Series = require("../models/Series");
@@ -88,18 +89,20 @@ const cloudinary = require("../config/cloudinary");
  *       401:
  *         description: Unauthorized
  */
-router.get("/", authMiddleware, async (req, res, next) => {
+router.get("/", optionalAuth, async (req, res, next) => {
   try {
     const { genre, status, sort = "createdAt", order = "desc", page = 1, limit = 20, publication_status } = req.query;
 
     const filter = {};
     // Reader chỉ thấy published, Mangaka thấy draft của mình, EB/TE thấy tất cả
-    if (req.user.role === "Reader") {
+    // Anonymous user cũng chỉ thấy published như Reader
+    if (!req.user || req.user.role === "Reader") {
       filter.is_public = true;
       filter.status = "published";
     } else if (req.user.role === "Mangaka") {
       filter.author_id = req.user.nameid;
     }
+    // Không cần else cho EB/TE vì không có filter (thấy tất cả)
     if (genre) {
       const genres = Array.isArray(genre) ? genre : [genre];
       filter.genre = { $in: genres };
@@ -181,7 +184,7 @@ router.get("/", authMiddleware, async (req, res, next) => {
  *       401:
  *         description: Unauthorized
  */
-router.get("/ranking", authMiddleware, async (req, res, next) => {
+router.get("/ranking", optionalAuth, async (req, res, next) => {
   try {
     const { period } = req.query;
     const filter = { is_public: true, status: "published" };
@@ -194,7 +197,7 @@ router.get("/ranking", authMiddleware, async (req, res, next) => {
       .lean();
 
     // Cảnh báo cho Mangaka có series ranking thấp
-    if (req.user.role === "Mangaka") {
+    if (req.user && req.user.role === "Mangaka") {
       const mySeries = ranking.filter(
         (s) => s.author_id && s.author_id._id.toString() === req.user.nameid
       );
@@ -315,13 +318,13 @@ router.get("/:id", authMiddleware, async (req, res, next) => {
       return next(new AppError("Series not found", 404));
     }
 
-    // Reader chỉ thấy published
-    if (req.user.role === "Reader" && series.status !== "published") {
+    // Reader chỉ thấy published, Anonymous cũng chỉ thấy published
+    if ((!req.user || req.user.role === "Reader") && series.status !== "published") {
       return next(new AppError("Series not found", 404));
     }
 
     // Mangaka chỉ thấy series của mình
-    if (req.user.role === "Mangaka" && series.author_id._id.toString() !== req.user.nameid) {
+    if (req.user && req.user.role === "Mangaka" && series.author_id._id.toString() !== req.user.nameid) {
       return next(new AppError("Series not found", 404));
     }
 
@@ -712,14 +715,14 @@ router.patch("/:id", authMiddleware, requireMangaka, async (req, res, next) => {
  *       404:
  *         description: Series not found
  */
-router.get("/:id/chapters", authMiddleware, async (req, res, next) => {
+router.get("/:id/chapters", optionalAuth, async (req, res, next) => {
   try {
     const series = await Series.findById(req.params.id).lean();
     if (!series) return next(new AppError("Series not found", 404));
 
     const filter = { series_id: req.params.id };
-    // Reader chỉ thấy published chapters
-    if (req.user.role === "Reader") {
+    // Reader và Anonymous chỉ thấy published chapters
+    if (!req.user || req.user.role === "Reader") {
       filter.is_published = true;
     }
 
