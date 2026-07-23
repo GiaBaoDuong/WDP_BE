@@ -1,7 +1,7 @@
 const express = require("express");
 const router = express.Router();
 const mongoose = require("mongoose");
-const authMiddleware = require("../middleware/auth");
+const { authMiddleware } = require("../middleware/auth");
 const { requireMangakaOrAssistant } = require("../middleware/roles");
 const { AppError } = require("../middleware/errorHandler");
 const PageLayer = require("../models/PageLayer");

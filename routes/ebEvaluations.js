@@ -1,6 +1,6 @@
 const express = require("express");
 const router = express.Router();
-const authMiddleware = require("../middleware/auth");
+const { authMiddleware } = require("../middleware/auth");
 const { requireEB, requireMangaka } = require("../middleware/roles");
 const { AppError } = require("../middleware/errorHandler");
 const Chapter = require("../models/Chapter");
