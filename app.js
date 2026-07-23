@@ -74,6 +74,7 @@ app.use("/uploads", express.static(path.join(__dirname, "public/uploads")));
 app.use("/auth", require("./routes/auth"));
 app.use("/notifications", require("./routes/notifications"));
 app.use("/follow-author", require("./routes/followAuthor"));
+app.use("/authors", require("./routes/authors"));
 app.use("/series", require("./routes/series"));
 app.use("/chapters", require("./routes/chapters"));
 app.use("/chapters", require("./routes/pageLayers"));

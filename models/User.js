@@ -49,7 +49,6 @@ const userSchema = new mongoose.Schema(
       enum: ["active", "banned"],
       default: "active",
     },
-    // EB đại diện: chỉ user này mới có quyền nhập/lưu điểm chấm hội đồng
     is_eb_representative: {
       type: Boolean,
       default: false,
@@ -64,9 +63,12 @@ const userSchema = new mongoose.Schema(
       maxlength: [500, "Bio cannot exceed 500 characters"],
     },
     social_links: {
-      facebook: { type: String, default: "" },
-      twitter: { type: String, default: "" },
-      website: { type: String, default: "" },
+      type: {
+        facebook: { type: String, default: "" },
+        twitter: { type: String, default: "" },
+        website: { type: String, default: "" },
+      },
+      default: () => ({ facebook: "", twitter: "", website: "" }),
     },
   },
   {
