@@ -57,6 +57,10 @@ const userSchema = new mongoose.Schema(
       type: String,
       default: "",
     },
+    cover_image_url: {
+      type: String,
+      default: "",
+    },
     bio: {
       type: String,
       default: "",

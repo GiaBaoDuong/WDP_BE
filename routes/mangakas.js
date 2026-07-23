@@ -60,6 +60,7 @@ router.get("/profile", authMiddleware, requireMangaka, async (req, res, next) =>
           full_name: user.full_name,
           email: user.email,
           avatar_url: user.avatar_url || null,
+          cover_image_url: user.cover_image_url || null,
           bio: user.bio || "",
           role: user.role,
           createdAt: user.created_at,
@@ -112,7 +113,7 @@ router.get("/profile", authMiddleware, requireMangaka, async (req, res, next) =>
 router.put("/profile", authMiddleware, requireMangaka, async (req, res, next) => {
   try {
     const userId = req.user.nameid;
-    const { full_name, bio, avatar_base64 } = req.body;
+    const { full_name, bio, avatar_base64, cover_image_base64 } = req.body;
 
     const updateData = {};
 
@@ -153,6 +154,25 @@ router.put("/profile", authMiddleware, requireMangaka, async (req, res, next) =>
       }
     }
 
+    // Upload cover image nếu có
+    if (cover_image_base64) {
+      try {
+        const result = await cloudinary.uploader.upload(cover_image_base64, {
+          folder: "wdp/mangakas/covers",
+          width: 1200,
+          height: 400,
+          crop: "cover",
+          format: "jpg",
+          quality: "auto",
+        });
+
+        updateData.cover_image_url = result.secure_url;
+      } catch (uploadError) {
+        console.error("Cloudinary upload error:", uploadError);
+        return next(new AppError("Không thể upload ảnh bìa", 400));
+      }
+    }
+
     // Cập nhật user
     const updatedUser = await User.findByIdAndUpdate(
       userId,
@@ -169,6 +189,7 @@ router.put("/profile", authMiddleware, requireMangaka, async (req, res, next) =>
         full_name: updatedUser.full_name,
         email: updatedUser.email,
         avatar_url: updatedUser.avatar_url || null,
+        cover_image_url: updatedUser.cover_image_url || null,
         bio: updatedUser.bio || "",
         role: updatedUser.role,
       },
