@@ -1337,7 +1337,12 @@ router.patch("/manga/chapters/:id/status", async (req, res, next) => {
     const oldStatus = chapter.status;
     chapter.status = status;
     chapter.is_published = status === "published";
-    if (status === "published") chapter.published_at = new Date();
+    if (status === "published") {
+      chapter.published_at = new Date();
+      await Series.findByIdAndUpdate(chapter.series_id, {
+        $set: { last_chapter_published_at: chapter.published_at },
+      });
+    }
     await chapter.save();
     await Notification.create({
       user_id: chapter.submitted_by,

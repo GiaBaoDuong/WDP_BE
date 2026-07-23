@@ -89,6 +89,9 @@ const processScheduledPublish = async () => {
           revision_annotations: [],
           revision_source: "",
         });
+        await Series.findByIdAndUpdate(chapter.series_id, {
+          $set: { last_chapter_published_at: now },
+        });
         console.log(
           `[ScheduledPublish] Chapter ${chapter._id} (${chapter.chapter_number}) published successfully.`
         );

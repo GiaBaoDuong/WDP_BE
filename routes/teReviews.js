@@ -1192,6 +1192,10 @@ router.post("/series-review/:seriesId/review-chapter", authMiddleware, requireTE
         chapter.revision_source = "";
         await chapter.save();
 
+        await Series.findByIdAndUpdate(chapter.series_id, {
+          $set: { last_chapter_published_at: chapter.published_at },
+        });
+
         const teReview = await TEReview.findOne({ chapter_id: chapter_id });
         if (teReview) {
           teReview.decision = TE_DECISION.APPROVED_PUBLISH;
@@ -2218,6 +2222,10 @@ router.post("/chapter/:chapterId/te-action", authMiddleware, requireTE, async (r
         chapter.revision_annotations = [];
         chapter.revision_source = "";
         await chapter.save();
+
+        await Series.findByIdAndUpdate(chapter.series_id, {
+          $set: { last_chapter_published_at: chapter.published_at },
+        });
 
         const review = await TEReview.findOne({ chapter_id: chapterId });
         if (review) {

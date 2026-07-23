@@ -54,6 +54,7 @@ const seriesSchema = new mongoose.Schema(
     cover_image_url: { type: String, default: "" },
     category: { type: String, default: "" },
     tags: { type: [String], default: [] },
+    last_chapter_published_at: { type: Date, default: null },
     age_rating: {
       type: String,
       enum: ["All ages", "Teens 13+", "Mature 17+", "Adults Only 18+", null],
@@ -76,6 +77,7 @@ const seriesSchema = new mongoose.Schema(
 seriesSchema.index({ author_id: 1, status: 1 });
 seriesSchema.index({ is_public: 1, status: 1 });
 seriesSchema.index({ average_score: -1 });
+seriesSchema.index({ is_public: 1, status: 1, last_chapter_published_at: -1 });
 
 const Series = mongoose.model("Series", seriesSchema);
 module.exports = Series;

@@ -83,6 +83,10 @@ router.get("/series", optionalAuth, async (req, res, next) => {
   try {
     const { title, sort = "average_score", page = 1, limit = 20 } = req.query;
 
+    // Map FE sort param "updatedAt" (ý nghĩa: truyện có chapter mới nhất)
+    // sang field thực tế để tránh nhảy truyện cũ khi reader vote/comment.
+    const actualSort = sort === "updatedAt" ? "last_chapter_published_at" : sort;
+
     // Genre: chấp nhận string, CSV, hoặc mảng query (?genre=A&genre=B)
     const rawGenres = req.query.genre;
     const { GENRES } = require("../models/Series");
@@ -112,7 +116,7 @@ router.get("/series", optionalAuth, async (req, res, next) => {
     const [series, total] = await Promise.all([
       Series.find(filter)
         .populate("author_id", "username full_name phoneNumber avatar_url")
-        .sort({ [sort]: -1 })
+        .sort({ [actualSort]: -1 })
         .skip((page - 1) * limit)
         .limit(parseInt(limit))
         .lean(),
