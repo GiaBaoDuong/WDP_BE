@@ -124,7 +124,7 @@ router.delete(
  * '/follow-author/{authorId}/status':
  *   get:
  *     tags: [FollowAuthors]
- *     summary: Check whether the current reader is following an author (Risk D: có check role Mangaka)
+ *     summary: Check whether the current reader is following an author (Risk D - có check role Mangaka)
  *     security:
  *       - BearerAuth: []
  *     parameters:
