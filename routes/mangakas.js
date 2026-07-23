@@ -162,7 +162,8 @@ router.put("/profile", authMiddleware, requireMangaka, async (req, res, next) =>
           folder: "wdp/mangakas/covers",
           width: 1200,
           height: 400,
-          crop: "cover",
+          crop: "fill",
+          gravity: "auto",
           format: "jpg",
           quality: "auto",
         });
