@@ -81,7 +81,7 @@ router.post("/requests", authMiddleware, requireMangaka, async (req, res, next) 
       status: "pending",
     });
 
-    await notifyCoopInvite(Notification, req.user.userId, assistant_id, request);
+    await notifyCoopInvite(Notification, req.user.nameid, assistant_id, request);
 
     return res.status(201).json({ success: true, data: request });
   } catch (error) {
