@@ -62,6 +62,7 @@ router.get("/profile", authMiddleware, requireMangaka, async (req, res, next) =>
           avatar_url: user.avatar_url || null,
           cover_image_url: user.cover_image_url || null,
           bio: user.bio || "",
+          social_links: user.social_links || { facebook: "", twitter: "", website: "" },
           role: user.role,
           createdAt: user.created_at,
         },
@@ -113,7 +114,7 @@ router.get("/profile", authMiddleware, requireMangaka, async (req, res, next) =>
 router.put("/profile", authMiddleware, requireMangaka, async (req, res, next) => {
   try {
     const userId = req.user.nameid;
-    const { full_name, bio, avatar_base64, cover_image_base64 } = req.body;
+    const { full_name, bio, avatar_base64, cover_image_base64, social_links } = req.body;
 
     const updateData = {};
 
@@ -173,6 +174,18 @@ router.put("/profile", authMiddleware, requireMangaka, async (req, res, next) =>
       }
     }
 
+    // Validate và cập nhật social_links
+    if (social_links !== undefined) {
+      if (typeof social_links !== "object") {
+        return next(new AppError("social_links phải là object", 400));
+      }
+      updateData.social_links = {
+        facebook: social_links.facebook || "",
+        twitter: social_links.twitter || "",
+        website: social_links.website || "",
+      };
+    }
+
     // Cập nhật user
     const updatedUser = await User.findByIdAndUpdate(
       userId,
@@ -191,6 +204,7 @@ router.put("/profile", authMiddleware, requireMangaka, async (req, res, next) =>
         avatar_url: updatedUser.avatar_url || null,
         cover_image_url: updatedUser.cover_image_url || null,
         bio: updatedUser.bio || "",
+        social_links: updatedUser.social_links || { facebook: "", twitter: "", website: "" },
         role: updatedUser.role,
       },
     });
