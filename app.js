@@ -84,6 +84,8 @@ app.use("/te-reviews", require("./routes/teReviews"));
 app.use("/eb-evaluations", require("./routes/ebEvaluations"));
 app.use("/eb-scores", require("./routes/ebScores"));
 app.use("/reader", require("./routes/readers"));
+app.use("/mangaka", require("./routes/mangakas"));
+app.use("/authors", require("./routes/authors"));
 app.use("/comments", require("./routes/comments"));
 app.use("/admin", require("./routes/admin"));
 
