@@ -12,7 +12,7 @@ const { AppError } = require("../middleware/errorHandler");
 
 /**
  * @swagger
- * /authors/{authorId}:
+ * '/authors/{authorId}':
  *   get:
  *     summary: Lấy thông tin public của một author
  *     tags: [Authors]
@@ -89,7 +89,7 @@ router.get("/:authorId", async (req, res, next) => {
 
 /**
  * @swagger
- * /authors/{authorId}/series:
+ * '/authors/{authorId}/series':
  *   get:
  *     summary: Lấy danh sách series công khai của author (phân trang)
  *     tags: [Authors]
@@ -171,7 +171,7 @@ router.get("/:authorId/series", async (req, res, next) => {
 
 /**
  * @swagger
- * /authors/{authorId}/followers/count:
+ * '/authors/{authorId}/followers/count':
  *   get:
  *     summary: Đếm số người theo dõi author
  *     tags: [Authors]
@@ -210,12 +210,20 @@ router.get("/:authorId/followers/count", async (req, res, next) => {
 });
 
 // ════════════════════════════════════════════════════════════════════════════
-// POST /authors/:authorId/follow - Theo dõi author (cần auth)
+// /authors/:authorId/follow - Follow/Unfollow/Check status
 // ════════════════════════════════════════════════════════════════════════════
 
 /**
  * @swagger
- * /authors/{authorId}/follow:
+ * '/authors/{authorId}/follow':
+ *   get:
+ *     summary: Kiểm tra đang theo dõi author hay chưa
+ *     tags: [Authors]
+ *     security:
+ *       - BearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Trạng thái theo dõi
  *   post:
  *     summary: Theo dõi một author
  *     tags: [Authors]
@@ -226,7 +234,34 @@ router.get("/:authorId/followers/count", async (req, res, next) => {
  *         description: Theo dõi thành công
  *       400:
  *         description: Đã theo dõi rồi
+ *   delete:
+ *     summary: Bỏ theo dõi author
+ *     tags: [Authors]
+ *     security:
+ *       - BearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Bỏ theo dõi thành công
  */
+
+router.get("/:authorId/follow", authMiddleware, async (req, res, next) => {
+  try {
+    const { authorId } = req.params;
+    const readerId = req.user._id;
+
+    const existing = await FollowAuthor.findOne({ reader_id: readerId, author_id: authorId });
+
+    res.json({
+      success: true,
+      data: {
+        is_following: !!existing,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 router.post("/:authorId/follow", authMiddleware, async (req, res, next) => {
   try {
     const { authorId } = req.params;
@@ -236,13 +271,11 @@ router.post("/:authorId/follow", authMiddleware, async (req, res, next) => {
       return next(new AppError("Không thể tự theo dõi chính mình", 400));
     }
 
-    // Verify author exists
     const author = await User.findById(authorId).select("_id role").lean();
     if (!author || author.role !== "Mangaka") {
       return next(new AppError("Không tìm thấy author", 404));
     }
 
-    // Check if already following
     const existing = await FollowAuthor.findOne({ reader_id: readerId, author_id: authorId });
     if (existing) {
       return next(new AppError("Đã theo dõi author này rồi", 400));
@@ -259,22 +292,6 @@ router.post("/:authorId/follow", authMiddleware, async (req, res, next) => {
   }
 });
 
-// ════════════════════════════════════════════════════════════════════════════
-// DELETE /authors/:authorId/follow - Bỏ theo dõi author
-// ════════════════════════════════════════════════════════════════════════════
-
-/**
- * @swagger
- * /authors/{authorId}/follow:
- *   delete:
- *     summary: Bỏ theo dõi author
- *     tags: [Authors]
- *     security:
- *       - BearerAuth: []
- *     responses:
- *       200:
- *         description: Bỏ theo dõi thành công
- */
 router.delete("/:authorId/follow", authMiddleware, async (req, res, next) => {
   try {
     const { authorId } = req.params;
@@ -289,40 +306,6 @@ router.delete("/:authorId/follow", authMiddleware, async (req, res, next) => {
     res.json({
       success: true,
       message: "Đã bỏ theo dõi",
-    });
-  } catch (error) {
-    next(error);
-  }
-});
-
-// ════════════════════════════════════════════════════════════════════════════
-// GET /authors/:authorId/follow - Kiểm tra đang theo dõi hay không
-// ════════════════════════════════════════════════════════════════════════════
-
-/**
- * @swagger
- * /authors/{authorId}/follow:
- *   get:
- *     summary: Kiểm tra đang theo dõi author hay chưa
- *     tags: [Authors]
- *     security:
- *       - BearerAuth: []
- *     responses:
- *       200:
- *         description: Trạng thái theo dõi
- */
-router.get("/:authorId/follow", authMiddleware, async (req, res, next) => {
-  try {
-    const { authorId } = req.params;
-    const readerId = req.user._id;
-
-    const existing = await FollowAuthor.findOne({ reader_id: readerId, author_id: authorId });
-
-    res.json({
-      success: true,
-      data: {
-        is_following: !!existing,
-      },
     });
   } catch (error) {
     next(error);
