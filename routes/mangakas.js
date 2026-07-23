@@ -32,7 +32,7 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 *
  */
 router.get("/profile", authMiddleware, requireMangaka, async (req, res, next) => {
   try {
-    const userId = req.user._id;
+    const userId = req.user.userId;
 
     const user = await User.findById(userId).select("-password -otp -otp_expires").lean();
 
@@ -111,7 +111,7 @@ router.get("/profile", authMiddleware, requireMangaka, async (req, res, next) =>
  */
 router.put("/profile", authMiddleware, requireMangaka, async (req, res, next) => {
   try {
-    const userId = req.user._id;
+    const userId = req.user.userId;
     const { full_name, bio, avatar_base64 } = req.body;
 
     const updateData = {};
