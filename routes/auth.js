@@ -360,8 +360,10 @@ router.post("/login", async (req, res) => {
  *     security:
  *       - BearerAuth: []
  *     responses:
- *       200: { description: Thông tin user }
- *       404: { description: User not found }
+ *       200:
+ *         description: Thông tin user
+ *       404:
+ *         description: User not found
  */
 router.get("/me", authMiddleware, async (req, res) => {
   try {
