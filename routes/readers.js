@@ -495,6 +495,10 @@ router.post("/votes", authMiddleware, requireReader, async (req, res, next) => {
     series.total_votes = allVotes.length;
     await series.save();
 
+    // Cập nhật SeriesStats (fire-and-forget)
+    const { updateSeriesStats } = require("../helpers/updateSeriesStats");
+    updateSeriesStats(series_id, "vote", { score });
+
     return res.status(201).json({
       success: true,
       data: vote,
@@ -680,6 +684,10 @@ router.post("/chapters/:id/view", authMiddleware, requireReader, async (req, res
     if (!chapter) {
       return next(new AppError("Chapter not found or not published", 404));
     }
+
+    // Cập nhật SeriesStats (fire-and-forget)
+    const { updateSeriesStats } = require("../helpers/updateSeriesStats");
+    updateSeriesStats(chapter.series_id.toString(), "view");
 
     return res.status(200).json({
       success: true,
@@ -1081,6 +1089,163 @@ router.get("/bookshelf/check", authMiddleware, requireReader, async (req, res, n
     });
 
     return res.status(200).json({ success: true, data: map });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ─── GET /reader/rankings ───────────────────────────────────────────────────
+/**
+ * @swagger
+ * /reader/rankings:
+ *   get:
+ *     tags: [Readers]
+ *     summary: Get series rankings by views, votes, or rating
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: type
+ *         schema:
+ *           type: string
+ *           enum: [views, votes, rating]
+ *         required: true
+ *         description: "Loại xếp hạng: views (lượt đọc), votes (lượt vote), rating (điểm trung bình)"
+ *       - in: query
+ *         name: period
+ *         schema:
+ *           type: string
+ *           enum: [daily, weekly, monthly, all]
+ *         default: weekly
+ *         description: "Khoảng thời gian: daily (hôm nay), weekly (tuần này), monthly (tháng này), all (all-time)"
+ *       - in: query
+ *         name: limit
+ *         schema:
+ *           type: integer
+ *           default: 10
+ *         description: "Số lượng kết quả trả về"
+ *     responses:
+ *       200:
+ *         description: Ranking list
+ *       400:
+ *         description: Thiếu hoặc sai type
+ */
+router.get("/rankings", authMiddleware, requireReader, async (req, res, next) => {
+  try {
+    const { type = "views", period = "weekly", limit = 10 } = req.query;
+
+    // Validate type
+    if (!["views", "votes", "rating"].includes(type)) {
+      return next(new AppError("type phải là: views, votes, hoặc rating", 400));
+    }
+
+    // Validate limit
+    const parsedLimit = Math.min(Math.max(parseInt(limit) || 10, 1), 50);
+
+    let query = { series_id: { $exists: true } };
+
+    // Filter theo period
+    if (period !== "all") {
+      const SeriesStats = require("../models/SeriesStats");
+      const periodKey = SeriesStats.getPeriodKey(period);
+      query.period_type = period;
+      query.period_key = periodKey;
+    }
+
+    let sortField;
+    switch (type) {
+      case "views":
+        sortField = "views_count";
+        break;
+      case "votes":
+        sortField = "votes_count";
+        break;
+      case "rating":
+        sortField = "average_score";
+        break;
+    }
+
+    // Get rankings
+    let rankings;
+    if (period === "all") {
+      // All-time: aggregate from Series model
+      const sortFieldMap = {
+        views: "views_count",
+        votes: "total_votes",
+        rating: "average_score",
+      };
+      const sField = sortFieldMap[type];
+
+      rankings = await Series.find({
+        status: "published",
+        is_public: true,
+      })
+        .sort({ [sField]: -1 })
+        .limit(parsedLimit)
+        .select("name cover_image_url genre views_count total_votes average_score")
+        .lean();
+
+      rankings = rankings.map((s, idx) => ({
+        rank: idx + 1,
+        series_id: s._id,
+        name: s.name,
+        cover_image_url: s.cover_image_url,
+        genre: s.genre,
+        [type === "views" ? "views_count" : type === "votes" ? "votes_count" : "average_score"]:
+          type === "views" ? s.views_count : type === "votes" ? s.total_votes : s.average_score,
+      }));
+    } else {
+      // From SeriesStats
+      const SeriesStats = require("../models/SeriesStats");
+
+      const stats = await SeriesStats.find(query)
+        .sort({ [sortField]: -1 })
+        .limit(parsedLimit)
+        .lean();
+
+      // Get series details
+      const seriesIds = stats.map((s) => s.series_id);
+      const seriesMap = await Series.find({ _id: { $in: seriesIds } })
+        .select("name cover_image_url genre")
+        .lean()
+        .then((arr) => {
+          const map = {};
+          arr.forEach((s) => { map[String(s._id)] = s; });
+          return map;
+        });
+
+      rankings = stats.map((s, idx) => {
+        const series = seriesMap[String(s.series_id)] || {};
+        return {
+          rank: idx + 1,
+          series_id: s.series_id,
+          name: series.name || "",
+          cover_image_url: series.cover_image_url || "",
+          genre: series.genre || [],
+          views_count: s.views_count,
+          votes_count: s.votes_count,
+          average_score: s.average_score,
+        };
+      });
+    }
+
+    // Period label
+    let periodLabel;
+    if (period === "all") periodLabel = "All-time";
+    else if (period === "daily") periodLabel = "Hôm nay";
+    else if (period === "weekly") periodLabel = "Tuần này";
+    else if (period === "monthly") periodLabel = "Tháng này";
+
+    return res.status(200).json({
+      success: true,
+      data: rankings,
+      meta: {
+        type,
+        period,
+        period_label: periodLabel,
+        limit: parsedLimit,
+      },
+    });
   } catch (error) {
     next(error);
   }
