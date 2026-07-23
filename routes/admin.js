@@ -1531,4 +1531,392 @@ router.post("/migrate-chapters-te-id", async (req, res, next) => {
   }
 });
 
+// ════════════════════════════════════════════════════════════════════════════
+// RANKINGS
+// ════════════════════════════════════════════════════════════════════════════
+
+/**
+ * @swagger
+ * /admin/rankings/stats:
+ *   get:
+ *     summary: Lấy overview stats cho rankings dashboard
+ *     tags: [Admin - Rankings]
+ *     security:
+ *       - BearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Stats overview
+ *       401: { description: Unauthorized }
+ *       403: { description: Forbidden }
+ */
+router.get("/rankings/stats", async (req, res, next) => {
+  try {
+    const SeriesStats = require("../models/SeriesStats");
+    const now = new Date();
+
+    // Get period keys
+    const todayKey = SeriesStats.getPeriodKey("daily", now);
+    const yesterdayDate = new Date(now);
+    yesterdayDate.setDate(yesterdayDate.getDate() - 1);
+    const yesterdayKey = SeriesStats.getPeriodKey("daily", yesterdayDate);
+
+    const thisWeekKey = SeriesStats.getPeriodKey("weekly", now);
+    const lastWeekDate = new Date(now);
+    lastWeekDate.setDate(lastWeekDate.getDate() - 7);
+    const lastWeekKey = SeriesStats.getPeriodKey("weekly", lastWeekDate);
+
+    const thisMonthKey = SeriesStats.getPeriodKey("monthly", now);
+
+    // Aggregate stats
+    const [todayStats, yesterdayStats, thisWeekStats, lastWeekStats, thisMonthStats, activeSeries] =
+      await Promise.all([
+        // Today
+        SeriesStats.aggregate([
+          { $match: { period_type: "daily", period_key: todayKey } },
+          { $group: { _id: null, totalViews: { $sum: "$views_count" }, totalVotes: { $sum: "$votes_count" } } },
+        ]),
+        // Yesterday
+        SeriesStats.aggregate([
+          { $match: { period_type: "daily", period_key: yesterdayKey } },
+          { $group: { _id: null, totalViews: { $sum: "$views_count" }, totalVotes: { $sum: "$votes_count" } } },
+        ]),
+        // This week
+        SeriesStats.aggregate([
+          { $match: { period_type: "weekly", period_key: thisWeekKey } },
+          { $group: { _id: null, totalViews: { $sum: "$views_count" }, totalVotes: { $sum: "$votes_count" } } },
+        ]),
+        // Last week
+        SeriesStats.aggregate([
+          { $match: { period_type: "weekly", period_key: lastWeekKey } },
+          { $group: { _id: null, totalViews: { $sum: "$views_count" }, totalVotes: { $sum: "$votes_count" } } },
+        ]),
+        // This month
+        SeriesStats.aggregate([
+          { $match: { period_type: "monthly", period_key: thisMonthKey } },
+          { $group: { _id: null, totalViews: { $sum: "$views_count" }, totalVotes: { $sum: "$votes_count" }, avgRating: { $avg: "$average_score" } } },
+        ]),
+        // Active series (has views this week)
+        SeriesStats.countDocuments({ period_type: "weekly", period_key: thisWeekKey, views_count: { $gt: 0 } }),
+      ]);
+
+    const today = todayStats[0] || { totalViews: 0, totalVotes: 0 };
+    const yesterday = yesterdayStats[0] || { totalViews: 0, totalVotes: 0 };
+    const thisWeek = thisWeekStats[0] || { totalViews: 0, totalVotes: 0 };
+    const lastWeek = lastWeekStats[0] || { totalViews: 0, totalVotes: 0 };
+    const thisMonth = thisMonthStats[0] || { totalViews: 0, totalVotes: 0, avgRating: 0 };
+
+    // Calculate % change
+    const calcChange = (current, previous) => {
+      if (previous === 0) return current > 0 ? 100 : 0;
+      return Math.round(((current - previous) / previous) * 100);
+    };
+
+    res.json({
+      success: true,
+      data: {
+        views_today: {
+          value: today.totalViews,
+          change: calcChange(today.totalViews, yesterday.totalViews),
+          period: "today",
+        },
+        views_this_week: {
+          value: thisWeek.totalViews,
+          change: calcChange(thisWeek.totalViews, lastWeek.totalViews),
+          period: "weekly",
+        },
+        votes_this_week: {
+          value: thisWeek.totalVotes,
+          change: calcChange(thisWeek.totalVotes, lastWeek.totalVotes),
+          period: "weekly",
+        },
+        active_series: {
+          value: activeSeries,
+          period: "weekly",
+        },
+        views_this_month: thisMonth.totalViews,
+        avg_rating_this_month: Math.round((thisMonth.avgRating || 0) * 10) / 10,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * @swagger
+ * /admin/rankings/list:
+ *   get:
+ *     summary: Lấy danh sách rankings
+ *     tags: [Admin - Rankings]
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: type
+ *         schema:
+ *           type: string
+ *           enum: [views, votes, rating]
+ *         required: true
+ *       - in: query
+ *         name: period
+ *         schema:
+ *           type: string
+ *           enum: [daily, weekly, monthly, all]
+ *         default: weekly
+ *       - in: query
+ *         name: limit
+ *         schema:
+ *           type: integer
+ *           default: 10
+ *       - in: query
+ *         name: search
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Rankings list
+ *       400:
+ *         description: Thiếu type
+ */
+router.get("/rankings/list", async (req, res, next) => {
+  try {
+    const { type = "views", period = "weekly", limit = 10, search } = req.query;
+
+    if (!["views", "votes", "rating"].includes(type)) {
+      return next(new AppError("type phải là: views, votes, hoặc rating", 400));
+    }
+
+    const parsedLimit = Math.min(Math.max(parseInt(limit) || 10, 1), 100);
+
+    if (period === "all") {
+      // All-time from Series
+      const sortFieldMap = { views: "views_count", votes: "total_votes", rating: "average_score" };
+      const sField = sortFieldMap[type];
+
+      let query = { status: "published" };
+      if (search) {
+        query.name = { $regex: search, $options: "i" };
+      }
+
+      const rankings = await Series.find(query)
+        .sort({ [sField]: -1 })
+        .limit(parsedLimit)
+        .select("name cover_image_url genre views_count total_votes average_score status")
+        .lean();
+
+      const rankedData = rankings.map((s, idx) => ({
+        rank: idx + 1,
+        series_id: s._id,
+        name: s.name,
+        cover_image_url: s.cover_image_url,
+        genre: s.genre || [],
+        views_count: s.views_count,
+        views_monthly: null,
+        votes_count: s.total_votes,
+        votes_monthly: null,
+        average_score: s.average_score,
+        status: s.status,
+      }));
+
+      return res.json({ success: true, data: rankedData, meta: { type, period, limit: parsedLimit, total: rankedData.length } });
+    }
+
+    // From SeriesStats
+    const SeriesStats = require("../models/SeriesStats");
+    const periodKey = SeriesStats.getPeriodKey(period);
+    const monthPeriodKey = SeriesStats.getPeriodKey("monthly");
+
+    const sortFieldMap = { views: "views_count", votes: "votes_count", rating: "average_score" };
+    const sField = sortFieldMap[type];
+
+    // Build query
+    let matchQuery = { period_type: period, period_key: periodKey };
+    let seriesQuery = { status: "published" };
+    if (search) {
+      seriesQuery.name = { $regex: search, $options: "i" };
+    }
+
+    // Get weekly/monthly stats
+    const statsQuery = [
+      {
+        $match: {
+          period_type: period === "daily" ? "daily" : period,
+          period_key: periodKey,
+        },
+      },
+      { $sort: { [sField]: -1 } },
+      { $limit: parsedLimit * 2 }, // Get more to filter by search
+    ];
+
+    const stats = await SeriesStats.aggregate(statsQuery);
+
+    // Get series details
+    const seriesIds = stats.map((s) => s.series_id);
+    const seriesMap = await Series.find({ ...seriesQuery, _id: { $in: seriesIds } })
+      .select("name cover_image_url genre status")
+      .lean()
+      .then((arr) => {
+        const map = {};
+        arr.forEach((s) => { map[String(s._id)] = s; });
+        return map;
+      });
+
+    // Get monthly stats for comparison
+    const monthlyStats = await SeriesStats.find({
+      series_id: { $in: seriesIds },
+      period_type: "monthly",
+      period_key: monthPeriodKey,
+    }).lean();
+    const monthlyMap = {};
+    monthlyStats.forEach((s) => { monthlyMap[String(s.series_id)] = s; });
+
+    // Build ranked data
+    let rankedData = stats
+      .map((s, idx) => {
+        const series = seriesMap[String(s.series_id)];
+        if (!series) return null;
+        const monthly = monthlyMap[String(s.series_id)] || {};
+        return {
+          rank: idx + 1,
+          series_id: s.series_id,
+          name: series.name,
+          cover_image_url: series.cover_image_url,
+          genre: series.genre || [],
+          views_count: s.views_count,
+          views_monthly: period !== "monthly" ? (monthly.views_count || 0) : null,
+          votes_count: s.votes_count,
+          votes_monthly: period !== "monthly" ? (monthly.votes_count || 0) : null,
+          average_score: s.average_score,
+          status: series.status,
+        };
+      })
+      .filter(Boolean)
+      .slice(0, parsedLimit);
+
+    // Re-rank after filter
+    rankedData.forEach((item, idx) => { item.rank = idx + 1; });
+
+    res.json({
+      success: true,
+      data: rankedData,
+      meta: {
+        type,
+        period,
+        period_label: period === "daily" ? "today" : period === "weekly" ? "this_week" : period === "monthly" ? "this_month" : "all_time",
+        limit: parsedLimit,
+        total: rankedData.length,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * @swagger
+ * /admin/rankings/series/:id:
+ *   get:
+ *     summary: Chi tiết stats của 1 series (trend + top chapters)
+ *     tags: [Admin - Rankings]
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *     responses:
+ *       200:
+ *         description: Series stats detail
+ *       404:
+ *         description: Series not found
+ */
+router.get("/rankings/series/:id", async (req, res, next) => {
+  try {
+    const SeriesStats = require("../models/SeriesStats");
+    const { id } = req.params;
+
+    // Check series exists
+    const series = await Series.findById(id).select("name cover_image_url").lean();
+    if (!series) {
+      return next(new AppError("Series not found", 404));
+    }
+
+    // Get daily trend (7 days)
+    const now = new Date();
+    const dailyTrends = [];
+    for (let i = 6; i >= 0; i--) {
+      const d = new Date(now);
+      d.setDate(d.getDate() - i);
+      const key = SeriesStats.getPeriodKey("daily", d);
+      const stat = await SeriesStats.findOne({
+        series_id: id,
+        period_type: "daily",
+        period_key: key,
+      }).lean();
+      dailyTrends.push({
+        date: key,
+        views_count: stat ? stat.views_count : 0,
+        votes_count: stat ? stat.votes_count : 0,
+      });
+    }
+
+    // Get weekly trend (4 weeks)
+    const weeklyTrends = [];
+    for (let i = 3; i >= 0; i--) {
+      const d = new Date(now);
+      d.setDate(d.getDate() - i * 7);
+      const key = SeriesStats.getPeriodKey("weekly", d);
+      const stat = await SeriesStats.findOne({
+        series_id: id,
+        period_type: "weekly",
+        period_key: key,
+      }).lean();
+      weeklyTrends.push({
+        week: key,
+        views_count: stat ? stat.views_count : 0,
+        votes_count: stat ? stat.votes_count : 0,
+      });
+    }
+
+    // Get top 3 chapters by views
+    const topChapters = await Chapter.find({ series_id: id, is_published: true })
+      .sort({ views_count: -1 })
+      .limit(3)
+      .select("chapter_number title views_count")
+      .lean();
+
+    // Get series totals
+    const seriesStats = await Series.findById(id)
+      .select("views_count total_votes average_score")
+      .lean();
+
+    res.json({
+      success: true,
+      data: {
+        series: {
+          _id: series._id,
+          name: series.name,
+          cover_image_url: series.cover_image_url,
+          views_count: seriesStats.views_count,
+          total_votes: seriesStats.total_votes,
+          average_score: seriesStats.average_score,
+        },
+        trends: {
+          daily: dailyTrends,
+          weekly: weeklyTrends,
+        },
+        top_chapters: topChapters.map((c) => ({
+          chapter_number: c.chapter_number,
+          title: c.title || `Chapter ${c.chapter_number}`,
+          views_count: c.views_count,
+        })),
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 module.exports = router;
