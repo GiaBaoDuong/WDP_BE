@@ -55,10 +55,14 @@ const buildUserResponse = (user) => ({
  *               phoneNumber: { type: string }
  *               role: { type: string, enum: [Admin, Mangaka, Assistant, Editor, EB, Reader] }
  *     responses:
- *       201: { description: Đăng ký thành công }
- *       400: { description: Thiếu thông tin hoặc role không hợp lệ }
- *       409: { description: Username hoặc email đã tồn tại }
- *       500: { description: Lỗi server }
+ *       201:
+ *         description: Đăng ký thành công
+ *       400:
+ *         description: Thiếu thông tin hoặc role không hợp lệ
+ *       409:
+ *         description: Username hoặc email đã tồn tại
+ *       500:
+ *         description: Lỗi server
  */
 router.post("/register", async (req, res) => {
   try {
@@ -142,10 +146,14 @@ router.post("/register", async (req, res) => {
  *               phoneNumber: { type: string }
  *               role: { type: string, enum: [Admin, Mangaka, Assistant, Editor, EB, Reader] }
  *     responses:
- *       200: { description: OTP đã được gửi đến email }
- *       400: { description: Thiếu thông tin hoặc role không hợp lệ }
- *       409: { description: Username hoặc email đã tồn tại }
- *       500: { description: Lỗi gửi email }
+ *       200:
+ *         description: OTP đã được gửi đến email
+ *       400:
+ *         description: Thiếu thông tin hoặc role không hợp lệ
+ *       409:
+ *         description: Username hoặc email đã tồn tại
+ *       500:
+ *         description: Lỗi gửi email
  */
 router.post("/register/send-otp", async (req, res) => {
   try {
@@ -230,10 +238,14 @@ router.post("/register/send-otp", async (req, res) => {
  *               role: { type: string, enum: [Admin, Mangaka, Assistant, Editor, EB, Reader] }
  *               otp: { type: string, description: 6-digit OTP code sent to email }
  *     responses:
- *       201: { description: Đăng ký thành công }
- *       400: { description: Mã OTP không hợp lệ hoặc đã hết hạn }
- *       409: { description: Username hoặc email đã tồn tại }
- *       500: { description: Lỗi server }
+ *       201:
+ *         description: Đăng ký thành công
+ *       400:
+ *         description: Mã OTP không hợp lệ hoặc đã hết hạn
+ *       409:
+ *         description: Username hoặc email đã tồn tại
+ *       500:
+ *         description: Lỗi server
  */
 router.post("/register/verify-otp", async (req, res) => {
   try {
@@ -299,8 +311,10 @@ router.post("/register/verify-otp", async (req, res) => {
  *               username: { type: string }
  *               password: { type: string }
  *     responses:
- *       200: { description: Đăng nhập thành công, trả về JWT token }
- *       401: { description: Sai username hoặc password }
+ *       200:
+ *         description: Đăng nhập thành công, trả về JWT token
+ *       401:
+ *         description: Sai username hoặc password
  */
 router.post("/login", async (req, res) => {
   try {
@@ -410,9 +424,12 @@ router.get("/me", authMiddleware, async (req, res) => {
  *               email: { type: string }
  *               phoneNumber: { type: string }
  *     responses:
- *       200: { description: Cập nhật thành công }
- *       400: { description: Invalid input }
- *       404: { description: User not found }
+ *       200:
+ *         description: Cập nhật thành công
+ *       400:
+ *         description: Invalid input
+ *       404:
+ *         description: User not found
  */
 router.put("/me", authMiddleware, async (req, res) => {
   try {
