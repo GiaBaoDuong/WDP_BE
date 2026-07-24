@@ -110,6 +110,39 @@ router.get("/dashboard", async (req, res, next) => {
   }
 });
 
+/**
+ * @swagger
+ * /admin/stats/genres:
+ *   get:
+ *     summary: Thống kê số truyện theo thể loại (genre)
+ *     tags: [Admin - Stats]
+ *     security:
+ *       - BearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Danh sách thể loại và số truyện
+ */
+router.get("/stats/genres", async (req, res, next) => {
+  try {
+    const genres = await Series.aggregate([
+      { $match: { genre: { $exists: true, $ne: [] } } },
+      { $unwind: "$genre" },
+      { $group: { _id: "$genre", count: { $sum: 1 } } },
+      { $sort: { count: -1 } },
+    ]);
+
+    const formatted = genres.map((g) => ({
+      _id: g._id,
+      name: g._id,
+      count: g.count,
+    }));
+
+    res.json({ success: true, data: formatted });
+  } catch (error) {
+    next(error);
+  }
+});
+
 
 // ════════════════════════════════════════════════════════════════════════════
 // 2. MANGA (SERIES) — CRUD
