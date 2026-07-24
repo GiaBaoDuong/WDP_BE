@@ -15,6 +15,7 @@ const TEReview = require("../models/TEReview");
 const EBEvaluation = require("../models/EBEvaluation");
 const Cooperation = require("../models/Cooperation");
 const CooperationRequest = require("../models/CooperationRequest");
+const Comment = require("../models/Comment");
 const upload = require("../middleware/upload");
 
 router.use(authMiddleware);
@@ -1939,6 +1940,135 @@ router.get("/rankings/series/:id", async (req, res, next) => {
           views_count: c.views_count,
         })),
       },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * @swagger
+ * /admin/manga/{id}/comments:
+ *   get:
+ *     summary: Lấy danh sách bình luận của series (admin)
+ *     tags: [Admin - Comments]
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Series ID
+ *       - in: query
+ *         name: page
+ *         schema:
+ *           type: integer
+ *           default: 1
+ *       - in: query
+ *         name: limit
+ *         schema:
+ *           type: integer
+ *           default: 20
+ *     responses:
+ *       200:
+ *         description: Danh sách bình luận
+ *       404:
+ *         description: Series không tìm thấy
+ */
+router.get("/manga/:id/comments", async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const { page = 1, limit = 20 } = req.query;
+    const pageNum = Math.max(1, parseInt(page));
+    const limitNum = Math.min(100, Math.max(1, parseInt(limit)));
+
+    const series = await Series.findById(id).select("_id").lean();
+    if (!series) {
+      return next(new AppError("Series not found", 404));
+    }
+
+    const [comments, total] = await Promise.all([
+      Comment.find({ series_id: id, parent_id: null })
+        .populate("reader_id", "username full_name avatar_url")
+        .sort({ created_at: -1 })
+        .skip((pageNum - 1) * limitNum)
+        .limit(limitNum)
+        .lean(),
+      Comment.countDocuments({ series_id: id, parent_id: null }),
+    ]);
+
+    const commentIds = comments.map((c) => c._id);
+    const replyCounts = await Comment.aggregate([
+      { $match: { parent_id: { $in: commentIds } } },
+      { $group: { _id: "$parent_id", count: { $sum: 1 } } },
+    ]);
+    const replyCountMap = new Map(replyCounts.map((r) => [String(r._id), r.count]));
+
+    const enrichedComments = comments.map((c) => ({
+      id: c._id,
+      user: {
+        name: c.reader_id?.full_name || c.reader_id?.username || "Unknown",
+        avatar_url: c.reader_id?.avatar_url || null,
+      },
+      content: c.content,
+      createdAt: c.created_at,
+      reply_count: replyCountMap.get(String(c._id)) || 0,
+    }));
+
+    return res.json({
+      success: true,
+      data: enrichedComments,
+      pagination: {
+        total,
+        page: pageNum,
+        limit: limitNum,
+        total_pages: Math.ceil(total / limitNum),
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * @swagger
+ * /admin/comments/{id}:
+ *   delete:
+ *     summary: Xoá bình luận (admin)
+ *     tags: [Admin - Comments]
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Comment ID
+ *     responses:
+ *       200:
+ *         description: Xoá thành công
+ *       404:
+ *         description: Không tìm thấy bình luận
+ */
+router.delete("/comments/:id", async (req, res, next) => {
+  try {
+    const { id } = req.params;
+
+    const comment = await Comment.findById(id);
+    if (!comment) {
+      return next(new AppError("Comment not found", 404));
+    }
+
+    await Comment.deleteMany({
+      $or: [{ _id: id }, { parent_id: id }],
+    });
+
+    return res.json({
+      success: true,
+      message: "Comment deleted successfully",
     });
   } catch (error) {
     next(error);

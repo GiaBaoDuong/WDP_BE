@@ -695,7 +695,9 @@ router.post("/chapters/:id/view", authMiddleware, requireReader, async (req, res
       return next(new AppError("Chapter not found or not published", 404));
     }
 
-    // Cập nhật SeriesStats (fire-and-forget)
+    // Tăng cả Series.views_count (tổng all-time) + SeriesStats (daily/weekly/monthly)
+    await Series.findByIdAndUpdate(chapter.series_id, { $inc: { views_count: 1 } });
+
     const { updateSeriesStats } = require("../helpers/updateSeriesStats");
     updateSeriesStats(chapter.series_id.toString(), "view");
 
