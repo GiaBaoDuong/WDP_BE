@@ -70,6 +70,7 @@ const seriesSchema = new mongoose.Schema(
       enum: ["upcoming", "ongoing", "hiatus", "completed", "dropped", null],
       default: null,
     },
+    deleted_at: { type: Date, default: null },
   },
   { timestamps: true }
 );
@@ -78,6 +79,7 @@ seriesSchema.index({ author_id: 1, status: 1 });
 seriesSchema.index({ is_public: 1, status: 1 });
 seriesSchema.index({ average_score: -1 });
 seriesSchema.index({ is_public: 1, status: 1, last_chapter_published_at: -1 });
+seriesSchema.index({ deleted_at: 1 });
 
 const Series = mongoose.model("Series", seriesSchema);
 module.exports = Series;

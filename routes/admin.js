@@ -56,10 +56,13 @@ router.get("/dashboard", async (req, res, next) => {
 
     const [totalUsers, totalSeries, totalChapters, totalViewsAgg, topManga] = await Promise.all([
       User.countDocuments(),
-      Series.countDocuments(),
+      Series.countDocuments({ deleted_at: null }),
       Chapter.countDocuments(),
-      Series.aggregate([{ $group: { _id: null, total: { $sum: "$views_count" } } }]),
-      Series.find()
+      Series.aggregate([
+        { $match: { deleted_at: null } },
+        { $group: { _id: null, total: { $sum: "$views_count" } } },
+      ]),
+      Series.find({ deleted_at: null })
         .sort({ views_count: -1 })
         .limit(5)
         .select("name cover_image_url views_count total_votes")
@@ -125,7 +128,7 @@ router.get("/dashboard", async (req, res, next) => {
 router.get("/stats/genres", async (req, res, next) => {
   try {
     const genres = await Series.aggregate([
-      { $match: { genre: { $exists: true, $ne: [] } } },
+      { $match: { deleted_at: null, genre: { $exists: true, $ne: [] } } },
       { $unwind: "$genre" },
       { $group: { _id: "$genre", count: { $sum: 1 } } },
       { $sort: { count: -1 } },
@@ -222,13 +225,14 @@ router.get("/stats/genres", async (req, res, next) => {
  */
 router.get("/manga", async (req, res, next) => {
   try {
-    const { q, status, category, age_rating, tag, page = 1, limit = 20 } = req.query;
+    const { q, status, category, age_rating, tag, page = 1, limit = 20, include_deleted } = req.query;
     const filter = {};
     if (q) filter.name = { $regex: q, $options: "i" };
     if (status) filter.status = status;
     if (category) filter.category = category;
     if (age_rating) filter.age_rating = age_rating;
     if (tag) filter.tags = tag;
+    if (include_deleted !== "true") filter.deleted_at = null;
 
     const skip = (parseInt(page) - 1) * parseInt(limit);
     const [data, total] = await Promise.all([
@@ -288,7 +292,7 @@ router.get("/manga", async (req, res, next) => {
  */
 router.get("/manga/:id", async (req, res, next) => {
   try {
-    const series = await Series.findById(req.params.id)
+    const series = await Series.findOne({ _id: req.params.id, deleted_at: null })
       .populate("author_id", "username full_name phoneNumber")
       .lean();
 
@@ -450,7 +454,7 @@ router.post("/manga", async (req, res, next) => {
  */
 router.put("/manga/:id", async (req, res, next) => {
   try {
-    const series = await Series.findById(req.params.id);
+    const series = await Series.findOne({ _id: req.params.id, deleted_at: null });
     if (!series) return next(new AppError("Manga not found", 404));
 
     const { title, author, description, thumbnail, category, tags, age_rating, status } = req.body;
@@ -529,19 +533,17 @@ router.delete("/manga/:id", async (req, res, next) => {
       );
     }
 
-    const chapters = await Chapter.find({ series_id: series._id }).select("_id");
-    const chapterIds = chapters.map((c) => c._id);
+    if (series.deleted_at) {
+      return next(new AppError("Manga already deleted", 410));
+    }
 
-    await Page.deleteMany({ chapter_id: { $in: chapterIds } });
-    await Task.deleteMany({ chapter_id: { $in: chapterIds } });
-    await Chapter.deleteMany({ series_id: series._id });
-    await Vote.deleteMany({ series_id: series._id });
-    await Series.findByIdAndDelete(series._id);
+    series.deleted_at = new Date();
+    await series.save();
 
     res.json({
       success: true,
-      message: "Manga and its chapters deleted",
-      data: { id: series._id, title: series.name },
+      message: "Manga hidden successfully (soft delete)",
+      data: { id: series._id, title: series.name, deleted_at: series.deleted_at },
     });
   } catch (error) {
     next(error);
@@ -1243,10 +1245,11 @@ router.delete("/users-legacy/:id", async (req, res, next) => {
  */
 router.get("/series", async (req, res, next) => {
   try {
-    const { page = 1, limit = 20, status, search } = req.query;
+    const { page = 1, limit = 20, status, search, include_deleted } = req.query;
     const filter = {};
     if (status) filter.status = status;
     if (search) filter.name = { $regex: search, $options: "i" };
+    if (include_deleted !== "true") filter.deleted_at = null;
     const skip = (parseInt(page) - 1) * parseInt(limit);
     const [series, total] = await Promise.all([
       Series.find(filter).populate("author_id", "username full_name phoneNumber role").sort({ createdAt: -1 }).skip(skip).limit(parseInt(limit)),
@@ -1287,12 +1290,18 @@ router.delete("/series/:id", async (req, res, next) => {
       );
     }
 
-    const chapterIds = (await Chapter.find({ series_id: series._id }).select("_id")).map((c) => c._id);
-    await Page.deleteMany({ chapter_id: { $in: chapterIds } });
-    await Task.deleteMany({ chapter_id: { $in: chapterIds } });
-    await Chapter.deleteMany({ series_id: series._id });
-    await Series.findByIdAndDelete(series._id);
-    res.json({ success: true, message: "Series and all its chapters deleted", data: { id: series._id, title: series.name } });
+    if (series.deleted_at) {
+      return next(new AppError("Series already deleted", 410));
+    }
+
+    series.deleted_at = new Date();
+    await series.save();
+
+    res.json({
+      success: true,
+      message: "Series hidden successfully (soft delete)",
+      data: { id: series._id, title: series.name, deleted_at: series.deleted_at },
+    });
   } catch (error) {
     next(error);
   }
@@ -1350,7 +1359,7 @@ router.patch("/manga/series/:id/status", async (req, res, next) => {
     if (!validStatuses.includes(status)) {
       return next(new AppError(`Status must be one of: ${validStatuses.join(", ")}`, 400));
     }
-    const series = await Series.findById(req.params.id);
+    const series = await Series.findOne({ _id: req.params.id, deleted_at: null });
     if (!series) return next(new AppError("Series not found", 404));
     const oldStatus = series.status;
     series.status = status;
@@ -1753,7 +1762,7 @@ router.get("/rankings/list", async (req, res, next) => {
       const sortFieldMap = { views: "views_count", votes: "total_votes", rating: "average_score" };
       const sField = sortFieldMap[type];
 
-      let query = { status: "published" };
+      let query = { status: "published", deleted_at: null };
       if (search) {
         query.name = { $regex: search, $options: "i" };
       }
@@ -1800,7 +1809,7 @@ router.get("/rankings/list", async (req, res, next) => {
     const sortFieldMap = { views: "views_count", votes: "votes_count", rating: "average_score" };
     const sField = sortFieldMap[type];
 
-    let seriesQuery = { status: "published" };
+    let seriesQuery = { status: "published", deleted_at: null };
     if (search) {
       seriesQuery.name = { $regex: search, $options: "i" };
     }
@@ -1919,7 +1928,7 @@ router.get("/rankings/series/:id", async (req, res, next) => {
     const { id } = req.params;
 
     // Check series exists
-    const series = await Series.findById(id).select("name cover_image_url").lean();
+    const series = await Series.findOne({ _id: id, deleted_at: null }).select("name cover_image_url").lean();
     if (!series) {
       return next(new AppError("Series not found", 404));
     }
@@ -1969,7 +1978,7 @@ router.get("/rankings/series/:id", async (req, res, next) => {
       .lean();
 
     // Get series totals
-    const seriesStats = await Series.findById(id)
+    const seriesStats = await Series.findOne({ _id: id, deleted_at: null })
       .select("views_count total_votes average_score")
       .lean();
 
@@ -2038,7 +2047,7 @@ router.get("/manga/:id/comments", async (req, res, next) => {
     const pageNum = Math.max(1, parseInt(page));
     const limitNum = Math.min(100, Math.max(1, parseInt(limit)));
 
-    const series = await Series.findById(id).select("_id").lean();
+    const series = await Series.findOne({ _id: id, deleted_at: null }).select("_id").lean();
     if (!series) {
       return next(new AppError("Series not found", 404));
     }
