@@ -300,6 +300,14 @@ router.get("/series/:id", authMiddleware, requireReader, async (req, res, next) 
  *   get:
  *     tags: [Readers]
  *     summary: Get published chapters for a series
+ *     description: |
+ *       Trả về danh sách chapter đã publish cho FE list. Mỗi item CHỈ chứa các field
+ *       cần thiết cho UI danh sách (không kéo pages, tasks, revision_annotations)
+ *       — tối ưu cho FE render list 50–100 chapter không sập app mobile.
+ *
+ *       Field `cover_image_url` của chapter được map trực tiếp vào response
+ *       (trước đây FE phải gọi `GET /chapters/:id` cho từng chapter → N+1 query).
+ *       Nếu chapter chưa set cover riêng → trả về "" (FE tự fallback cover series).
  *     security:
  *       - BearerAuth: []
  *     parameters:
@@ -322,9 +330,23 @@ router.get("/series/:id", authMiddleware, requireReader, async (req, res, next) 
  *                 data:
  *                   type: array
  *                   items:
- *                     $ref: '#/components/schemas/Chapter'
- *                 seriesName:
- *                   type: string
+ *                     type: object
+ *                     properties:
+ *                       _id: { type: string }
+ *                       chapter_number: { type: integer }
+ *                       title: { type: string }
+ *                       cover_image_url:
+ *                         type: string
+ *                         description: |
+ *                           URL ảnh bìa chapter (Mangaka set qua PATCH /chapters/:id/cover).
+ *                           Trả về "" nếu chapter chưa có cover → FE tự fallback sang
+ *                           cover series hoặc page đầu.
+ *                       published_at: { type: string, format: date-time, nullable: true }
+ *                       views_count: { type: integer }
+ *                       submitted_by:
+ *                         type: object
+ *                         description: Populated User (username, full_name, phoneNumber)
+ *                 seriesName: { type: string }
  *       404:
  *         description: Series not found
  */
@@ -353,6 +375,7 @@ router.get("/series/:id/chapters", authMiddleware, requireReader, async (req, re
         _id: c._id,
         chapter_number: c.chapter_number,
         title: c.title,
+        cover_image_url: c.cover_image_url || "",
         published_at: c.published_at,
         views_count: c.views_count || 0,
         submitted_by: c.submitted_by,

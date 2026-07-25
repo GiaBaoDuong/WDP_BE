@@ -83,6 +83,8 @@ const options = {
             revision_source: { type: "string", enum: ["TE", "EB", "Mangaka", ""] },
             is_published: { type: "boolean" },
             published_at: { type: "string", format: "date-time", nullable: true },
+            views_count: { type: "integer" },
+            cover_image_url: { type: "string" },
             createdAt: { type: "string", format: "date-time" },
             updatedAt: { type: "string", format: "date-time" },
           },
