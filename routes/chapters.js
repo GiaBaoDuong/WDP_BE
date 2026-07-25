@@ -11,7 +11,7 @@ const PageLayer = require("../models/PageLayer");
 const Series = require("../models/Series");
 const { uploadLayer, cloudinary } = require("../middleware/uploadCloudinary");
 const { uploadChapterPage } = require("../middleware/uploadChapterPage");
-const { uploadToCloudinary: uploadSingleToCloudinary } = require("../middleware/uploadCoverCloudinary");
+const { uploadToCloudinary: uploadSingleToCloudinary, uploadCover } = require("../middleware/uploadCoverCloudinary");
 const Task = require("../models/Task");
 const User = require("../models/User");
 const Cooperation = require("../models/Cooperation");
@@ -688,6 +688,103 @@ router.patch("/:id", authMiddleware, requireMangaka, async (req, res, next) => {
     next(error);
   }
 });
+
+// ─── PATCH /chapters/:id/cover ──────────────────────────────────────────────
+// Mangaka cập nhật ảnh bìa cho chapter (upload lên Cloudinary).
+// Body: multipart/form-data với field "cover" (image).
+// Gửi body rỗng sẽ xóa ảnh bìa đã set trước đó.
+/**
+ * @swagger
+ * /chapters/{id}/cover:
+ *   patch:
+ *     summary: Cập nhật / xóa ảnh bìa của chapter
+ *     description: >
+ *       Mangaka sở hữu chapter upload ảnh bìa (field "cover") lên Cloudinary và
+ *       lưu URL vào Chapter.cover_image_url. Nếu gửi multipart không kèm file
+ *       và không kèm remove=true thì trả về 400. Gửi remove=true (JSON hoặc
+ *       form field) để xóa ảnh bìa đã set trước đó (fallback về ảnh trang đầu
+ *       hoặc ảnh bìa series).
+ *     tags: [Chapters]
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: Chapter ID
+ *     requestBody:
+ *       required: false
+ *       content:
+ *         multipart/form-data:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               cover:
+ *                 type: string
+ *                 format: binary
+ *                 description: File ảnh bìa (jpeg, jpg, png, webp, ≤ 10MB)
+ *               remove:
+ *                 type: boolean
+ *                 description: Đặt true để xóa ảnh bìa đã lưu
+ *     responses:
+ *       200:
+ *         description: Cập nhật ảnh bìa thành công
+ *       400:
+ *         description: Thiếu file cover hoặc chapter đã published
+ *       404:
+ *         description: Chapter not found hoặc unauthorized
+ */
+router.patch(
+  "/:id/cover",
+  authMiddleware,
+  requireMangaka,
+  uploadCover.single("cover"),
+  async (req, res, next) => {
+    try {
+      const chapter = await Chapter.findOne({
+        _id: req.params.id,
+        submitted_by: req.user.nameid,
+      });
+      if (!chapter) return next(new AppError("Chapter not found or unauthorized", 404));
+
+      if (chapter.status === "published") {
+        return next(new AppError("Cannot edit published chapter", 400));
+      }
+
+      const wantsRemove =
+        req.body?.remove === true ||
+        req.body?.remove === "true" ||
+        req.body?.remove === "1";
+
+      if (!req.file && !wantsRemove) {
+        return next(
+          new AppError("Vui lòng gửi file 'cover' hoặc đặt remove=true để xóa ảnh bìa", 400)
+        );
+      }
+
+      if (wantsRemove) {
+        chapter.cover_image_url = "";
+      } else {
+        const folder = `wdp/chapters/covers/${chapter._id}`;
+        const result = await uploadSingleToCloudinary(req.file, folder, "chapter-cover");
+        chapter.cover_image_url = result.secure_url;
+      }
+
+      await chapter.save();
+      return res.status(200).json({
+        success: true,
+        data: {
+          _id: chapter._id,
+          cover_image_url: chapter.cover_image_url,
+        },
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
 
 // ─── POST /chapters/:id/submit-revision ─────────────────────────────────────
 // Mangaka gửi lại chapter cho Assistant sau khi yêu cầu sửa (round 2+)
@@ -1713,7 +1810,8 @@ router.get("/my-assignments", authMiddleware, requireAssistant, async (req, res,
     const enriched = chapters.map((c) => {
       const cid = c._id.toString();
       const firstPageUrl = firstPageMap[cid];
-      const cover_url = firstPageUrl || c.series_id?.cover_image_url || null;
+      const cover_url =
+        c.cover_image_url || firstPageUrl || c.series_id?.cover_image_url || null;
       const noteIds = noteIdsByChapter[cid] || [];
       const populatedNotes = noteIds.map((nid) => notesMap[nid.toString()]).filter(Boolean);
 
