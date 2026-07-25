@@ -2209,7 +2209,14 @@ router.get("/chapter/:chapterId/annotations", authMiddleware, requireTE, async (
  *       400:
  *         description: action không hợp lệ
  *       403:
- *         description: Không có quyền
+ *         description: Không có quyền (chapter đã được gán cho TE khác)
+ *       404:
+ *         description: Chapter not found
+ *
+ *     Auto-claim:
+ *       Nếu chapter chưa được gán TE (te_id = null), TE hiện tại sẽ tự động được gán
+ *       khi gọi endpoint này — giống pattern POST /series-review/:seriesId/review-chapter.
+ *       Audit trail: TEReview sẽ được tạo mới với reviewed_by = current TE nếu chưa tồn tại.
  */
 router.post("/chapter/:chapterId/te-action", authMiddleware, requireTE, async (req, res, next) => {
   try {
@@ -2223,8 +2230,18 @@ router.post("/chapter/:chapterId/te-action", authMiddleware, requireTE, async (r
     const chapter = await Chapter.findById(chapterId);
     if (!chapter) return next(new AppError("Chapter not found", 404));
 
-    if (!chapter.te_id || String(chapter.te_id) !== String(req.user.nameid)) {
-      return next(new AppError("Bạn không được gán cho chapter này", 403));
+    // Ownership check + auto-claim giống pattern POST /series-review/:seriesId/review-chapter.
+    // Trước đây: chỉ check ownership → reject 403 nếu chưa được gán.
+    // → Gây bug: chapter `pending_EB` mà `te_id` null (vd: chapter sau EB confirm,
+    //   chưa qua auto-claim nào) sẽ không TE nào approve được.
+    // Fix: auto-claim TE hiện tại làm chủ chapter; nếu đã được gán → chỉ TE đó mới review.
+    // te_id + te_assigned_at sẽ được persist trong chapter.save() ở các nhánh approve/reject.
+    if (chapter.te_id && String(chapter.te_id) !== String(req.user.nameid)) {
+      return next(new AppError("Chapter này đã được gán cho TE khác", 403));
+    }
+    if (!chapter.te_id) {
+      chapter.te_id = req.user.nameid;
+      chapter.te_assigned_at = new Date();
     }
 
     if (action === "approve") {
@@ -2245,6 +2262,14 @@ router.post("/chapter/:chapterId/te-action", authMiddleware, requireTE, async (r
         if (review) {
           review.decision = TE_DECISION.APPROVED;
           await review.save();
+        } else {
+          // Audit trail: chưa có TEReview → tạo mới với reviewed_by = current TE
+          // (case auto-claim khi chapter pending_EB + te_id null).
+          await TEReview.create({
+            chapter_id: chapterId,
+            reviewed_by: req.user.nameid,
+            decision: TE_DECISION.APPROVED,
+          });
         }
 
         return res.status(200).json({
@@ -2270,6 +2295,12 @@ router.post("/chapter/:chapterId/te-action", authMiddleware, requireTE, async (r
         if (review) {
           review.decision = TE_DECISION.APPROVED;
           await review.save();
+        } else {
+          await TEReview.create({
+            chapter_id: chapterId,
+            reviewed_by: req.user.nameid,
+            decision: TE_DECISION.APPROVED,
+          });
         }
 
         const ebUsers = await require("../models/User").find({ role: ROLES.EB }).lean();
@@ -2312,6 +2343,13 @@ router.post("/chapter/:chapterId/te-action", authMiddleware, requireTE, async (r
         review.decision = TE_DECISION.REVISION;
         review.revision_feedback = Array.isArray(notes) ? notes.join("\n") : (notes || "");
         await review.save();
+      } else {
+        await TEReview.create({
+          chapter_id: chapterId,
+          reviewed_by: req.user.nameid,
+          decision: TE_DECISION.REVISION,
+          revision_feedback: Array.isArray(notes) ? notes.join("\n") : (notes || ""),
+        });
       }
 
       await notifyChapterTERevision(Notification, chapter.submitted_by, chapter, chapter.revision_notes);
