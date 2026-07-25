@@ -882,7 +882,12 @@ router.patch(
  *                     notes_deleted: { type: integer }
  *                     layers_deleted: { type: integer }
  *       400:
- *         description: Chỉ xóa được chapter ở trạng thái draft
+ *         description: >
+ *           Chỉ xóa được chapter ở trạng thái "draft" hoặc "pending_assistant"
+ *           VÀ chapter chưa có page nào.
+ *           Ví dụ message: "Chỉ xóa được chapter ở trạng thái draft hoặc pending_assistant
+ *           (hiện tại: \"submitted_by_assistant\")"
+ *           hoặc: "Chỉ xóa được chapter chưa có page nào (hiện tại: 3 page(s))".
  *       403:
  *         description: Không có quyền xóa chapter này
  *       404:
@@ -906,10 +911,23 @@ router.delete("/:id", authMiddleware, requireMangaka, async (req, res, next) => 
     });
     if (!chapter) return next(new AppError("Chapter not found or unauthorized", 404));
 
-    if (chapter.status !== "draft") {
+    const DELETABLE_STATUSES = ["draft", "pending_assistant"];
+    if (!DELETABLE_STATUSES.includes(chapter.status)) {
       return next(
         new AppError(
-          `Chỉ xóa được chapter ở trạng thái draft (hiện tại: "${chapter.status}")`,
+          `Chỉ xóa được chapter ở trạng thái draft hoặc pending_assistant (hiện tại: "${chapter.status}")`,
+          400
+        )
+      );
+    }
+
+    // Chapter đã có page (kể cả khi status còn draft/pending_assistant) → KHÔNG cho xóa
+    // để tránh mất task / note / layer đã tạo. Cascade bên dưới vẫn chạy đầy đủ.
+    const pageCount = await Page.countDocuments({ chapter_id: chapter._id });
+    if (pageCount > 0) {
+      return next(
+        new AppError(
+          `Chỉ xóa được chapter chưa có page nào (hiện tại: ${pageCount} page(s))`,
           400
         )
       );
