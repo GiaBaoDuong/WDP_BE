@@ -519,6 +519,16 @@ router.delete("/manga/:id", async (req, res, next) => {
     const series = await Series.findById(req.params.id);
     if (!series) return next(new AppError("Manga not found", 404));
 
+    const allowedStatuses = ["draft", "rejected", "cancelled"];
+    if (!allowedStatuses.includes(series.status)) {
+      return next(
+        new AppError(
+          `Không thể xoá truyện đang ở trạng thái "${series.status}". Chỉ cho phép xoá: draft, rejected, cancelled.`,
+          403
+        )
+      );
+    }
+
     const chapters = await Chapter.find({ series_id: series._id }).select("_id");
     const chapterIds = chapters.map((c) => c._id);
 
@@ -1266,6 +1276,17 @@ router.delete("/series/:id", async (req, res, next) => {
   try {
     const series = await Series.findById(req.params.id);
     if (!series) return next(new AppError("Series not found", 404));
+
+    const allowedStatuses = ["draft", "rejected", "cancelled"];
+    if (!allowedStatuses.includes(series.status)) {
+      return next(
+        new AppError(
+          `Không thể xoá truyện đang ở trạng thái "${series.status}". Chỉ cho phép xoá: draft, rejected, cancelled.`,
+          403
+        )
+      );
+    }
+
     const chapterIds = (await Chapter.find({ series_id: series._id }).select("_id")).map((c) => c._id);
     await Page.deleteMany({ chapter_id: { $in: chapterIds } });
     await Task.deleteMany({ chapter_id: { $in: chapterIds } });
