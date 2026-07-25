@@ -2157,7 +2157,26 @@ router.get("/chapter/:chapterId/annotations", authMiddleware, requireTE, async (
  * @swagger
  * /te-reviews/chapter/{chapterId}/te-action:
  *   post:
- *     summary: TE thực hiện hành động với chapter (approve = gửi EB, reject = yêu cầu Mangaka sửa)
+ *     summary: TE thực hiện hành động với chapter (chỉ approve/reject — KHÔNG publish)
+ *     description: |
+ *       API này CHỈ approve hoặc reject chapter. KHÔNG tự động publish.
+ *       TE phải gọi thêm endpoint `POST /te-reviews/chapter/:chapterId/publish`
+ *       sau khi approve để publish chapter (chỉ áp dụng khi series đã EB-approved).
+ *
+ *       **Flow 2 bước cho series đã EB-approved (flow 2):**
+ *       1. TE gọi `te-action` với `action = "approve"` → chapter → `approved_by_EB`,
+ *          `TEReview.decision = "approved"`. TE **CHƯA publish** lúc này.
+ *       2. TE gọi `POST /te-reviews/chapter/:chapterId/publish` → chapter → `published`,
+ *          `TEReview.decision = "approved_publish"`, notify Mangaka + followers.
+ *
+ *       **Flow 1 (series chưa EB-approved):**
+ *       - TE approve → chapter → `pending_EB` (chờ EB duyệt Series).
+ *       - Sau khi EB duyệt Series → chapter → `approved_by_EB`,
+ *         TE dùng endpoint `publish` ở bước 2 để publish.
+ *
+ *       **Action reject:**
+ *       - Chapter → `TE_revision`, lưu revision_notes + annotations
+ *       - Notify Mangaka
  *     tags: [TEReviews]
  *     security:
  *       - BearerAuth: []
@@ -2178,7 +2197,7 @@ router.get("/chapter/:chapterId/annotations", authMiddleware, requireTE, async (
  *               action:
  *                 type: string
  *                 enum: [approve, reject]
- *                 description: "approve = gửi EB duyệt, reject = yêu cầu Mangaka sửa"
+ *                 description: "approve = chuyển sang approved_by_EB (KHÔNG publish), reject = yêu cầu Mangaka sửa"
  *               notes:
  *                 type: array
  *                 items:
@@ -2186,7 +2205,7 @@ router.get("/chapter/:chapterId/annotations", authMiddleware, requireTE, async (
  *                 description: Ghi chú revision (khi action = reject)
  *     responses:
  *       200:
- *         description: Hành động thực hiện thành công
+ *         description: Hành động thực hiện thành công (chapter ở trạng thái approved_by_EB / pending_EB / TE_revision)
  *       400:
  *         description: action không hợp lệ
  *       403:
@@ -2214,39 +2233,30 @@ router.post("/chapter/:chapterId/te-action", authMiddleware, requireTE, async (r
       const seriesApproved = series && [SERIES_STATUS.APPROVED_BY_EB, SERIES_STATUS.APPROVED, SERIES_STATUS.PUBLISHED].includes(series.status);
 
       if (seriesApproved) {
-        // Series đã được EB duyệt → TE duyệt xong → Publish trực tiếp
-        chapter.status = CHAPTER_STATUS.PUBLISHED;
-        chapter.is_published = true;
-        chapter.published_at = new Date();
+        // Series đã EB-approved → TE approve xong → chapter → approved_by_EB (CHƯA publish).
+        // TE phải gọi endpoint publish riêng để publish chapter.
+        chapter.status = CHAPTER_STATUS.APPROVED_BY_EB;
         chapter.revision_notes = "";
         chapter.revision_annotations = [];
         chapter.revision_source = "";
         await chapter.save();
 
-        await Series.findByIdAndUpdate(chapter.series_id, {
-          $set: { last_chapter_published_at: chapter.published_at },
-        });
-
         const review = await TEReview.findOne({ chapter_id: chapterId });
         if (review) {
-          review.decision = TE_DECISION.APPROVED_PUBLISH;
+          review.decision = TE_DECISION.APPROVED;
           await review.save();
         }
 
-        await notifyChapterTEPublished(
-          Notification,
-          chapter.submitted_by,
-          chapter,
-          series.name
-        );
-
-        // Hook notify cho reader đã subscribe (Risk C: service tự load lại series nếu thiếu field)
-        await notifyFollowersNewChapter(Notification, chapter, series);
-
         return res.status(200).json({
           success: true,
-          message: "Chapter đã được publish.",
-          data: chapter,
+          message: "Chapter đã được TE approve. Dùng endpoint publish để xuất bản.",
+          data: {
+            chapter,
+            next_step: {
+              action: "publish",
+              endpoint: `POST /te-reviews/chapter/${chapterId}/publish`,
+            },
+          },
         });
       } else {
         // Series chưa approved → gửi EB duyệt (chờ EB approve Series)
@@ -2323,24 +2333,29 @@ router.post("/chapter/:chapterId/te-action", authMiddleware, requireTE, async (r
  * /te-reviews/chapter/{chapterId}/publish:
  *   post:
  *     tags: [TEReviews]
- *     summary: TE publish chapter (chapter đã được EB duyệt)
+ *     summary: TE publish chapter (sau khi đã approve qua te-action)
  *     description: |
- *       TE publish chapter sau khi đã review sửa xong.
+ *       TE publish chapter sau khi đã approve qua endpoint `te-action`
+ *       (hoặc qua `series-review/:seriesId/review-chapter`).
+ *
+ *       **Luồng bắt buộc (flow 2 bước)**:
+ *       1. TE approve chapter trước → chapter → `approved_by_EB`
+ *          (gọi `POST /te-reviews/chapter/:chapterId/te-action` với `action = "approve"`
+ *          HOẶC `POST /te-reviews/series-review/:seriesId/review-chapter` với `action = "approve"`).
+ *       2. TE publish chapter qua endpoint NÀY → chapter → `published`.
  *
  *       **Điều kiện**:
- *       - Chapter.status = "approved_by_EB"
+ *       - Chapter.status = `approved_by_EB`
  *       - Series.status ∈ ["approved_by_EB", "approved", "published"]
+ *       - Chapter.te_id = current TE (chỉ TE đã approve mới được publish)
  *
  *       **Hành động**:
- *       - Chapter → "published", is_published = true, published_at = now
- *       - TEReview.decision = "approved_publish"
- *       - Nếu Series đang ở "approved_by_EB" → set Series = "published"
- *       - Notification cho Mangaka
- *
- *       **Lưu ý flow 2 giai đoạn**:
- *       - Giai đoạn 1 (Series chưa EB-approved): TE approve → chapter → "pending_EB", không publish.
- *       - Giai đoạn 2 (Series đã EB-approved): chapter sau khi EB confirm → "approved_by_EB",
- *         TE publish thủ công qua endpoint này.
+ *       - Chapter → `published`, is_published = true, published_at = now
+ *       - Snapshot `final_image_url` cho tất cả Pages (ưu tiên `result_image_url`, fallback `original_image_url`)
+ *       - TEReview.decision = `approved_publish`
+ *       - Nếu Series đang ở `approved_by_EB` → set Series = `published`
+ *       - Cập nhật `Series.last_chapter_published_at`
+ *       - Notification cho Mangaka + followers (nếu có)
  *     security:
  *       - BearerAuth: []
  *     parameters:
@@ -2363,6 +2378,8 @@ router.post("/chapter/:chapterId/te-action", authMiddleware, requireTE, async (r
  *                   $ref: '#/components/schemas/Chapter'
  *       400:
  *         description: Chapter chưa approved_by_EB hoặc Series chưa được EB duyệt
+ *       403:
+ *         description: TE không được gán chapter này (chỉ TE đã approve mới được publish)
  *       404:
  *         description: Chapter not found
  */
@@ -2372,6 +2389,12 @@ router.post("/chapter/:chapterId/publish", authMiddleware, requireTE, async (req
 
     const chapter = await Chapter.findById(chapterId);
     if (!chapter) return next(new AppError("Chapter not found", 404));
+
+    // Ownership check: chỉ TE đã được gán chapter mới được publish.
+    // Đảm bảo flow 2 bước: TE phải approve qua te-action trước rồi mới publish.
+    if (!chapter.te_id || String(chapter.te_id) !== String(req.user.nameid)) {
+      return next(new AppError("Bạn không được gán cho chapter này. Hãy approve chapter qua te-action trước.", 403));
+    }
 
     // Chỉ cho phép publish chapter ở trạng thái approved_by_EB
     if (chapter.status !== CHAPTER_STATUS.APPROVED_BY_EB) {
