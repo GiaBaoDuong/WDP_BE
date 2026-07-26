@@ -2387,17 +2387,20 @@ router.post("/chapter/:chapterId/te-action", authMiddleware, requireTE, async (r
  *         - BẮT BUỘC truyền `scheduled_publish_at` trong body.
  *         - Phải ≥ Series.scheduled_publish_at. Nếu nhỏ hơn → 400.
  *         - Chapter → status giữ `approved_by_EB`, `is_scheduled = true`, `scheduled_publish_at` = ngày TE chọn.
- *         - Job `scheduledPublish` sẽ publish khi tới hạn, **NHƯNG chỉ khi**:
- *           - Có >= 2 chapter đã TE-approve và chưa publish (buffer), HOẶC
- *           - Series đã `publication_status = "completed"` và chapter này là chapter cuối.
- *         - Nếu buffer chưa đủ: response trả về warning, chapter vẫn được schedule.
- *           Khi tới hạn, job sẽ giữ chapter và áp dụng Policy B:
- *           `scheduled_publish_at = (last_published.published_at + cadence)` về tương lai.
+ *         - Job `scheduledPublish` sẽ publish khi tới hạn (ngoại lệ chapter đầu tiên, không cần buffer).
  *       - **Chapter 2 trở đi** (đã có chapter trước đó publish hoặc scheduled):
  *         - Backend TỰ TÍNH `scheduled_publish_at` = previous.published_at (hoặc scheduled_publish_at) + cadence
  *           (weekly = +7 ngày, monthly = +30 ngày).
  *         - TE KHÔNG cần truyền `scheduled_publish_at` (nếu truyền sẽ bị bỏ qua và dùng giá trị backend tính).
  *         - Cùng logic buffer + Policy B như chapter 1.
+ *
+ *       **Buffer rule (job áp dụng khi tới hạn)**:
+ *         - Mặc định cần ≥ 2 chapter approved_by_EB chưa publish.
+ *         - Ngoại lệ 1: chapter đầu tiên (no published yet) → cho publish.
+ *         - Ngoại lệ 2: Series.publication_status = "completed" và chapter là final → cho publish.
+ *         - Nếu buffer chưa đủ: response trả về warning, chapter vẫn được schedule.
+ *           Khi tới hạn, job sẽ giữ chapter và áp dụng Policy B:
+ *           `scheduled_publish_at = (last_published.published_at + cadence)` về tương lai.
  *
  *       **Series**:
  *       - Series.status KHÔNG được tự động chuyển sang `published` ở endpoint này.
@@ -2522,13 +2525,19 @@ router.post("/chapter/:chapterId/publish", authMiddleware, requireTE, async (req
       chapter.chapter_number
     );
     const isCompletedSeries = series.publication_status === "completed";
-    const bufferOk = approvedCount >= 2 || (isCompletedSeries && isFinal);
+    // Chapter đầu tiên của Series (chưa từng publish) → buffer OK (ngoại lệ).
+    const isFirstChapterOfSeries = isFirstChapter;
+    const bufferOk =
+      isFirstChapterOfSeries ||
+      approvedCount >= 2 ||
+      (isCompletedSeries && isFinal);
 
     let warning = null;
     if (!bufferOk) {
       warning =
         `Hiện chỉ có ${approvedCount} chapter đã TE-approve và chưa publish. ` +
-        `Job sẽ giữ chapter này cho đến khi có ít nhất 2 chapter approved (hoặc đây là chapter cuối của Series đã completed).`;
+        `Job sẽ giữ chapter này cho đến khi có ít nhất 2 chapter approved ` +
+        `(hoặc đây là chapter cuối của Series đã completed).`;
     }
 
     return res.status(200).json({
@@ -2541,6 +2550,7 @@ router.post("/chapter/:chapterId/publish", authMiddleware, requireTE, async (req
         approved_unpublished_count: approvedCount,
         min_required: 2,
         is_final_chapter: isFinal,
+        is_first_chapter_of_series: isFirstChapterOfSeries,
         series_completed: isCompletedSeries,
         ok: bufferOk,
         warning,

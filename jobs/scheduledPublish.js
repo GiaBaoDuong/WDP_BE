@@ -5,13 +5,14 @@
  *     (kể cả khi Series chưa có chapter nào publish).
  *  2. Auto-publish các chapter đã được TE schedule:
  *     - status = "approved_by_EB", is_scheduled = true, scheduled_publish_at <= now.
- *     - BUFFER CHECK: phải có >= 2 chapter approved_by_EB chưa publish.
- *       Nếu không đủ → KHÔNG publish, áp dụng Policy B:
+ *     - Sort by chapter_number ASC để chapter nhỏ publish trước.
+ *     - BUFFER CHECK: mặc định phải có >= 2 chapter approved_by_EB chưa publish.
+ *       Ngoại lệ 1: chapter đầu tiên của Series (chưa có chapter nào publish) → cho publish.
+ *       Ngoại lệ 2: nếu Series.publication_status === "completed" và chapter hiện tại
+ *         là chapter cuối (không có chapter nào có chapter_number lớn hơn) → cho phép publish.
+ *       Nếu buffer không đủ → KHÔNG publish, áp dụng Policy B:
  *         Recompute scheduled_publish_at = (last published chapter + cadence) về tương lai,
  *         giữ cadence ổn định tính từ chapter vừa publish.
- *     - Ngoại lệ: nếu Series.publication_status === "completed" và chapter hiện tại
- *       là chapter cuối (không có chapter nào có chapter_number lớn hơn) → cho phép publish
- *       dù chỉ có 1 chapter approved.
  *     - Snapshot final_image_url cho pages.
  *     - Set TEReview.decision = "approved_publish".
  *     - Set Series.last_chapter_published_at.
@@ -23,6 +24,7 @@
  *     (fallback cho trường hợp Series.scheduled_publish_at không khớp hoặc job Series chạy sau).
  *  5. Notify Mangaka + followers khi chapter publish.
  *  6. (Risk B) Sau khi series chuyển sang "published" → notify tất cả follower của author.
+ *  7. isRunning guard: chống overlap nếu job phía trước chạy quá 60s.
  */
 const Chapter = require("../models/Chapter");
 const Series = require("../models/Series");
@@ -44,6 +46,7 @@ const {
 } = require("../utils/publicationSchedule");
 
 let intervalHandle = null;
+let isRunning = false;
 
 const MIN_BUFFER = 2;
 
@@ -197,9 +200,12 @@ const scheduleNextChapterIfNeeded = async (series, justPublishedChapter) => {
 /**
  * Kiểm tra điều kiện buffer trước khi publish:
  *  - Cần >= MIN_BUFFER (2) chapter approved_by_EB chưa publish.
- *  - Ngoại lệ: Series.publication_status === "completed" và chapter là final → bypass.
+ *  - Ngoại lệ 1: Chapter đầu tiên của Series (chưa có chapter nào publish).
+ *    Cho phép publish chapter 1 dù chỉ có 1 chapter approved (vì chưa có gì để buffer).
+ *    Nếu series.ongoing/hiatus/upcoming và chapter 2 chưa tồn tại → vẫn cho publish.
+ *  - Ngoại lệ 2: Series.publication_status === "completed" và chapter là final → bypass.
  *
- * Trả về { allowed, reason, approvedCount, isFinal }.
+ * Trả về { allowed, reason, approvedCount, isFinal, isFirstChapter }.
  */
 const checkBuffer = async (series, chapter) => {
   const approvedCount = await countApprovedUnpublishedChapters(Chapter, series._id);
@@ -208,18 +214,36 @@ const checkBuffer = async (series, chapter) => {
     series._id,
     chapter.chapter_number
   );
+
+  // Xác định chapter đầu tiên của Series (chưa có chapter nào publish):
+  // last.published_at < chapter.scheduled_publish_at hoặc không có last published.
+  const last = await getLastPublishedChapter(Chapter, series._id);
+  const isFirstChapter = !last;
+
   const isCompletedSeries = series.publication_status === "completed";
 
+  // Ngoại lệ 1: chapter đầu tiên của Series (chưa từng publish) → cho phép publish.
+  // Đảm bảo series ongoing vẫn có thể ra chapter 1 dù chưa có chapter 2.
+  if (isFirstChapter) {
+    return { allowed: true, reason: "first_chapter", approvedCount, isFinal, isFirstChapter };
+  }
   if (approvedCount >= MIN_BUFFER) {
-    return { allowed: true, reason: "buffer_ok", approvedCount, isFinal };
+    return { allowed: true, reason: "buffer_ok", approvedCount, isFinal, isFirstChapter };
   }
   if (isCompletedSeries && isFinal) {
-    return { allowed: true, reason: "final_chapter_completed_series", approvedCount, isFinal };
+    return { allowed: true, reason: "final_chapter_completed_series", approvedCount, isFinal, isFirstChapter };
   }
-  return { allowed: false, reason: "buffer_not_met", approvedCount, isFinal };
+  return { allowed: false, reason: "buffer_not_met", approvedCount, isFinal, isFirstChapter };
 };
 
 const processScheduledPublish = async () => {
+  // Guard chống overlap: nếu job trước chưa xong (chạy > 60s do query chậm, network, ...),
+  // bỏ qua lần chạy này để tránh 2 instance cùng publish 1 chapter.
+  if (isRunning) {
+    console.warn("[ScheduledPublish] Previous run still in progress, skipping this tick.");
+    return;
+  }
+  isRunning = true;
   try {
     const now = new Date();
 
@@ -258,11 +282,16 @@ const processScheduledPublish = async () => {
     }
 
     // 2. Auto-publish chapter đã tới hạn
+    // Sort theo chapter_number ASC để chapter nhỏ hơn publish trước,
+    // tránh trường hợp chapter 2 vô tình có scheduled_publish_at < chapter 1
+    // (vd chapter 2 được auto-schedule từ job trước đó, hoặc TE publish thủ công).
     const pendingChapters = await Chapter.find({
       is_scheduled: true,
       scheduled_publish_at: { $lte: now, $ne: null },
       status: CHAPTER_STATUS.APPROVED_BY_EB,
-    }).lean();
+    })
+      .sort({ chapter_number: 1 })
+      .lean();
 
     if (pendingChapters.length === 0) return;
 
@@ -345,6 +374,8 @@ const processScheduledPublish = async () => {
     }
   } catch (err) {
     console.error("[ScheduledPublish] Job error:", err.message);
+  } finally {
+    isRunning = false;
   }
 };
 
