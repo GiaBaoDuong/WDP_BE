@@ -1,5 +1,6 @@
 const express = require("express");
 const router = express.Router();
+const mongoose = require("mongoose");
 const { authMiddleware } = require("../middleware/auth");
 const { requireEB, requireMangaka } = require("../middleware/roles");
 const { AppError } = require("../middleware/errorHandler");
@@ -8,6 +9,7 @@ const Series = require("../models/Series");
 const EBEvaluation = require("../models/EBEvaluation");
 const Notification = require("../models/Notification");
 const Vote = require("../models/Vote");
+const User = require("../models/User");
 const {
   notifySeriesApproved,
   notifyRankingWarning,
@@ -351,6 +353,460 @@ router.get("/my-history", authMiddleware, requireEB, async (req, res, next) => {
         limit,
         total,
         has_more: skip + items.length < total,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * @swagger
+ * /eb-evaluations/history:
+ *   get:
+ *     tags: [EBEvaluations]
+ *     summary: Lịch sử chấm điểm của toàn hội đồng EB (xem lại + kiểm tra)
+ *     description: |
+ *       Trả về danh sách tất cả EBEvaluation mà hội đồng EB đã chấm, dùng để:
+ *       - EB xem lại lịch sử chấm của mình
+ *       - So sánh với các thành viên khác trong hội đồng
+ *       - Kiểm tra điểm đã chấm trước đó
+ *
+ *       **Query params:**
+ *       - `scope` : `series` (mặc định — duyệt toàn truyện, chapter_id = null) |
+ *                   `chapter` (duyệt chapter mới, chapter_id != null) |
+ *                   `all` (cả 2)
+ *       - `result` : filter kết quả (`approved` | `revision` | `rejected`)
+ *       - `status` : filter trạng thái evaluation (`scoring` | `saved` | `locked`)
+ *       - `series_id` : filter theo series cụ thể
+ *       - `q` : tìm kiếm theo tên series (case-insensitive)
+ *       - `page`, `limit` : phân trang (limit tối đa 100, mặc định 20)
+ *
+ *       Mỗi item trả về:
+ *       - evaluation_id, evaluation_type (series/chapter), result, status
+ *       - series info (name, cover_image_url, status, author)
+ *       - chapter info nếu là chapter review (chapter_number, title)
+ *       - council_average, classification, classification_text
+ *       - member_scores[] : điểm của từng thành viên hội đồng
+ *       - evaluated_by, last_saved_by, last_saved_at, scheduled_publish_at
+ *       - notes, quick_decision, quick_notes
+ *     parameters:
+ *       - in: query
+ *         name: scope
+ *         schema: { type: string, enum: [series, chapter, all] }
+ *         default: series
+ *       - in: query
+ *         name: result
+ *         schema: { type: string, enum: [approved, revision, rejected] }
+ *       - in: query
+ *         name: status
+ *         schema: { type: string, enum: [scoring, saved, locked] }
+ *       - in: query
+ *         name: series_id
+ *         schema: { type: string }
+ *       - in: query
+ *         name: q
+ *         schema: { type: string }
+ *       - in: query
+ *         name: page
+ *         schema: { type: integer, default: 1 }
+ *       - in: query
+ *         name: limit
+ *         schema: { type: integer, default: 20, maximum: 100 }
+ *     responses:
+ *       200:
+ *         description: Danh sách lịch sử chấm
+ *       401: { description: Unauthorized }
+ *       403: { description: Forbidden - EB role required }
+ */
+// ─── GET /eb-evaluations/history ──────────────────────────────────────────────
+// Lịch sử chấm điểm của toàn hội đồng EB, có filter + phân trang.
+router.get("/history", authMiddleware, requireEB, async (req, res, next) => {
+  try {
+    const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
+    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 20, 1), 100);
+    const skip = (page - 1) * limit;
+    const { result, status, scope = "series", series_id: seriesIdFilter, q } = req.query;
+
+    // ─── Build filter ───
+    const filter = {};
+    if (result && ["approved", "revision", "rejected"].includes(result)) {
+      filter.result = result;
+    }
+    if (status && ["scoring", "saved", "locked"].includes(status)) {
+      filter.status = status;
+    }
+    if (seriesIdFilter && mongoose.isValidObjectId(seriesIdFilter)) {
+      filter.series_id = seriesIdFilter;
+    }
+    if (scope === "series") {
+      filter.$or = [{ chapter_id: null }, { chapter_id: { $exists: false } }];
+    } else if (scope === "chapter") {
+      filter.chapter_id = { $ne: null, $exists: true };
+    }
+    // scope === "all" → không filter chapter_id
+
+    // Tìm series theo tên trước (nếu có q), rồi gộp vào filter
+    if (q && q.trim()) {
+      const matchedSeries = await Series.find({
+        name: { $regex: q.trim(), $options: "i" },
+        deleted_at: null,
+      })
+        .select("_id")
+        .lean();
+      const matchedIds = matchedSeries.map((s) => s._id);
+      if (matchedIds.length === 0) {
+        return res.json({
+          success: true,
+          data: {
+            items: [],
+            page,
+            limit,
+            total: 0,
+            has_more: false,
+            stats: { total_series_reviewed: 0, total_chapter_reviewed: 0, total_council_average: 0 },
+          },
+        });
+      }
+      filter.series_id = filter.series_id
+        ? { $in: matchedIds, _id: filter.series_id }
+        : { $in: matchedIds };
+    }
+
+    const total = await EBEvaluation.countDocuments(filter);
+
+    const evaluations = await EBEvaluation.find(filter)
+      .populate("series_id", "name cover_image_url status publication_schedule author_id is_public")
+      .populate("series_id.author_id", "username full_name phoneNumber")
+      .populate("chapter_id", "chapter_number title status published_at scheduled_publish_at")
+      .populate("evaluated_by", "username full_name phoneNumber avatar_url")
+      .populate("last_saved_by", "username full_name phoneNumber avatar_url")
+      .sort({ createdAt: -1 })
+      .skip(skip)
+      .limit(limit)
+      .lean();
+
+    const items = evaluations.map((ev) => {
+      const isSeriesReview = !ev.chapter_id;
+
+      // Tính điểm hội đồng
+      let councilAvg = 0;
+      if (ev.member_scores && ev.member_scores.length > 0) {
+        const totals = {};
+        EB_CRITERIA_KEYS.forEach((k) => {
+          totals[k] = ev.member_scores.reduce((acc, m) => acc + (m.scores?.[k] || 0), 0);
+        });
+        const avgTotals = {};
+        EB_CRITERIA_KEYS.forEach((k) => {
+          avgTotals[k] =
+            ev.member_scores.length > 0
+              ? Math.round((totals[k] / ev.member_scores.length) * 100) / 100
+              : 0;
+        });
+        councilAvg =
+          Math.round(
+            (EB_CRITERIA_KEYS.reduce((acc, k) => acc + avgTotals[k], 0) /
+              EB_CRITERIA_KEYS.length) * 100
+          ) / 100;
+      }
+
+      return {
+        evaluation_id: ev._id,
+        evaluation_type: isSeriesReview ? "series" : "chapter",
+        result: ev.result || null,
+        quick_decision: ev.quick_decision || null,
+        status: ev.status || null,
+        first_review: ev.first_review || false,
+        story_type: ev.story_type || "",
+        series: ev.series_id
+          ? {
+              id: ev.series_id._id,
+              name: ev.series_id.name,
+              cover_image_url: ev.series_id.cover_image_url || "",
+              status: ev.series_id.status,
+              is_public: ev.series_id.is_public,
+              publication_schedule: ev.series_id.publication_schedule || null,
+              author: ev.series_id.author_id
+                ? {
+                    id: ev.series_id.author_id._id,
+                    name: ev.series_id.author_id.full_name || ev.series_id.author_id.username,
+                  }
+                : null,
+            }
+          : null,
+        chapter: ev.chapter_id
+          ? {
+              id: ev.chapter_id._id,
+              chapter_number: ev.chapter_id.chapter_number,
+              title: ev.chapter_id.title || "",
+              status: ev.chapter_id.status,
+              published_at: ev.chapter_id.published_at || null,
+              scheduled_publish_at: ev.chapter_id.scheduled_publish_at || null,
+            }
+          : null,
+        council_average: councilAvg,
+        classification: classifyByScore(councilAvg),
+        classification_text: classifyText(councilAvg),
+        member_count: ev.member_scores ? ev.member_scores.length : 0,
+        scheduled_publish_at: ev.scheduled_publish_at || null,
+        evaluated_by: ev.evaluated_by
+          ? {
+              id: ev.evaluated_by._id,
+              name: ev.evaluated_by.full_name || ev.evaluated_by.username,
+              avatar_url: ev.evaluated_by.avatar_url || "",
+            }
+          : null,
+        last_saved_by: ev.last_saved_by
+          ? {
+              id: ev.last_saved_by._id,
+              name: ev.last_saved_by.full_name || ev.last_saved_by.username,
+              avatar_url: ev.last_saved_by.avatar_url || "",
+            }
+          : null,
+        last_saved_at: ev.last_saved_at || null,
+        created_at: ev.createdAt,
+        updated_at: ev.updatedAt,
+      };
+    });
+
+    // Thống kê tổng quan (không phụ thuộc page/limit)
+    const baseStats = {};
+    if (seriesIdFilter && mongoose.isValidObjectId(seriesIdFilter)) {
+      baseStats.series_id = seriesIdFilter;
+    }
+    const [
+      totalSeriesReviewed,
+      totalChapterReviewed,
+      allCouncilAvgAgg,
+    ] = await Promise.all([
+      EBEvaluation.countDocuments({
+        ...baseStats,
+        $or: [{ chapter_id: null }, { chapter_id: { $exists: false } }],
+      }),
+      EBEvaluation.countDocuments({
+        ...baseStats,
+        chapter_id: { $ne: null, $exists: true },
+      }),
+      EBEvaluation.aggregate([
+        {
+          $match: {
+            ...baseStats,
+            $or: [{ chapter_id: null }, { chapter_id: { $exists: false } }],
+            member_scores: { $exists: true, $ne: [] },
+          },
+        },
+        { $unwind: "$member_scores" },
+        {
+          $group: {
+            _id: null,
+            avg: { $avg: "$member_scores.average" },
+          },
+        },
+      ]),
+    ]);
+    const totalCouncilAvg =
+      allCouncilAvgAgg && allCouncilAvgAgg.length > 0
+        ? Math.round(allCouncilAvgAgg[0].avg * 100) / 100
+        : 0;
+
+    return res.json({
+      success: true,
+      data: {
+        items,
+        page,
+        limit,
+        total,
+        has_more: skip + items.length < total,
+        stats: {
+          total_series_reviewed: totalSeriesReviewed,
+          total_chapter_reviewed: totalChapterReviewed,
+          total_council_average: totalCouncilAvg,
+        },
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * @swagger
+ * /eb-evaluations/{evaluationId}/history-detail:
+ *   get:
+ *     tags: [EBEvaluations]
+ *     summary: Chi tiết 1 evaluation trong lịch sử chấm của hội đồng EB
+ *     description: |
+ *       Trả về toàn bộ thông tin chi tiết của 1 EBEvaluation, dùng khi EB click
+ *       vào 1 card trong trang lịch sử `/eb-evaluations/history`.
+ *
+ *       Bao gồm:
+ *       - Đầy đủ series info (name, cover, status, author, publication_schedule)
+ *       - Chapter info nếu là chapter review
+ *       - Điểm của từng thành viên hội đồng (member_scores) với 5 tiêu chí, comment từng tiêu chí, overall_comment
+ *       - Council average, classification, classification_text
+ *       - evaluated_by, last_saved_by, last_saved_at, scheduled_publish_at, notes, quick_decision, quick_notes
+ *     parameters:
+ *       - in: path
+ *         name: evaluationId
+ *         required: true
+ *         schema: { type: string }
+ *     responses:
+ *       200: { description: Chi tiết evaluation }
+ *       404: { description: Evaluation not found }
+ */
+// ─── GET /eb-evaluations/:evaluationId/history-detail ─────────────────────────
+// Chi tiết 1 evaluation trong lịch sử — xem lại điểm, comment từng thành viên.
+router.get("/:evaluationId/history-detail", authMiddleware, requireEB, async (req, res, next) => {
+  try {
+    const { evaluationId } = req.params;
+    if (!mongoose.isValidObjectId(evaluationId)) {
+      return next(new AppError("Invalid evaluationId", 400));
+    }
+
+    const ev = await EBEvaluation.findById(evaluationId)
+      .populate("series_id", "name cover_image_url status publication_schedule author_id is_public description synopsis tags category average_score total_votes views_count")
+      .populate("series_id.author_id", "username full_name phoneNumber avatar_url")
+      .populate("chapter_id", "chapter_number title status published_at scheduled_publish_at createdAt")
+      .populate("evaluated_by", "username full_name phoneNumber avatar_url")
+      .populate("last_saved_by", "username full_name phoneNumber avatar_url")
+      .populate("member_scores.member_id", "username full_name phoneNumber avatar_url is_eb_representative")
+      .lean();
+
+    if (!ev) return next(new AppError("Evaluation not found", 404));
+
+    const isSeriesReview = !ev.chapter_id;
+
+    // Tính council_average
+    let councilAvg = 0;
+    let councilBreakdown = {};
+    if (ev.member_scores && ev.member_scores.length > 0) {
+      const totals = {};
+      EB_CRITERIA_KEYS.forEach((k) => {
+        totals[k] = ev.member_scores.reduce((acc, m) => acc + (m.scores?.[k] || 0), 0);
+      });
+      const avgTotals = {};
+      EB_CRITERIA_KEYS.forEach((k) => {
+        avgTotals[k] =
+          ev.member_scores.length > 0
+            ? Math.round((totals[k] / ev.member_scores.length) * 100) / 100
+            : 0;
+      });
+      councilAvg =
+        Math.round(
+          (EB_CRITERIA_KEYS.reduce((acc, k) => acc + avgTotals[k], 0) /
+            EB_CRITERIA_KEYS.length) * 100
+        ) / 100;
+      councilBreakdown = avgTotals;
+    }
+
+    // Chuẩn hoá member_scores
+    const memberScores = (ev.member_scores || []).map((m) => {
+      const user = m.member_id;
+      return {
+        member_id: user ? String(user._id) : null,
+        member_name: m.member_name || "",
+        member_avatar_url: user?.avatar_url || "",
+        is_eb_representative: user?.is_eb_representative || false,
+        scores: m.scores || {},
+        average: m.average || 0,
+        total_score: m.total_score || 0,
+        comments: m.comments || {},
+        overall_comment: m.overall_comment || "",
+        notes: m.notes || "",
+        saved_at: m.saved_at || null,
+      };
+    });
+
+    // Tìm các evaluation khác cùng series (để EB đối chiếu)
+    const otherEvaluations = await EBEvaluation.find({
+      _id: { $ne: ev._id },
+      series_id: ev.series_id?._id,
+    })
+      .select("_id chapter_id result status first_review createdAt last_saved_at")
+      .sort({ createdAt: -1 })
+      .limit(10)
+      .lean();
+
+    return res.json({
+      success: true,
+      data: {
+        evaluation_id: ev._id,
+        evaluation_type: isSeriesReview ? "series" : "chapter",
+        result: ev.result || null,
+        quick_decision: ev.quick_decision || null,
+        status: ev.status || null,
+        first_review: ev.first_review || false,
+        story_type: ev.story_type || "",
+        series: ev.series_id
+          ? {
+              id: ev.series_id._id,
+              name: ev.series_id.name,
+              cover_image_url: ev.series_id.cover_image_url || "",
+              status: ev.series_id.status,
+              is_public: ev.series_id.is_public,
+              publication_schedule: ev.series_id.publication_schedule || null,
+              description: ev.series_id.description || ev.series_id.synopsis || "",
+              synopsis: ev.series_id.synopsis || "",
+              tags: ev.series_id.tags || [],
+              category: ev.series_id.category || "",
+              average_score: ev.series_id.average_score || 0,
+              total_votes: ev.series_id.total_votes || 0,
+              views_count: ev.series_id.views_count || 0,
+              author: ev.series_id.author_id
+                ? {
+                    id: ev.series_id.author_id._id,
+                    name: ev.series_id.author_id.full_name || ev.series_id.author_id.username,
+                    avatar_url: ev.series_id.author_id.avatar_url || "",
+                  }
+                : null,
+            }
+          : null,
+        chapter: ev.chapter_id
+          ? {
+              id: ev.chapter_id._id,
+              chapter_number: ev.chapter_id.chapter_number,
+              title: ev.chapter_id.title || "",
+              status: ev.chapter_id.status,
+              published_at: ev.chapter_id.published_at || null,
+              scheduled_publish_at: ev.chapter_id.scheduled_publish_at || null,
+              created_at: ev.chapter_id.createdAt,
+            }
+          : null,
+        council_average: councilAvg,
+        council_breakdown: councilBreakdown,
+        classification: classifyByScore(councilAvg),
+        classification_text: classifyText(councilAvg),
+        member_count: ev.member_scores ? ev.member_scores.length : 0,
+        member_scores: memberScores,
+        scheduled_publish_at: ev.scheduled_publish_at || null,
+        evaluated_by: ev.evaluated_by
+          ? {
+              id: ev.evaluated_by._id,
+              name: ev.evaluated_by.full_name || ev.evaluated_by.username,
+              avatar_url: ev.evaluated_by.avatar_url || "",
+            }
+          : null,
+        last_saved_by: ev.last_saved_by
+          ? {
+              id: ev.last_saved_by._id,
+              name: ev.last_saved_by.full_name || ev.last_saved_by.username,
+              avatar_url: ev.last_saved_by.avatar_url || "",
+            }
+          : null,
+        last_saved_at: ev.last_saved_at || null,
+        notes: ev.notes || "",
+        quick_notes: ev.quick_notes || "",
+        created_at: ev.createdAt,
+        updated_at: ev.updatedAt,
+        related_evaluations: otherEvaluations.map((o) => ({
+          evaluation_id: o._id,
+          evaluation_type: !o.chapter_id ? "series" : "chapter",
+          result: o.result || null,
+          status: o.status,
+          first_review: o.first_review,
+          created_at: o.createdAt,
+          last_saved_at: o.last_saved_at,
+        })),
       },
     });
   } catch (error) {
