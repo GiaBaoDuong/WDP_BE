@@ -242,6 +242,25 @@ router.get("/pending", authMiddleware, requireTE, async (req, res, next) => {
  *   get:
  *     tags: [TEReviews]
  *     summary: Lịch sử các review của TE hiện tại
+ *     description: |
+ *       Trả về danh sách TEReview do TE hiện tại (`reviewed_by = req.user.nameid`) đã thực hiện,
+ *       kèm thông tin chapter và series (cover, trạng thái hiện tại sau khi duyệt, lịch publish).
+ *
+ *       **Decision whitelist:** `draft | revision | approved | rejected | approved_publish`.
+ *
+ *       **Field trả về trong `chapter_id`:**
+ *       - `chapter_number`, `title`, `cover_image_url`
+ *       - `status` (trạng thái hiện tại của chapter sau khi TE duyệt: pending_TE / approved_by_EB / TE_revision / published / ...)
+ *       - `is_published`, `published_at` (nếu đã publish)
+ *       - `scheduled_publish_at`, `publication_schedule` (nếu đang schedule)
+ *       - `series_id.name`, `series_id.cover_image_url`, `series_id.status`
+ *       - `submitted_by.username`, `submitted_by.full_name`
+ *
+ *       **Lưu ý về "trạng thái sau khi duyệt":**
+ *       Decision của TEReview và status hiện tại của Chapter có thể khác nhau,
+ *       vì Chapter còn đi qua EB review và job scheduledPublish.
+ *       Ví dụ: TE quyết định `approved` → Chapter status = `pending_EB` (chờ EB).
+ *       TE quyết định `approved_publish` → Chapter status = `approved_by_EB` rồi `published` (theo lịch).
  *     security:
  *       - BearerAuth: []
  *     parameters:
@@ -249,20 +268,36 @@ router.get("/pending", authMiddleware, requireTE, async (req, res, next) => {
  *         name: decision
  *         schema:
  *           type: string
- *           enum: [approved, rejected]
- *         description: Lọc theo quyết định
+ *           enum: [draft, revision, approved, rejected, approved_publish]
+ *         description: Lọc theo quyết định của TE
  *       - in: query
  *         name: from_date
  *         schema:
  *           type: string
  *           format: date
- *         description: Từ ngày (inclusive)
+ *         description: Từ ngày review (inclusive)
  *       - in: query
  *         name: to_date
  *         schema:
  *           type: string
  *           format: date
- *         description: Đến ngày (inclusive)
+ *         description: Đến ngày review (inclusive)
+ *       - in: query
+ *         name: series_id
+ *         schema:
+ *           type: string
+ *         description: Lọc review của 1 series cụ thể
+ *       - in: query
+ *         name: page
+ *         schema:
+ *           type: integer
+ *           default: 1
+ *       - in: query
+ *         name: limit
+ *         schema:
+ *           type: integer
+ *           default: 20
+ *           maximum: 100
  *     responses:
  *       200:
  *         description: Danh sách review đã hoàn thành
@@ -271,59 +306,162 @@ router.get("/pending", authMiddleware, requireTE, async (req, res, next) => {
  *             schema:
  *               type: object
  *               properties:
- *                 success: { type: boolean }
+ *                 success:
+ *                   type: boolean
  *                 data:
- *                   type: array
- *                   items:
- *                     type: object
- *                     properties:
- *                       _id: { type: string }
- *                       decision: { type: string }
- *                       createdAt: { type: string, format: date-time }
- *                       chapter_id:
+ *                   type: object
+ *                   properties:
+ *                     items:
+ *                       type: array
+ *                       items:
  *                         type: object
  *                         properties:
  *                           _id: { type: string }
- *                           chapter_number: { type: number }
- *                           title: { type: string }
- *                           series_id:
+ *                           decision: { type: string }
+ *                           feedback: { type: string }
+ *                           revision_feedback: { type: string }
+ *                           quick_notes: { type: string }
+ *                           annotations_count: { type: integer }
+ *                           createdAt: { type: string, format: date-time }
+ *                           updatedAt: { type: string, format: date-time }
+ *                           chapter_id:
  *                             type: object
  *                             properties:
- *                               name: { type: string }
- *                           submitted_by:
- *                             type: object
- *                             properties:
- *                               username: { type: string }
- *                               full_name: { type: string }
+ *                               _id: { type: string }
+ *                               chapter_number: { type: number }
+ *                               title: { type: string }
+ *                               cover_image_url: { type: string }
+ *                               status: { type: string, description: "Trạng thái chapter hiện tại (sau khi duyệt)" }
+ *                               is_published: { type: boolean }
+ *                               published_at: { type: string, format: date-time }
+ *                               scheduled_publish_at: { type: string, format: date-time }
+ *                               publication_schedule: { type: string, enum: [weekly, monthly] }
+ *                               series_id:
+ *                                 type: object
+ *                                 properties:
+ *                                   _id: { type: string }
+ *                                   name: { type: string }
+ *                                   cover_image_url: { type: string }
+ *                                   status: { type: string }
+ *                                   publication_schedule: { type: string }
+ *                               submitted_by:
+ *                                 type: object
+ *                                 properties:
+ *                                   username: { type: string }
+ *                                   full_name: { type: string }
+ *                     pagination:
+ *                       type: object
+ *                       properties:
+ *                         page: { type: integer }
+ *                         limit: { type: integer }
+ *                         total: { type: integer }
+ *                         total_pages: { type: integer }
  */
 router.get("/history", authMiddleware, requireTE, async (req, res, next) => {
   try {
-    const { decision, from_date, to_date } = req.query;
+    const { decision, from_date, to_date, series_id } = req.query;
+    const pageNum = Math.max(1, parseInt(req.query.page) || 1);
+    const limitNum = Math.min(100, Math.max(1, parseInt(req.query.limit) || 20));
+
+    const VALID_DECISIONS = ["draft", "revision", "approved", "rejected", "approved_publish"];
     const filter = { reviewed_by: req.user.nameid };
 
-    if (decision) filter.decision = decision;
+    if (decision) {
+      if (!VALID_DECISIONS.includes(decision)) {
+        return next(
+          new AppError(
+            `decision không hợp lệ. Các giá trị cho phép: ${VALID_DECISIONS.join(", ")}`,
+            400
+          )
+        );
+      }
+      filter.decision = decision;
+    }
     if (from_date || to_date) {
       filter.createdAt = {};
       if (from_date) filter.createdAt.$gte = new Date(from_date);
-      if (to_date)   filter.createdAt.$lte = new Date(to_date);
+      if (to_date) filter.createdAt.$lte = new Date(to_date);
     }
 
     const reviews = await TEReview.find(filter)
       .populate({
         path: "chapter_id",
+        select:
+          "chapter_number title cover_image_url status is_published published_at " +
+          "scheduled_publish_at publication_schedule series_id submitted_by",
         populate: [
-          { path: "series_id", select: "name" },
+          {
+            path: "series_id",
+            select: "name cover_image_url status publication_schedule",
+          },
           { path: "submitted_by", select: "username full_name" },
         ],
       })
       .sort({ createdAt: -1 })
       .lean();
 
-    const enriched = reviews.map((r) => {
-      return { ...r };
-    });
+    // Lọc thêm theo series_id (sau populate vì filter nằm trên chapter.series_id)
+    let filtered = reviews;
+    if (series_id) {
+      if (!mongoose.Types.ObjectId.isValid(series_id)) {
+        return next(new AppError("series_id không hợp lệ.", 400));
+      }
+      filtered = reviews.filter((r) => {
+        const sid = r.chapter_id?.series_id?._id?.toString();
+        return sid === series_id;
+      });
+    }
 
-    return res.status(200).json({ success: true, data: enriched });
+    const total = filtered.length;
+    const startIdx = (pageNum - 1) * limitNum;
+    const paged = filtered.slice(startIdx, startIdx + limitNum);
+
+    const enriched = paged.map((r) => ({
+      _id: r._id,
+      decision: r.decision,
+      feedback: r.feedback,
+      revision_feedback: r.revision_feedback,
+      quick_notes: r.quick_notes,
+      annotations_count: Array.isArray(r.annotations) ? r.annotations.length : 0,
+      createdAt: r.createdAt,
+      updatedAt: r.updatedAt,
+      chapter_id: r.chapter_id
+        ? {
+            _id: r.chapter_id._id,
+            chapter_number: r.chapter_id.chapter_number,
+            title: r.chapter_id.title,
+            cover_image_url: r.chapter_id.cover_image_url || "",
+            status: r.chapter_id.status,
+            is_published: !!r.chapter_id.is_published,
+            published_at: r.chapter_id.published_at || null,
+            scheduled_publish_at: r.chapter_id.scheduled_publish_at || null,
+            publication_schedule: r.chapter_id.publication_schedule || null,
+            series_id: r.chapter_id.series_id
+              ? {
+                  _id: r.chapter_id.series_id._id,
+                  name: r.chapter_id.series_id.name,
+                  cover_image_url: r.chapter_id.series_id.cover_image_url || "",
+                  status: r.chapter_id.series_id.status,
+                  publication_schedule: r.chapter_id.series_id.publication_schedule || null,
+                }
+              : null,
+            submitted_by: r.chapter_id.submitted_by || null,
+          }
+        : null,
+    }));
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        items: enriched,
+        pagination: {
+          page: pageNum,
+          limit: limitNum,
+          total,
+          total_pages: Math.max(1, Math.ceil(total / limitNum)),
+        },
+      },
+    });
   } catch (error) {
     next(error);
   }
