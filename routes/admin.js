@@ -304,6 +304,70 @@ router.get("/manga/:id", async (req, res, next) => {
       .sort({ chapter_number: 1 })
       .lean();
 
+    // Lấy evaluation EB cấp SERIES gần nhất (chapter_id = null hoặc không có).
+    // Đây là điểm hội đồng EB dùng để duyệt toàn bộ series (first_review / lần duyệt sau).
+    const latestEval = await EBEvaluation.findOne({
+      series_id: series._id,
+      $or: [{ chapter_id: null }, { chapter_id: { $exists: false } }],
+    })
+      .sort({ createdAt: -1 })
+      .populate("evaluated_by", "username full_name")
+      .populate("last_saved_by", "username full_name")
+      .lean();
+
+    // Tính trung bình cộng điểm hội đồng EB (average of all member averages)
+    let ebCouncilSummary = null;
+    if (latestEval && Array.isArray(latestEval.member_scores) && latestEval.member_scores.length > 0) {
+      const councilAverages = latestEval.member_scores.map((m) => m.average || 0);
+      const councilAverage =
+        councilAverages.reduce((sum, v) => sum + v, 0) / councilAverages.length;
+      ebCouncilSummary = {
+        total_members: latestEval.member_scores.length,
+        council_average: Math.round(councilAverage * 100) / 100,
+        result: latestEval.result || null,
+        status: latestEval.status || null,
+        first_review: latestEval.first_review || false,
+        scheduled_publish_at: latestEval.scheduled_publish_at || null,
+        evaluated_at: latestEval.createdAt || null,
+        evaluated_by: latestEval.evaluated_by
+          ? { id: latestEval.evaluated_by._id, name: latestEval.evaluated_by.full_name || latestEval.evaluated_by.username }
+          : null,
+        last_saved_by: latestEval.last_saved_by
+          ? { id: latestEval.last_saved_by._id, name: latestEval.last_saved_by.full_name || latestEval.last_saved_by.username }
+          : null,
+        last_saved_at: latestEval.last_saved_at || null,
+        member_scores: latestEval.member_scores.map((m) => ({
+          member_name: m.member_name,
+          member_id: m.member_id || null,
+          scores: m.scores || {},
+          average: m.average || 0,
+          total_score: m.total_score || 0,
+          overall_comment: m.overall_comment || "",
+          saved_at: m.saved_at || null,
+        })),
+      };
+    }
+
+    // Đếm số reader vote thực tế từ Comment (loại bỏ admin/EB/TE comments).
+    // Nếu series có field votes_count ở SeriesStats thì lấy từ đó (chính xác hơn).
+    let readerVotesCount = series.total_votes || 0;
+    let readerAverageScore = series.average_score || 0;
+    try {
+      const SeriesStats = require("../models/SeriesStats");
+      const stats = await SeriesStats.findOne({
+        series_id: series._id,
+        period_type: "all",
+      })
+        .select("votes_count total_score average_score")
+        .lean();
+      if (stats) {
+        readerVotesCount = stats.votes_count || 0;
+        readerAverageScore = stats.average_score || 0;
+      }
+    } catch (e) {
+      // fallback dùng field trên Series
+    }
+
     res.json({
       success: true,
       data: {
@@ -317,8 +381,6 @@ router.get("/manga/:id", async (req, res, next) => {
         tags: series.tags || [],
         age_rating: series.age_rating || "All ages",
         views: series.views_count || 0,
-        total_votes: series.total_votes || 0,
-        average_score: series.average_score || 0,
         createdAt: series.createdAt,
         chapters: chapters.map((c) => ({
           id: c._id,
@@ -326,6 +388,14 @@ router.get("/manga/:id", async (req, res, next) => {
           title: c.title || "",
           createdAt: c.createdAt,
         })),
+        // ───── Điểm do READER vote ─────
+        reader_rating: {
+          total_votes: readerVotesCount,
+          average_score: readerAverageScore,
+          average_score_formatted: `${readerAverageScore.toFixed(1)} / 5`,
+        },
+        // ───── Điểm do EB chấm (cấp series) ─────
+        eb_evaluation: ebCouncilSummary,
       },
     });
   } catch (error) {
