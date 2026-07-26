@@ -29,12 +29,21 @@ const ebCriteriaCommentSchema = new mongoose.Schema(
 );
 
 const ebMemberScoreSchema = new mongoose.Schema({
-  member_name: { type: String, required: true },
+  // Tên hiển thị của thành viên hội đồng (BẮT BUỘC khi evaluate).
+  // Nếu member_id là ObjectId user thật → BE vẫn ưu tiên lưu tên người dùng
+  // tại thời điểm chấm (full_name / username) để chống "di sản" khi user đổi tên.
+  member_name: { type: String, required: true, trim: true },
+  // ObjectId trỏ sang User (nếu thành viên HĐ là user thật trong hệ thống).
+  // Null khi thành viên chỉ tồn tại ở roster FE (id local).
   member_id: {
     type: mongoose.Schema.Types.ObjectId,
     ref: "User",
     default: null,
   },
+  // ID local do FE tạo khi thêm thành viên HĐ (vd "member-1785044498035-dbj18").
+  // Lưu song song với member_id để giữ reference cho FE,
+  // đồng thời giúp BE biết đây là user "ngoài hệ thống" (không populate được).
+  external_member_id: { type: String, default: null, trim: true },
   // 5 tiêu chí (0–5 step 0.5)
   scores: { type: ebScoreDetailSchema, default: () => ({}) },
   // điểm trung bình 5 tiêu chí (0–5)

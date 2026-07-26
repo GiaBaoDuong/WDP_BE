@@ -699,12 +699,30 @@ router.get("/:evaluationId/history-detail", authMiddleware, requireEB, async (re
       councilBreakdown = avgTotals;
     }
 
-    // Chuẩn hoá member_scores
+    // Chuẩn hoá member_scores.
+    // Đảm bảo FE history-detail luôn thấy tên người đọc được:
+    //   - Ưu tiên 1: member_name đã lưu trong DB (do FE gửi lúc evaluate)
+    //   - Ưu tiên 2: full_name / username từ populate user (nếu member_id là ObjectId)
+    //   - Ưu tiên 3: "" — TUYỆT ĐỐI KHÔNG fallback sang external_member_id / member_id
+    //                 vì đây chính là bug cũ (hiển thị "member-1785044498035-dbj18").
+    //
+    //   *Self-healing*: nếu record cũ bị bug đã copy external_member_id sang member_name
+    //   (member_name khớp pattern "member-<digits>-<random>") → bỏ qua, dùng populate.
+    const isStaleExternalId = (name) =>
+      typeof name === "string" && /^member-\d+-[a-z0-9]+$/i.test(name.trim());
+
     const memberScores = (ev.member_scores || []).map((m) => {
       const user = m.member_id;
+      const userFullName = user?.full_name || user?.username || "";
+      const savedName = m.member_name && String(m.member_name).trim();
+      const resolvedName =
+        (savedName && !isStaleExternalId(savedName) ? savedName : "") ||
+        userFullName ||
+        "";
       return {
         member_id: user ? String(user._id) : null,
-        member_name: m.member_name || "",
+        external_member_id: m.external_member_id || null,
+        member_name: resolvedName,
         member_avatar_url: user?.avatar_url || "",
         is_eb_representative: user?.is_eb_representative || false,
         scores: m.scores || {},
@@ -1049,26 +1067,30 @@ router.get("/series/:seriesId/detail", authMiddleware, requireEB, async (req, re
  *             properties:
  *               member_scores:
  *                 type: array
- *                 description: Bắt buộc cho lần đầu. Mảng điểm từ các thành viên hội đồng
+ *                 description: |
+ *                   Bắt buộc cho lần đầu. Mảng điểm từ các thành viên hội đồng.
+ *
+ *                   **Lưu ý:** FE PHẢI gửi kèm `member_name` (tên hiển thị thật).
+ *                   `member_id` có thể là ObjectId user thật hoặc id local "member-..."
+ *                   (BE sẽ tự lưu vào `external_member_id` cho id local).
  *                 items:
  *                   type: object
+ *                   required: [member_name, scores]
  *                   properties:
  *                     member_id:
  *                       type: string
- *                       description: ID thành viên EB (optional)
+ *                       description: ID thành viên (ObjectId user thật HOẶC id local)
+ *                     member_name:
+ *                       type: string
+ *                       description: Tên hiển thị thành viên hội đồng — BẮT BUỘC
  *                     scores:
  *                       type: object
  *                       properties:
- *                         content_script:
- *                           type: number
- *                         art:
- *                           type: number
- *                         characters:
- *                           type: number
- *                         commercial_potential:
- *                           type: number
- *                         publisher_fit:
- *                           type: number
+ *                         content_script: { type: number }
+ *                         art: { type: number }
+ *                         characters: { type: number }
+ *                         commercial_potential: { type: number }
+ *                         publisher_fit: { type: number }
  *               result:
  *                 type: string
  *                 enum: [approved, revision, rejected]
@@ -1142,6 +1164,18 @@ router.post("/series/:seriesId/evaluate", authMiddleware, requireEB, async (req,
           )
         );
       }
+      // member_name BẮT BUỘC cho từng thành viên — tránh fallback rác từ member_id dạng "member-..."
+      for (let idx = 0; idx < member_scores.length; idx += 1) {
+        const m = member_scores[idx];
+        if (!m.member_name || !String(m.member_name).trim()) {
+          return next(
+            new AppError(
+              `member_scores[${idx}].member_name là bắt buộc. Vui lòng gửi kèm tên hiển thị của thành viên hội đồng (FE lấy từ roster).`,
+              400
+            )
+          );
+        }
+      }
       if (!result) return next(new AppError("result is required", 400));
 
       // Nếu approve → BẮT BUỘC chọn publication_schedule (weekly/monthly) trước
@@ -1173,19 +1207,41 @@ router.post("/series/:seriesId/evaluate", authMiddleware, requireEB, async (req,
         ) / 100;
       const classification = classifyByScore(councilAvg);
 
-      evaluation = await EBEvaluation.create({
-        series_id: series._id,
-        evaluated_by: req.user.nameid,
-        first_review: true,
-        member_scores: member_scores.map((m) => ({
-          ...m,
+      // Transform member_scores: phân loại ObjectId vs external id,
+      // lưu external_member_id (string id local) thay vì copy sang member_name.
+      const transformedMemberScores = member_scores.map((m) => {
+        let normalizedMemberId = null;
+        let externalMemberId = null;
+        if (m.member_id) {
+          if (mongoose.isValidObjectId(String(m.member_id))) {
+            normalizedMemberId = m.member_id;
+          } else {
+            externalMemberId = String(m.member_id);
+          }
+        }
+
+        return {
+          member_name: String(m.member_name).trim(),
+          member_id: normalizedMemberId,
+          external_member_id: externalMemberId,
+          scores: m.scores || {},
+          comments: m.comments || {},
+          overall_comment: m.overall_comment || "",
           total_score:
             (m.content_script || 0) +
             (m.art || 0) +
             (m.characters || 0) +
             (m.commercial_potential || 0) +
             (m.publisher_fit || 0),
-        })),
+          notes: m.notes || "",
+        };
+      });
+
+      evaluation = await EBEvaluation.create({
+        series_id: series._id,
+        evaluated_by: req.user.nameid,
+        first_review: true,
+        member_scores: transformedMemberScores,
         result,
         publication_schedule: result === "approved" ? publication_schedule : null,
         scheduled_publish_at: scheduled_publish_at || null,
@@ -1277,8 +1333,34 @@ router.post("/series/:seriesId/evaluate", authMiddleware, requireEB, async (req,
  *             properties:
  *               member_scores:
  *                 type: array
+ *                 description: |
+ *                   Bắt buộc cho lần đầu. Mảng điểm từ các thành viên hội đồng.
+ *
+ *                   **Lưu ý:** FE PHẢI gửi kèm `member_name` (tên hiển thị thật của thành viên HĐ,
+ *                   lấy từ roster FE / localStorage). Nếu thiếu → BE trả 400.
+ *
+ *                   `member_id` có thể là:
+ *                   - ObjectId user thật trong hệ thống → lưu `member_id`, populate được.
+ *                   - String id local kiểu "member-1785044498035-dbj18" → BE tự lưu vào
+ *                     `external_member_id` và KHÔNG copy sang `member_name`.
  *                 items:
  *                   type: object
+ *                   required: [member_name, scores]
+ *                   properties:
+ *                     member_id:
+ *                       type: string
+ *                       description: ID thành viên (ObjectId user thật HOẶC id local "member-...")
+ *                     member_name:
+ *                       type: string
+ *                       description: Tên hiển thị của thành viên hội đồng — BẮT BUỘC.
+ *                     scores:
+ *                       type: object
+ *                       properties:
+ *                         story_dialogue: { type: number }
+ *                         art_design: { type: number }
+ *                         panel_camera: { type: number }
+ *                         pacing_climax: { type: number }
+ *                         color: { type: number }
  *               result:
  *                 type: string
  *                 enum: [approved, revision, rejected]
@@ -1347,11 +1429,26 @@ router.post("/chapter/:chapterId/evaluate", authMiddleware, requireEB, async (re
       }
     }
 
-    // Tính điểm từ member_scores (nếu có)
+    // Tính điểm từ member_scores (nếu có) + validate member_name
     let councilAvg = 0;
     const isFirstReviewLocal = series.status === "draft" || series.status === "submitted";
 
     if (isFirstReviewLocal && req.body.member_scores) {
+      // Validate từng thành viên hội đồng: member_name BẮT BUỘC.
+      // Không được phép fallback member_id (dạng "member-...") sang member_name —
+      // đây chính là bug FE đang gặp: hiển thị tên rác "member-1785044498035-dbj18".
+      for (let idx = 0; idx < req.body.member_scores.length; idx += 1) {
+        const m = req.body.member_scores[idx];
+        if (!m.member_name || !String(m.member_name).trim()) {
+          return next(
+            new AppError(
+              `member_scores[${idx}].member_name là bắt buộc. Vui lòng gửi kèm tên hiển thị của thành viên hội đồng (FE lấy từ roster).`,
+              400
+            )
+          );
+        }
+      }
+
       const totals = {};
       EB_CRITERIA_KEYS.forEach((k) => {
         totals[k] = req.body.member_scores.reduce((acc, m) => acc + (m.scores?.[k] || 0), 0);
@@ -1391,18 +1488,34 @@ router.post("/chapter/:chapterId/evaluate", authMiddleware, requireEB, async (re
     const classificationText = classifyText(councilAvg);
     const finalResult = result || quick_decision || null;
 
-    // Transform member_scores từ format FE sang format model
+    // Transform member_scores từ format FE sang format model.
+    // Hỗ trợ 2 dạng member_id từ FE:
+    //   - ObjectId user thật (24 hex) → lưu vào member_id
+    //   - String id local ("member-...") → lưu vào external_member_id (KHÔNG copy sang member_name)
+    // member_name lấy trực tiếp từ FE (đã validate required ở trên).
     let transformedMemberScores = [];
     if (req.body.member_scores && Array.isArray(req.body.member_scores)) {
       transformedMemberScores = req.body.member_scores.map((m) => {
-        // Tính total_score từ 5 tiêu chí nếu có scores
         let totalScore = m.total_score || 0;
         if (m.scores && Object.keys(m.scores).length > 0 && totalScore === 0) {
           totalScore = EB_CRITERIA_KEYS.reduce((acc, k) => acc + (m.scores[k] || 0), 0);
         }
+
+        // Phân loại member_id: ObjectId hợp lệ → member_id; ngược lại → external_member_id.
+        let normalizedMemberId = null;
+        let externalMemberId = null;
+        if (m.member_id) {
+          if (mongoose.isValidObjectId(String(m.member_id))) {
+            normalizedMemberId = m.member_id;
+          } else {
+            externalMemberId = String(m.member_id);
+          }
+        }
+
         return {
-          member_name: m.member_name || m.member_id || "Member",
-          member_id: null, // FE gửi string, không phải ObjectId
+          member_name: String(m.member_name).trim(),
+          member_id: normalizedMemberId,
+          external_member_id: externalMemberId,
           scores: m.scores || {},
           comments: m.comments || {},
           overall_comment: m.overall_comment || "",

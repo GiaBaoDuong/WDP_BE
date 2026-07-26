@@ -313,6 +313,7 @@ router.get("/manga/:id", async (req, res, next) => {
       .sort({ createdAt: -1 })
       .populate("evaluated_by", "username full_name")
       .populate("last_saved_by", "username full_name")
+      .populate("member_scores.member_id", "username full_name avatar_url is_eb_representative")
       .lean();
 
     // Tính trung bình cộng điểm hội đồng EB (average of all member averages)
@@ -336,15 +337,32 @@ router.get("/manga/:id", async (req, res, next) => {
           ? { id: latestEval.last_saved_by._id, name: latestEval.last_saved_by.full_name || latestEval.last_saved_by.username }
           : null,
         last_saved_at: latestEval.last_saved_at || null,
-        member_scores: latestEval.member_scores.map((m) => ({
-          member_name: m.member_name,
-          member_id: m.member_id || null,
-          scores: m.scores || {},
-          average: m.average || 0,
-          total_score: m.total_score || 0,
-          overall_comment: m.overall_comment || "",
-          saved_at: m.saved_at || null,
-        })),
+        member_scores: latestEval.member_scores.map((m) => {
+          const populated = m.member_id;
+          const userFullName =
+            populated && typeof populated === "object"
+              ? populated.full_name || populated.username || ""
+              : "";
+          // Self-heal: nếu record cũ bị bug copy external id sang member_name → bỏ qua.
+          const savedName =
+            m.member_name && String(m.member_name).trim()
+              ? String(m.member_name).trim()
+              : "";
+          const isStale =
+            typeof savedName === "string" &&
+            /^member-\d+-[a-z0-9]+$/i.test(savedName);
+          const resolvedName = (savedName && !isStale) || userFullName || "";
+          return {
+            member_name: resolvedName,
+            member_id: populated?._id ? String(populated._id) : null,
+            external_member_id: m.external_member_id || null,
+            scores: m.scores || {},
+            average: m.average || 0,
+            total_score: m.total_score || 0,
+            overall_comment: m.overall_comment || "",
+            saved_at: m.saved_at || null,
+          };
+        }),
       };
     }
 
