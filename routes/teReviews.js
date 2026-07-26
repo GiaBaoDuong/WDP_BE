@@ -14,6 +14,14 @@ const Notification = require("../models/Notification");
 const { CHAPTER_STATUS, TE_DECISION, SERIES_STATUS } = require("../utils/constants");
 const { ROLES } = require("../utils/constants");
 const {
+  addInterval,
+  computeNextChapterSchedule,
+  getLastPublishedChapter,
+  countApprovedUnpublishedChapters,
+  isFinalChapterOfSeries,
+  isValidSchedule,
+} = require("../utils/publicationSchedule");
+const {
   notifyChapterToTE,
   notifyChapterToEB,
   notifyChapterTERevision,
@@ -1066,7 +1074,8 @@ router.post("/series-review/:seriesId/submit", authMiddleware, requireTE, async 
  *       - `action = "approve"`:
  *         - Lưu SeriesReview.feedback
  *         - Nếu Series chưa EB-approved → Chapter → "pending_EB" + notify EB (1 LẦN)
- *         - Nếu Series đã EB-approved (chapter_level) → Chapter → "published" + notify Mangaka
+ *         - Nếu Series đã EB-approved (chapter_level) → Chapter → "approved_by_EB" (CHƯA publish).
+ *           TE phải gọi thêm `POST /te-reviews/chapter/:chapterId/publish` để lên lịch publish theo cadence.
  *       - `action = "reject"`:
  *         - Chapter → "TE_revision" + lưu revision_notes
  *         - Series có revision_notes (lưu revision_feedback)
@@ -1183,38 +1192,24 @@ router.post("/series-review/:seriesId/review-chapter", authMiddleware, requireTE
       ].includes(series.status);
 
       if (seriesApproved) {
-        // Series đã EB-approved → Publish chapter (chapter_level)
-        chapter.status = CHAPTER_STATUS.PUBLISHED;
-        chapter.is_published = true;
-        chapter.published_at = new Date();
+        // Series đã EB-approved → TE approve xong → chapter → approved_by_EB (CHƯA publish).
+        // TE phải gọi endpoint publish riêng (`/te-reviews/chapter/:chapterId/publish`)
+        // để lên lịch publish theo cadence của Series (weekly/monthly). Job sẽ publish khi tới hạn.
+        chapter.status = CHAPTER_STATUS.APPROVED_BY_EB;
         chapter.revision_notes = "";
         chapter.revision_annotations = [];
         chapter.revision_source = "";
         await chapter.save();
 
-        await Series.findByIdAndUpdate(chapter.series_id, {
-          $set: { last_chapter_published_at: chapter.published_at },
-        });
-
         const teReview = await TEReview.findOne({ chapter_id: chapter_id });
         if (teReview) {
-          teReview.decision = TE_DECISION.APPROVED_PUBLISH;
+          teReview.decision = TE_DECISION.APPROVED;
           await teReview.save();
         }
 
-        await notifyChapterTEPublished(
-          Notification,
-          chapter.submitted_by,
-          chapter,
-          series.name
-        );
-
-        // Hook notify cho reader đã subscribe series này (Risk C: defensive trong service)
-        await notifyFollowersNewChapter(Notification, chapter, series);
-
         return res.status(200).json({
           success: true,
-          message: "Chapter đã được publish.",
+          message: "Chapter đã được TE approve. Dùng endpoint publish để lên lịch xuất bản.",
           data: {
             chapter,
             series_review: {
@@ -1222,6 +1217,10 @@ router.post("/series-review/:seriesId/review-chapter", authMiddleware, requireTE
               decision: seriesReview.decision,
               feedback: seriesReview.feedback,
               quick_notes: seriesReview.quick_notes,
+            },
+            next_step: {
+              action: "publish",
+              endpoint: `POST /te-reviews/chapter/${chapter_id}/publish`,
             },
           },
         });
@@ -2161,13 +2160,16 @@ router.get("/chapter/:chapterId/annotations", authMiddleware, requireTE, async (
  *     description: |
  *       API này CHỈ approve hoặc reject chapter. KHÔNG tự động publish.
  *       TE phải gọi thêm endpoint `POST /te-reviews/chapter/:chapterId/publish`
- *       sau khi approve để publish chapter (chỉ áp dụng khi series đã EB-approved).
+ *       sau khi approve để lên lịch publish (chỉ áp dụng khi series đã EB-approved).
  *
  *       **Flow 2 bước cho series đã EB-approved (flow 2):**
  *       1. TE gọi `te-action` với `action = "approve"` → chapter → `approved_by_EB`,
  *          `TEReview.decision = "approved"`. TE **CHƯA publish** lúc này.
- *       2. TE gọi `POST /te-reviews/chapter/:chapterId/publish` → chapter → `published`,
- *          `TEReview.decision = "approved_publish"`, notify Mangaka + followers.
+ *       2. TE gọi `POST /te-reviews/chapter/:chapterId/publish`:
+ *          - Chapter đầu tiên của Series → bắt buộc truyền `scheduled_publish_at` (≥ Series.scheduled_publish_at).
+ *          - Chapter 2 trở đi → backend TỰ TÍNH lịch = chapter trước + cadence (weekly=+7 ngày, monthly=+30 ngày).
+ *          - Chapter được set `is_scheduled=true`, status giữ `approved_by_EB`. Job sẽ publish khi tới hạn,
+ *            set `published`, set `TEReview.decision = "approved_publish"`, notify Mangaka + followers.
  *
  *       **Flow 1 (series chưa EB-approved):**
  *       - TE approve → chapter → `pending_EB` (chờ EB duyệt Series).
@@ -2371,29 +2373,35 @@ router.post("/chapter/:chapterId/te-action", authMiddleware, requireTE, async (r
  * /te-reviews/chapter/{chapterId}/publish:
  *   post:
  *     tags: [TEReviews]
- *     summary: TE publish chapter (sau khi đã approve qua te-action)
+ *     summary: TE schedule/publish chapter (sau khi đã approve qua te-action)
  *     description: |
- *       TE publish chapter sau khi đã approve qua endpoint `te-action`
- *       (hoặc qua `series-review/:seriesId/review-chapter`).
- *
- *       **Luồng bắt buộc (flow 2 bước)**:
- *       1. TE approve chapter trước → chapter → `approved_by_EB`
- *          (gọi `POST /te-reviews/chapter/:chapterId/te-action` với `action = "approve"`
- *          HOẶC `POST /te-reviews/series-review/:seriesId/review-chapter` với `action = "approve"`).
- *       2. TE publish chapter qua endpoint NÀY → chapter → `published`.
+ *       TE gọi endpoint này sau khi đã approve chapter qua `te-action` (hoặc `series-review/:seriesId/review-chapter`).
  *
  *       **Điều kiện**:
  *       - Chapter.status = `approved_by_EB`
  *       - Series.status ∈ ["approved_by_EB", "approved", "published"]
  *       - Chapter.te_id = current TE (chỉ TE đã approve mới được publish)
  *
- *       **Hành động**:
- *       - Chapter → `published`, is_published = true, published_at = now
- *       - Snapshot `final_image_url` cho tất cả Pages (ưu tiên `result_image_url`, fallback `original_image_url`)
- *       - TEReview.decision = `approved_publish`
- *       - Nếu Series đang ở `approved_by_EB` → set Series = `published`
- *       - Cập nhật `Series.last_chapter_published_at`
- *       - Notification cho Mangaka + followers (nếu có)
+ *       **Hành vi**:
+ *       - **Chapter đầu tiên của Series** (chưa có chapter nào publish):
+ *         - BẮT BUỘC truyền `scheduled_publish_at` trong body.
+ *         - Phải ≥ Series.scheduled_publish_at. Nếu nhỏ hơn → 400.
+ *         - Chapter → status giữ `approved_by_EB`, `is_scheduled = true`, `scheduled_publish_at` = ngày TE chọn.
+ *         - Job `scheduledPublish` sẽ publish khi tới hạn, **NHƯNG chỉ khi**:
+ *           - Có >= 2 chapter đã TE-approve và chưa publish (buffer), HOẶC
+ *           - Series đã `publication_status = "completed"` và chapter này là chapter cuối.
+ *         - Nếu buffer chưa đủ: response trả về warning, chapter vẫn được schedule.
+ *           Khi tới hạn, job sẽ giữ chapter và áp dụng Policy B:
+ *           `scheduled_publish_at = (last_published.published_at + cadence)` về tương lai.
+ *       - **Chapter 2 trở đi** (đã có chapter trước đó publish hoặc scheduled):
+ *         - Backend TỰ TÍNH `scheduled_publish_at` = previous.published_at (hoặc scheduled_publish_at) + cadence
+ *           (weekly = +7 ngày, monthly = +30 ngày).
+ *         - TE KHÔNG cần truyền `scheduled_publish_at` (nếu truyền sẽ bị bỏ qua và dùng giá trị backend tính).
+ *         - Cùng logic buffer + Policy B như chapter 1.
+ *
+ *       **Series**:
+ *       - Series.status KHÔNG được tự động chuyển sang `published` ở endpoint này.
+ *         Việc này do job `scheduledPublish` xử lý khi chapter đầu tiên thực sự publish.
  *     security:
  *       - BearerAuth: []
  *     parameters:
@@ -2402,34 +2410,37 @@ router.post("/chapter/:chapterId/te-action", authMiddleware, requireTE, async (r
  *         required: true
  *         schema:
  *           type: string
+ *     requestBody:
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               scheduled_publish_at:
+ *                 type: string
+ *                 format: date-time
+ *                 description: |
+ *                   Bắt buộc cho chapter đầu tiên của Series. Phải ≥ Series.scheduled_publish_at.
+ *                   Bị bỏ qua cho chapter 2 trở đi (backend tự tính theo cadence).
  *     responses:
  *       200:
- *         description: Chapter published
- *         content:
- *           application/json:
- *             schema:
- *               type: object
- *               properties:
- *                 success: { type: boolean }
- *                 message: { type: string }
- *                 data:
- *                   $ref: '#/components/schemas/Chapter'
+ *         description: Chapter scheduled (sẽ được job publish khi tới hạn)
  *       400:
- *         description: Chapter chưa approved_by_EB hoặc Series chưa được EB duyệt
+ *         description: Thiếu scheduled_publish_at cho chapter 1, hoặc ngày không hợp lệ (< series.scheduled_publish_at), hoặc chapter không ở approved_by_EB
  *       403:
- *         description: TE không được gán chapter này (chỉ TE đã approve mới được publish)
+ *         description: TE không được gán chapter này
  *       404:
  *         description: Chapter not found
  */
 router.post("/chapter/:chapterId/publish", authMiddleware, requireTE, async (req, res, next) => {
   try {
     const { chapterId } = req.params;
+    const { scheduled_publish_at: reqScheduledAt } = req.body || {};
 
     const chapter = await Chapter.findById(chapterId);
     if (!chapter) return next(new AppError("Chapter not found", 404));
 
     // Ownership check: chỉ TE đã được gán chapter mới được publish.
-    // Đảm bảo flow 2 bước: TE phải approve qua te-action trước rồi mới publish.
     if (!chapter.te_id || String(chapter.te_id) !== String(req.user.nameid)) {
       return next(new AppError("Bạn không được gán cho chapter này. Hãy approve chapter qua te-action trước.", 403));
     }
@@ -2439,70 +2450,101 @@ router.post("/chapter/:chapterId/publish", authMiddleware, requireTE, async (req
       return next(new AppError("Chapter không ở trạng thái sẵn sàng publish. Vui lòng duyệt chapter trước.", 400));
     }
 
-    // Kiểm tra series đã được EB duyệt chưa (approved_by_EB / approved / published)
+    // Series đã được EB duyệt chưa
     const series = await Series.findById(chapter.series_id).lean();
     if (!series || ![SERIES_STATUS.APPROVED_BY_EB, SERIES_STATUS.APPROVED, SERIES_STATUS.PUBLISHED].includes(series.status)) {
       return next(new AppError("Series chưa được EB duyệt", 400));
     }
 
-    // Publish chapter
-    chapter.status = CHAPTER_STATUS.PUBLISHED;
-    chapter.is_published = true;
-    chapter.published_at = new Date();
-    chapter.revision_notes = "";
-    chapter.revision_annotations = [];
-    chapter.revision_source = "";
+    // Series bắt buộc phải có publication_schedule + scheduled_publish_at
+    if (!isValidSchedule(series.publication_schedule)) {
+      return next(new AppError("Series chưa có publication_schedule hợp lệ (weekly/monthly). Vui lòng liên hệ EB.", 400));
+    }
+    if (!series.scheduled_publish_at) {
+      return next(new AppError("Series chưa có scheduled_publish_at. Vui lòng liên hệ EB.", 400));
+    }
+
+    // ─── Xác định chương đầu tiên của Series (chưa có chapter nào publish)? ──────
+    const lastPublished = await getLastPublishedChapter(Chapter, series._id);
+    const isFirstChapter = !lastPublished;
+
+    let finalScheduleAt;
+
+    if (isFirstChapter) {
+      // Chapter đầu tiên của Series → bắt buộc TE chọn ngày, phải >= series.scheduled_publish_at
+      if (!reqScheduledAt) {
+        return next(new AppError(
+          "Đây là chapter đầu tiên của Series. Vui lòng truyền scheduled_publish_at trong body. " +
+          "Ngày này phải lớn hơn hoặc bằng ngày Series được publish.",
+          400
+        ));
+      }
+      const picked = new Date(reqScheduledAt);
+      if (isNaN(picked.getTime())) {
+        return next(new AppError("scheduled_publish_at không hợp lệ.", 400));
+      }
+      if (picked < new Date(series.scheduled_publish_at)) {
+        return next(new AppError(
+          "Ngày publish chapter đầu tiên phải sau hoặc bằng ngày Series được publish " +
+          `(${new Date(series.scheduled_publish_at).toISOString()}).`,
+          400
+        ));
+      }
+      finalScheduleAt = picked;
+    } else {
+      // Chapter 2 trở đi → tự tính theo chapter đã publish trước đó + cadence
+      // Nếu user vẫn truyền scheduled_publish_at → bỏ qua (BE tự quyết định).
+      const computed = computeNextChapterSchedule(lastPublished, series.publication_schedule);
+      if (!computed) {
+        return next(new AppError(
+          "Không thể tính lịch cho chapter tiếp theo. Vui lòng liên hệ admin.",
+          400
+        ));
+      }
+      finalScheduleAt = computed;
+    }
+
+    // Snapshot ngày schedule vào Chapter (chưa publish)
+    chapter.scheduled_publish_at = finalScheduleAt;
+    chapter.publication_schedule = series.publication_schedule;
+    chapter.publication_duration_days = series.publication_schedule === "weekly" ? 7 : 30;
+    chapter.is_scheduled = true;
+    // status vẫn là approved_by_EB — job sẽ chuyển sang published khi tới hạn
     await chapter.save();
 
-    // Snapshot ảnh cuối cho Reader (set final_image_url lúc publish để freeze giá trị)
-    // Ưu tiên result_image_url (ảnh assistant render), fallback original_image_url (ảnh gốc)
-    // Không ảnh hưởng luồng nội bộ - chỉ set sau khi đã publish thành công
-    // Bỏ qua nếu lỗi (chapter đã published, không làm fail cả request)
-    await Page.updateMany(
-      { chapter_id: chapter._id },
-      [
-        {
-          $set: {
-            final_image_url: {
-              $ifNull: ["$result_image_url", "$original_image_url"],
-            },
-          },
-        },
-      ],
-      { updatePipeline: true },
-    ).catch((err) =>
-      console.warn(
-        `[publish] Failed to snapshot final_image_url for chapter ${chapter._id}:`,
-        err.message
-      )
+    // ─── Soft warning: kiểm tra buffer ───
+    // Job sẽ tự giữ chapter này nếu buffer chưa đủ khi tới hạn.
+    // Vẫn cho phép schedule ngay, nhưng trả về cảnh báo để TE biết.
+    const approvedCount = await countApprovedUnpublishedChapters(Chapter, series._id);
+    const isFinal = await isFinalChapterOfSeries(
+      Chapter,
+      series._id,
+      chapter.chapter_number
     );
+    const isCompletedSeries = series.publication_status === "completed";
+    const bufferOk = approvedCount >= 2 || (isCompletedSeries && isFinal);
 
-    const review = await TEReview.findOne({ chapter_id: chapterId });
-    if (review) {
-      review.decision = TE_DECISION.APPROVED_PUBLISH;
-      await review.save();
+    let warning = null;
+    if (!bufferOk) {
+      warning =
+        `Hiện chỉ có ${approvedCount} chapter đã TE-approve và chưa publish. ` +
+        `Job sẽ giữ chapter này cho đến khi có ít nhất 2 chapter approved (hoặc đây là chapter cuối của Series đã completed).`;
     }
-
-    // Nếu đây là chapter đầu tiên của Series được publish → set Series.status = "published"
-    // (áp dụng khi Series đang ở "approved_by_EB" - chuyển sang "published")
-    if (series.status === SERIES_STATUS.APPROVED_BY_EB) {
-      await Series.findByIdAndUpdate(series._id, { status: SERIES_STATUS.PUBLISHED });
-    }
-
-    await notifyChapterTEPublished(
-      Notification,
-      chapter.submitted_by,
-      chapter,
-      series.name
-    );
-
-    // Hook notify cho reader đã subscribe (Risk C: service tự load lại series nếu thiếu field)
-    await notifyFollowersNewChapter(Notification, chapter, series);
 
     return res.status(200).json({
       success: true,
-      message: "Chapter đã được publish thành công.",
+      message: isFirstChapter
+        ? "Chapter đầu tiên đã được lên lịch. Job sẽ publish khi tới hạn."
+        : "Chapter đã được tự động lên lịch theo cadence của Series (weekly/monthly). Job sẽ publish khi tới hạn.",
       data: chapter,
+      buffer: {
+        approved_unpublished_count: approvedCount,
+        min_required: 2,
+        is_final_chapter: isFinal,
+        series_completed: isCompletedSeries,
+        ok: bufferOk,
+        warning,
+      },
     });
   } catch (error) {
     next(error);
