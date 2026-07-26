@@ -71,13 +71,17 @@ const buildCouncilSummary = (evalDoc) => {
           : "";
       // Self-heal: nếu record cũ bị bug copy external id sang member_name → bỏ qua.
       const savedName =
-        m.member_name && String(m.member_name).trim()
-          ? String(m.member_name).trim()
+        typeof m.member_name === "string" && m.member_name.trim()
+          ? m.member_name.trim()
           : "";
       const isStale =
         typeof savedName === "string" &&
         /^member-\d+-[a-z0-9]+$/i.test(savedName);
-      const resolvedName = (savedName && !isStale) || userFullName || "";
+      // String fallback chain — KHÔNG dùng && để tránh short-circuit trả boolean.
+      // Lỗi cũ: ("huy" && !false) === true, khiến member_name = true.
+      const resolvedName = !isStale && savedName
+        ? savedName
+        : userFullName || "";
       return {
         member_name: resolvedName,
         member_id: populated?._id ? String(populated._id) : null,
