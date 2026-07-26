@@ -3,8 +3,11 @@
  * Chạy mỗi phút:
  *  1. Auto set Series.status = "published" theo Series.scheduled_publish_at
  *     (kể cả khi Series chưa có chapter nào publish).
+ *     SKIP nếu Series.publication_status ∈ {"hiatus", "dropped"} (admin đã đánh dấu ngưng).
  *  2. Auto-publish các chapter đã được TE schedule:
  *     - status = "approved_by_EB", is_scheduled = true, scheduled_publish_at <= now.
+ *     - SKIP nếu Series.publication_status ∈ {"hiatus", "dropped"} — giữ nguyên scheduled_publish_at
+ *       để khi admin bỏ hiatus thì job sẽ publish tiếp.
  *     - Sort by chapter_number ASC để chapter nhỏ publish trước.
  *     - BUFFER CHECK: mặc định phải có >= 2 chapter approved_by_EB chưa publish.
  *       Ngoại lệ 1: chapter đầu tiên của Series (chưa có chapter nào publish) → cho publish.
@@ -248,9 +251,12 @@ const processScheduledPublish = async () => {
     const now = new Date();
 
     // 1. Auto set Series.status = "published" theo Series.scheduled_publish_at
+    //    SKIP nếu publication_status ∈ {hiatus, dropped} — admin đã đánh dấu ngưng/đã hủy,
+    //    không nên force publish dù đã tới hạn.
     const dueSeries = await Series.find({
       status: SERIES_STATUS.APPROVED_BY_EB,
       scheduled_publish_at: { $lte: now, $ne: null },
+      publication_status: { $nin: ["hiatus", "dropped"] },
     })
       .select("_id name author_id publication_schedule")
       .lean();
@@ -318,6 +324,19 @@ const processScheduledPublish = async () => {
           console.warn(
             `[ScheduledPublish] Skip chapter ${chapter._id}: scheduled time ` +
             `< series scheduled_publish_at (sanity check)`
+          );
+          continue;
+        }
+
+        // ─── HIATUS / DROPPED guard ─────────────────────────────────────────
+        // Nếu admin đã đánh dấu series tạm hoãn / bỏ, KHÔNG publish chapter này.
+        // Giữ nguyên scheduled_publish_at để khi admin đổi lại publication_status,
+        // job lần sau sẽ publish tiếp tục. Không recompute để tránh nhảy lịch.
+        if (["hiatus", "dropped"].includes(series.publication_status)) {
+          console.log(
+            `[ScheduledPublish] Skip chapter ${chapter._id} (${chapter.chapter_number}): ` +
+            `series is ${series.publication_status}. Hold scheduled_publish_at=`
+            + `${chapter.scheduled_publish_at?.toISOString() ?? "null"} until admin unblocks.`
           );
           continue;
         }

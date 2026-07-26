@@ -1383,6 +1383,113 @@ router.patch("/manga/series/:id/status", async (req, res, next) => {
 
 /**
  * @swagger
+ * /admin/manga/series/{id}/publication-status:
+ *   patch:
+ *     summary: Đổi publication_status (hiatus / completed / dropped / upcoming / ongoing)
+ *     description: |
+ *       Admin chỉnh "trạng thái công bố" (`publication_status`) của series.
+ *       Đây là field dùng để hiển thị cho reader (tạm hoãn, hoàn thành, hủy, ...),
+ *       KHÁC với `status` (workflow duyệt nội bộ).
+ *
+ *       **Hợp lệ:** `upcoming | ongoing | hiatus | completed | dropped | null`
+ *
+ *       **Hành vi đặc biệt:**
+ *       - Khi set `hiatus`: chuyển series sang chế độ "tạm hoãn". Job scheduledPublish sẽ tự skip
+ *         các chapter `scheduled_publish_at` của series này cho đến khi admin đổi lại status khác.
+ *       - Khi set `completed`: đánh dấu series đã hoàn thành (cho phép publish chapter cuối bypass buffer check).
+ *       - Khi set `dropped`: tương đương trạng thái bị hủy/bỏ.
+ *       - Khi set `ongoing`/`upcoming`/`null`: trở về hoạt động bình thường.
+ *
+ *       **Khuyến nghị:** Khi set `hiatus`, nên kèm `note` để lưu log lý do.
+ *     tags: [Admin - Manga]
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema: { type: string }
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [publication_status]
+ *             properties:
+ *               publication_status:
+ *                 type: string
+ *                 enum: [upcoming, ongoing, hiatus, completed, dropped, null]
+ *                 description: null = bỏ publication_status (legacy)
+ *               note:
+ *                 type: string
+ *                 description: Lý do thay đổi (lưu vào notification cho author)
+ *     responses:
+ *       200:
+ *         description: Đổi publication_status thành công
+ *       400: { description: publication_status không hợp lệ }
+ *       404: { description: Series not found }
+ *       401: { description: Unauthorized }
+ *       403: { description: Forbidden }
+ */
+router.patch("/manga/series/:id/publication-status", async (req, res, next) => {
+  try {
+    const { publication_status, note } = req.body;
+    const validValues = ["upcoming", "ongoing", "hiatus", "completed", "dropped", null];
+    // JSON gửi lên thường không phân biệt null/undefined; chấp nhận cả chuỗi "null" do FE có thể gửi string
+    const normalized = publication_status === "null" ? null : publication_status;
+    if (!validValues.includes(normalized)) {
+      return next(
+        new AppError(
+          `publication_status phải là một trong: ${validValues.filter((v) => v !== null).join(", ")} hoặc null`,
+          400
+        )
+      );
+    }
+    const series = await Series.findOne({ _id: req.params.id, deleted_at: null });
+    if (!series) return next(new AppError("Series not found", 404));
+
+    const oldPubStatus = series.publication_status;
+    series.publication_status = normalized;
+    await series.save();
+
+    // Notify author
+    const label = normalized ?? "null";
+    const VietnameseLabel = {
+      upcoming: "sắp ra",
+      ongoing: "đang tiến hành",
+      hiatus: "tạm hoãn",
+      completed: "hoàn thành",
+      dropped: "đã hủy",
+      null: "(bỏ trống)",
+    }[normalized] || label;
+
+    await Notification.create({
+      user_id: series.author_id,
+      type: "admin_series_publication_status_changed",
+      title: "Trạng thái công bố series đã thay đổi",
+      message: `Series "${series.name}" đã chuyển sang trạng thái "${VietnameseLabel}"${note ? `. Lý do: ${note}` : ""}.`,
+      is_read: false,
+      related_entity_type: "series",
+      related_entity_id: series._id,
+    });
+
+    res.json({
+      success: true,
+      message: `Series publication_status changed from ${oldPubStatus ?? "null"} to ${label}`,
+      data: {
+        id: series._id,
+        publication_status: series.publication_status,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+
+/**
+ * @swagger
  * /admin/manga/chapters/{id}/status:
  *   patch:
  *     summary: Đổi status chapter (legacy)
