@@ -324,6 +324,11 @@ const notifyFollowersNewChapter = async (Notification, chapter, seriesOpt) => {
  * đảm bảo notify đúng lúc Reader bắt đầu thấy series.
  *
  * KHÔNG notify cho chính tác giả.
+ *
+ * Lưu ý: caller có thể truyền series với author_id đã được populate thành object
+ * ({ _id, username, full_name }) HOẶC author_id thô (ObjectId/string). Server
+ * phải chuẩn hóa về ObjectId trước khi query FollowAuthor — nếu không so sánh
+ * ObjectId sẽ không match record trong collection followauthors.
  */
 const notifyFollowersAuthorNewSeries = async (Notification, series) => {
   try {
@@ -331,26 +336,38 @@ const notifyFollowersAuthorNewSeries = async (Notification, series) => {
 
     if (!series || !series._id || !series.author_id) return [];
 
+    // Chuẩn hóa author_id về ObjectId thô (handle cả ObjectId lẫn populated object).
+    const authorId =
+      series.author_id && typeof series.author_id === "object" && series.author_id._id
+        ? series.author_id._id
+        : series.author_id;
+
     const followers = await FollowAuthor.find({
-      author_id: series.author_id,
-      reader_id: { $ne: series.author_id },
+      author_id: authorId,
+      reader_id: { $ne: authorId },
     }).lean();
 
     if (followers.length === 0) return [];
+
+    // Resolve author_name phòng trường hợp caller chưa populate.
+    const authorName =
+      series.author_name ||
+      (typeof series.author_id === "object"
+        ? series.author_id.full_name || series.author_id.username
+        : "") ||
+      "Tác giả";
 
     const docs = followers.map((f) => ({
       user_id: f.reader_id,
       type: "new_series_from_author",
       title: `Tác giả ra series mới`,
-      message: `${series.author_name || "Tác giả"} vừa cho ra series "${
-        series.name
-      }".`,
+      message: `${authorName} vừa cho ra series "${series.name}".`,
       related_entity_type: "series",
       related_entity_id: series._id,
       meta: {
         series_id: series._id,
         series_name: series.name,
-        author_id: series.author_id,
+        author_id: authorId,
       },
     }));
 
@@ -363,6 +380,20 @@ const notifyFollowersAuthorNewSeries = async (Notification, series) => {
     console.error("[notifyFollowersAuthorNewSeries] error:", e.message);
     return [];
   }
+};
+
+/**
+ * Kiểm tra notification "new_series_from_author" đã được gửi cho series này chưa.
+ * Dùng để dedup giữa nhiều nhánh publish (job Series + job chapter fallback).
+ */
+const hasNotifiedFollowersAuthorNewSeries = async (Notification, seriesId) => {
+  const doc = await Notification.findOne({
+    type: "new_series_from_author",
+    related_entity_id: seriesId,
+  })
+    .select("_id")
+    .lean();
+  return !!doc;
 };
 
 /**
@@ -402,5 +433,6 @@ module.exports = {
   notifyChapterPublishConfirmed,
   notifyFollowersNewChapter,
   notifyFollowersAuthorNewSeries,
+  hasNotifiedFollowersAuthorNewSeries,
   getFollowerCount,
 };

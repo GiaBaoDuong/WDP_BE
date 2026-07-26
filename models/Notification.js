@@ -38,5 +38,11 @@ const notificationSchema = new mongoose.Schema(
 
 notificationSchema.index({ user_id: 1, is_read: 1, createdAt: -1 });
 
+// Index phục vụ dedup notification "new_series_from_author" (và các type
+// fan-out khác): truy vấn "đã từng gửi notification type X cho entity Y chưa?"
+// được job scheduledPublish gọi mỗi tick. Index này cũng giúp query dashboard
+// "tất cả notification liên quan entity này" nhanh.
+notificationSchema.index({ type: 1, related_entity_id: 1 });
+
 const Notification = mongoose.model("Notification", notificationSchema);
 module.exports = Notification;

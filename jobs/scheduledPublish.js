@@ -39,6 +39,7 @@ const {
   notifyChapterTEPublished,
   notifyFollowersNewChapter,
   notifyFollowersAuthorNewSeries,
+  hasNotifiedFollowersAuthorNewSeries,
 } = require("../services/notificationService");
 const {
   addInterval,
@@ -52,6 +53,46 @@ let intervalHandle = null;
 let isRunning = false;
 
 const MIN_BUFFER = 2;
+
+/**
+ * Notify follower của author khi series chính thức chuyển sang "published".
+ *
+ * Idempotent: dùng `hasNotifiedFollowersAuthorNewSeries` để check notification
+ * đã từng gửi cho series này chưa (tránh spam khi có nhiều nhánh cùng publish
+ * series — nhánh Series job + nhánh chapter fallback).
+ *
+ * Populate author_id một lần để lấy tên hiển thị (full_name), rồi truyền
+ * sang `notifyFollowersAuthorNewSeries` (service này tự chuẩn hóa về ObjectId).
+ */
+const notifyFollowersForPublishedSeries = async (series) => {
+  try {
+    const alreadySent = await hasNotifiedFollowersAuthorNewSeries(
+      Notification,
+      series._id
+    );
+    if (alreadySent) {
+      return [];
+    }
+
+    const populated = await Series.findById(series._id)
+      .populate("author_id", "username full_name")
+      .lean();
+    if (!populated) return [];
+
+    populated.author_name =
+      populated.author_id?.full_name ||
+      populated.author_id?.username ||
+      "Tác giả";
+
+    return await notifyFollowersAuthorNewSeries(Notification, populated);
+  } catch (err) {
+    console.error(
+      `[ScheduledPublish] notify hook error for series ${series._id}:`,
+      err.message
+    );
+    return [];
+  }
+};
 
 /**
  * Tìm chapter kế tiếp trong Series (theo chapter_number) chưa publish.
@@ -269,21 +310,10 @@ const processScheduledPublish = async () => {
       );
 
       // (Risk B) Notify follower của author khi series chính thức public.
+      // Helper này đã dedup: nếu notification đã từng gửi (kể cả từ nhánh chapter fallback
+      // ở tick trước) → skip, không spam follower.
       for (const series of dueSeries) {
-        try {
-          const populated = await Series.findById(series._id)
-            .populate("author_id", "username full_name")
-            .lean();
-          if (!populated) continue;
-          populated.author_name =
-            populated.author_id?.full_name || populated.author_id?.username || "Tác giả";
-          await notifyFollowersAuthorNewSeries(Notification, populated);
-        } catch (err) {
-          console.error(
-            `[ScheduledPublish] notify hook error for series ${series._id}:`,
-            err.message
-          );
-        }
+        await notifyFollowersForPublishedSeries(series);
       }
     }
 
@@ -367,11 +397,17 @@ const processScheduledPublish = async () => {
         const publishedAt = await publishChapter(chapter, series);
 
         // Nếu Series vẫn đang "approved_by_EB" → set Series = "published"
+        // (fallback cho trường hợp Series.scheduled_publish_at không khớp hoặc job Series chạy sau).
         if (series.status === SERIES_STATUS.APPROVED_BY_EB) {
           await Series.findByIdAndUpdate(series._id, {
             status: SERIES_STATUS.PUBLISHED,
             publication_status: series.publication_status || "ongoing",
           });
+          // (Risk B) Cũng notify followers — nếu nhánh này là nhánh đầu tiên
+          // set series → published (khi Series.scheduled_publish_at không kịp chạy),
+          // tránh miss thông báo new_series_from_author.
+          // Helper đã dedup: nếu nhánh Series job đã gửi ở tick trước → skip.
+          await notifyFollowersForPublishedSeries({ _id: series._id });
         }
 
         // Tự lên lịch chapter kế tiếp theo cadence
