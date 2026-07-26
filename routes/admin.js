@@ -29,6 +29,69 @@ const getInitials = (name) => {
   return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
 };
 
+// ─── Helper: chuẩn hóa EBEvaluation (lean) thành JSON trả cho FE ─────────────
+// Tái sử dụng ở 2 nơi:
+//   1. eb_evaluation  — điểm hội đồng EB cấp SERIES (first_review)
+//   2. chapter_evaluation — điểm hội đồng EB chấm cho chapter đầu tiên
+const buildCouncilSummary = (evalDoc) => {
+  const councilAverages = (evalDoc.member_scores || []).map((m) => m.average || 0);
+  const councilAverage =
+    councilAverages.length > 0
+      ? councilAverages.reduce((sum, v) => sum + v, 0) / councilAverages.length
+      : 0;
+
+  return {
+    total_members: (evalDoc.member_scores || []).length,
+    council_average: Math.round(councilAverage * 100) / 100,
+    result: evalDoc.result || null,
+    status: evalDoc.status || null,
+    first_review: evalDoc.first_review || false,
+    scheduled_publish_at: evalDoc.scheduled_publish_at || null,
+    evaluated_at: evalDoc.createdAt || null,
+    evaluated_by: evalDoc.evaluated_by
+      ? {
+          id: evalDoc.evaluated_by._id,
+          name:
+            evalDoc.evaluated_by.full_name || evalDoc.evaluated_by.username || "",
+        }
+      : null,
+    last_saved_by: evalDoc.last_saved_by
+      ? {
+          id: evalDoc.last_saved_by._id,
+          name:
+            evalDoc.last_saved_by.full_name || evalDoc.last_saved_by.username || "",
+        }
+      : null,
+    last_saved_at: evalDoc.last_saved_at || null,
+    member_scores: (evalDoc.member_scores || []).map((m) => {
+      const populated = m.member_id;
+      const userFullName =
+        populated && typeof populated === "object"
+          ? populated.full_name || populated.username || ""
+          : "";
+      // Self-heal: nếu record cũ bị bug copy external id sang member_name → bỏ qua.
+      const savedName =
+        m.member_name && String(m.member_name).trim()
+          ? String(m.member_name).trim()
+          : "";
+      const isStale =
+        typeof savedName === "string" &&
+        /^member-\d+-[a-z0-9]+$/i.test(savedName);
+      const resolvedName = (savedName && !isStale) || userFullName || "";
+      return {
+        member_name: resolvedName,
+        member_id: populated?._id ? String(populated._id) : null,
+        external_member_id: m.external_member_id || null,
+        scores: m.scores || {},
+        average: m.average || 0,
+        total_score: m.total_score || 0,
+        overall_comment: m.overall_comment || "",
+        saved_at: m.saved_at || null,
+      };
+    }),
+  };
+};
+
 // ════════════════════════════════════════════════════════════════════════════
 // 1. DASHBOARD
 // ════════════════════════════════════════════════════════════════════════════
@@ -319,51 +382,45 @@ router.get("/manga/:id", async (req, res, next) => {
     // Tính trung bình cộng điểm hội đồng EB (average of all member averages)
     let ebCouncilSummary = null;
     if (latestEval && Array.isArray(latestEval.member_scores) && latestEval.member_scores.length > 0) {
-      const councilAverages = latestEval.member_scores.map((m) => m.average || 0);
-      const councilAverage =
-        councilAverages.reduce((sum, v) => sum + v, 0) / councilAverages.length;
-      ebCouncilSummary = {
-        total_members: latestEval.member_scores.length,
-        council_average: Math.round(councilAverage * 100) / 100,
-        result: latestEval.result || null,
-        status: latestEval.status || null,
-        first_review: latestEval.first_review || false,
-        scheduled_publish_at: latestEval.scheduled_publish_at || null,
-        evaluated_at: latestEval.createdAt || null,
-        evaluated_by: latestEval.evaluated_by
-          ? { id: latestEval.evaluated_by._id, name: latestEval.evaluated_by.full_name || latestEval.evaluated_by.username }
-          : null,
-        last_saved_by: latestEval.last_saved_by
-          ? { id: latestEval.last_saved_by._id, name: latestEval.last_saved_by.full_name || latestEval.last_saved_by.username }
-          : null,
-        last_saved_at: latestEval.last_saved_at || null,
-        member_scores: latestEval.member_scores.map((m) => {
-          const populated = m.member_id;
-          const userFullName =
-            populated && typeof populated === "object"
-              ? populated.full_name || populated.username || ""
-              : "";
-          // Self-heal: nếu record cũ bị bug copy external id sang member_name → bỏ qua.
-          const savedName =
-            m.member_name && String(m.member_name).trim()
-              ? String(m.member_name).trim()
-              : "";
-          const isStale =
-            typeof savedName === "string" &&
-            /^member-\d+-[a-z0-9]+$/i.test(savedName);
-          const resolvedName = (savedName && !isStale) || userFullName || "";
-          return {
-            member_name: resolvedName,
-            member_id: populated?._id ? String(populated._id) : null,
-            external_member_id: m.external_member_id || null,
-            scores: m.scores || {},
-            average: m.average || 0,
-            total_score: m.total_score || 0,
-            overall_comment: m.overall_comment || "",
-            saved_at: m.saved_at || null,
-          };
-        }),
-      };
+      ebCouncilSummary = buildCouncilSummary(latestEval);
+    }
+
+    // Lấy điểm EB chấm cho CHAPTER ĐẦU TIÊN của series (nếu có) — để admin xem.
+    // Không phụ thuộc status của chapter (draft/published/...).
+    // Nếu có nhiều chapter 1 evaluations → lấy bản mới nhất theo createdAt.
+    const firstChapter = await Chapter.findOne({ series_id: series._id })
+      .sort({ chapter_number: 1 })
+      .select("_id chapter_number title")
+      .lean();
+
+    let chapterEvaluation = null;
+    if (firstChapter) {
+      const firstChapterEval = await EBEvaluation.findOne({
+        series_id: series._id,
+        chapter_id: firstChapter._id,
+        // Chỉ lấy bản đã lưu/khóa (đã chấm xong). Loại trừ bản "scoring" đang nhập dở.
+        status: { $in: ["saved", "locked"] },
+      })
+        .sort({ createdAt: -1 })
+        .populate("evaluated_by", "username full_name")
+        .populate("last_saved_by", "username full_name")
+        .populate(
+          "member_scores.member_id",
+          "username full_name avatar_url is_eb_representative"
+        )
+        .lean();
+
+      if (firstChapterEval && Array.isArray(firstChapterEval.member_scores) && firstChapterEval.member_scores.length > 0) {
+        const summary = buildCouncilSummary(firstChapterEval);
+        chapterEvaluation = {
+          chapter: {
+            id: firstChapter._id,
+            chapter_number: firstChapter.chapter_number,
+            title: firstChapter.title || "",
+          },
+          ...summary,
+        };
+      }
     }
 
     // Đếm số reader vote thực tế từ Comment (loại bỏ admin/EB/TE comments).
@@ -414,6 +471,9 @@ router.get("/manga/:id", async (req, res, next) => {
         },
         // ───── Điểm do EB chấm (cấp series) ─────
         eb_evaluation: ebCouncilSummary,
+        // ───── Điểm EB chấm cho chapter đầu tiên của series ─────
+        // null nếu EB chưa chấm chapter đầu. Admin dùng để tham khảo điểm thực tế EB đã chấm.
+        chapter_evaluation: chapterEvaluation,
       },
     });
   } catch (error) {
