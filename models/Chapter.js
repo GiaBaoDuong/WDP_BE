@@ -105,6 +105,7 @@ const chapterSchema = new mongoose.Schema(
       }],
       default: [],
     },
+    deleted_at: { type: Date, default: null },
   },
   { timestamps: true }
 );
@@ -113,6 +114,7 @@ chapterSchema.index({ series_id: 1, chapter_number: 1 });
 chapterSchema.index({ status: 1 });
 chapterSchema.index({ submitted_by: 1, status: 1 });
 chapterSchema.index({ is_scheduled: 1, scheduled_publish_at: 1 });
+chapterSchema.index({ series_id: 1, deleted_at: 1 });
 
 const Chapter = mongoose.model("Chapter", chapterSchema);
 module.exports = Chapter;

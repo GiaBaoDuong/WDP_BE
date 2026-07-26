@@ -99,8 +99,15 @@ router.get("/", optionalAuth, async (req, res, next) => {
     if (!req.user || req.user.role === "Reader") {
       filter.is_public = true;
       filter.status = "published";
+      filter.deleted_at = null; // Ẩn series đã bị admin force-delete
     } else if (req.user.role === "Mangaka") {
       filter.author_id = req.user.nameid;
+      // Mangaka vẫn thấy series của mình kể cả khi đã admin force-delete
+      // (để biết truyện bị ẩn và liên hệ admin)
+    }
+    // EB/TE thấy tất cả trừ series đã soft-delete (giữ thống nhất với admin list)
+    else if (req.user.role === "EB" || req.user.role === "TE") {
+      filter.deleted_at = null;
     }
     // Không cần else cho EB/TE vì không có filter (thấy tất cả)
     if (genre) {

@@ -108,7 +108,7 @@ router.get("/series", optionalAuth, async (req, res, next) => {
         : String(rawTags).split(",").map((t) => t.trim()).filter(Boolean);
     }
 
-    const filter = { is_public: true, status: "published" };
+    const filter = { is_public: true, status: "published", deleted_at: null };
     if (genreArr.length > 0) filter.genre = { $in: genreArr };
     if (tagArr.length > 0) filter.tags = { $in: tagArr };
     if (title) filter.name = { $regex: String(title), $options: "i" };
@@ -263,6 +263,7 @@ router.get("/series/:id", authMiddleware, requireReader, async (req, res, next) 
       _id: req.params.id,
       is_public: true,
       status: "published",
+      deleted_at: null,
     })
       .populate("author_id", "username full_name phoneNumber avatar_url")
       .lean();
@@ -358,6 +359,7 @@ router.get("/series/:id/chapters", authMiddleware, requireReader, async (req, re
       _id: req.params.id,
       is_public: true,
       status: "published",
+      deleted_at: null,
     }).lean();
     if (!series) return next(new AppError("Series not found", 404));
 
@@ -506,7 +508,7 @@ router.post("/votes", authMiddleware, requireReader, async (req, res, next) => {
       return next(new AppError("Score must be between 1 and 5", 400));
     }
 
-    const series = await Series.findOne({ _id: series_id, is_public: true });
+    const series = await Series.findOne({ _id: series_id, is_public: true, deleted_at: null });
     if (!series) return next(new AppError("Series not found", 404));
 
     const release_period = getCurrentPeriod();
@@ -806,6 +808,7 @@ router.post("/history", authMiddleware, requireReader, async (req, res, next) =>
       _id: series_id,
       is_public: true,
       status: "published",
+      deleted_at: null,
     }).select("_id");
     if (!series) {
       return next(new AppError("Series not found or not published", 404));
@@ -1029,6 +1032,7 @@ router.post("/bookshelf", authMiddleware, requireReader, async (req, res, next) 
       _id: series_id,
       is_public: true,
       status: "published",
+      deleted_at: null,
     }).select("_id");
     if (!series) return next(new AppError("Series not found or not published", 404));
 
@@ -1242,6 +1246,7 @@ router.get("/rankings", authMiddleware, requireReader, async (req, res, next) =>
       rankings = await Series.find({
         status: "published",
         is_public: true,
+        deleted_at: null,
       })
         .sort({ [sField]: -1 })
         .limit(parsedLimit)
@@ -1360,6 +1365,7 @@ router.get("/rankings/dashboard", authMiddleware, requireReader, async (req, res
         const series = await Series.find({
           status: "published",
           is_public: true,
+          deleted_at: null,
         })
           .sort({ [sortField]: -1 })
           .limit(parsedLimit)
@@ -1384,7 +1390,7 @@ router.get("/rankings/dashboard", authMiddleware, requireReader, async (req, res
         .lean();
 
       const seriesIds = stats.map((s) => s.series_id);
-      const seriesMap = await Series.find({ _id: { $in: seriesIds }, status: "published", is_public: true })
+      const seriesMap = await Series.find({ _id: { $in: seriesIds }, status: "published", is_public: true, deleted_at: null })
         .select("name cover_image_url genre")
         .lean()
         .then((arr) => {

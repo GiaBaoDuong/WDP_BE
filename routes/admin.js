@@ -524,27 +524,72 @@ router.delete("/manga/:id", async (req, res, next) => {
     const series = await Series.findById(req.params.id);
     if (!series) return next(new AppError("Manga not found", 404));
 
-    const allowedStatuses = ["draft", "rejected", "cancelled"];
-    if (!allowedStatuses.includes(series.status)) {
-      return next(
-        new AppError(
-          `Không thể xoá truyện đang ở trạng thái "${series.status}". Chỉ cho phép xoá: draft, rejected, cancelled.`,
-          403
-        )
-      );
-    }
-
+    // ─── Admin force-delete: KHÔNG giới hạn status ─────────────────────────
+    // Admin có thể xóa bất kỳ series nào (kể cả đang published, approved_by_EB,
+    // hiatus, ongoing, ...). Lý do: truyện vi phạm bản quyền, bị report nghiêm trọng, ...
+    //
+    // Hành vi:
+    // 1. Series: soft delete (deleted_at + is_public=false + publication_status=dropped)
+    // 2. Tất cả Chapter của series: soft delete (deleted_at) — giữ record để audit
+    // 3. Tất cả Page + Task của các chapter: HARD DELETE — giải phóng storage
+    // 4. Mangaka (author) vẫn thấy series của mình (kể cả đã delete) — xem GET /series và
+    //    GET /authors/:authorId/series (filter bypass khi req.user là author).
+    // 5. Reader / EB / TE / anonymous → KHÔNG thấy series đã delete.
     if (series.deleted_at) {
       return next(new AppError("Manga already deleted", 410));
     }
 
-    series.deleted_at = new Date();
+    const deletedAt = new Date();
+
+    // 1. Soft delete Series
+    series.deleted_at = deletedAt;
+    series.is_public = false;
+    series.publication_status = "dropped";
     await series.save();
+
+    // 2. Soft delete tất cả chapters của series (giữ record để audit, restore được)
+    const chapterUpdate = await Chapter.updateMany(
+      { series_id: series._id, deleted_at: null },
+      { $set: { deleted_at: deletedAt } }
+    );
+
+    // 3. Lấy danh sách chapter IDs (bao gồm cả chapter đã xóa trước đó) để cleanup Page + Task
+    const allChapters = await Chapter.find({ series_id: series._id }).select("_id").lean();
+    const allChapterIds = allChapters.map((c) => c._id);
+
+    // Hard delete Pages + Tasks của TẤT CẢ chapters (kể cả đã soft-delete từ trước)
+    const [pagesResult, tasksResult] = await Promise.all([
+      Page.deleteMany({ chapter_id: { $in: allChapterIds } }),
+      Task.deleteMany({ chapter_id: { $in: allChapterIds } }),
+    ]);
+
+    // 4. Notify author
+    try {
+      await Notification.create({
+        user_id: series.author_id,
+        type: "admin_series_force_deleted",
+        title: "Truyện đã bị ẩn bởi Admin",
+        message: `Series "${series.name}" đã bị Admin ẩn khỏi reader (force delete). ` +
+                 `Toàn bộ chapter cũng đã bị ẩn. Liên hệ admin nếu có thắc mắc.`,
+        is_read: false,
+        related_entity_type: "series",
+        related_entity_id: series._id,
+      });
+    } catch (notifErr) {
+      console.error("[admin.deleteManga] notify author failed:", notifErr.message);
+    }
 
     res.json({
       success: true,
-      message: "Manga hidden successfully (soft delete)",
-      data: { id: series._id, title: series.name, deleted_at: series.deleted_at },
+      message: "Manga force-deleted (soft delete series + chapters, hard delete pages + tasks)",
+      data: {
+        id: series._id,
+        title: series.name,
+        deleted_at: series.deleted_at,
+        chapters_soft_deleted: chapterUpdate.modifiedCount,
+        pages_hard_deleted: pagesResult.deletedCount,
+        tasks_hard_deleted: tasksResult.deletedCount,
+      },
     });
   } catch (error) {
     next(error);
@@ -1281,27 +1326,40 @@ router.delete("/series/:id", async (req, res, next) => {
     const series = await Series.findById(req.params.id);
     if (!series) return next(new AppError("Series not found", 404));
 
-    const allowedStatuses = ["draft", "rejected", "cancelled"];
-    if (!allowedStatuses.includes(series.status)) {
-      return next(
-        new AppError(
-          `Không thể xoá truyện đang ở trạng thái "${series.status}". Chỉ cho phép xoá: draft, rejected, cancelled.`,
-          403
-        )
-      );
-    }
-
+    // Admin force-delete: bỏ giới hạn status (legacy endpoint, cùng logic /manga/:id).
     if (series.deleted_at) {
       return next(new AppError("Series already deleted", 410));
     }
 
-    series.deleted_at = new Date();
+    const deletedAt = new Date();
+
+    series.deleted_at = deletedAt;
+    series.is_public = false;
+    series.publication_status = "dropped";
     await series.save();
+
+    const chapterUpdate = await Chapter.updateMany(
+      { series_id: series._id, deleted_at: null },
+      { $set: { deleted_at: deletedAt } }
+    );
+    const allChapters = await Chapter.find({ series_id: series._id }).select("_id").lean();
+    const allChapterIds = allChapters.map((c) => c._id);
+    const [pagesResult, tasksResult] = await Promise.all([
+      Page.deleteMany({ chapter_id: { $in: allChapterIds } }),
+      Task.deleteMany({ chapter_id: { $in: allChapterIds } }),
+    ]);
 
     res.json({
       success: true,
-      message: "Series hidden successfully (soft delete)",
-      data: { id: series._id, title: series.name, deleted_at: series.deleted_at },
+      message: "Series force-deleted (soft delete series + chapters, hard delete pages + tasks)",
+      data: {
+        id: series._id,
+        title: series.name,
+        deleted_at: series.deleted_at,
+        chapters_soft_deleted: chapterUpdate.modifiedCount,
+        pages_hard_deleted: pagesResult.deletedCount,
+        tasks_hard_deleted: tasksResult.deletedCount,
+      },
     });
   } catch (error) {
     next(error);

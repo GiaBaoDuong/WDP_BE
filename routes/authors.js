@@ -175,9 +175,23 @@ router.get("/:authorId/series", authMiddleware, async (req, res, next) => {
 
     const filter = {
       author_id: authorId,
-      is_public: true,
-      status: "published",
     };
+
+    // Phân quyền hiển thị series:
+    // - Chính author (Mangaka) xem trang của mình: thấy TẤT CẢ series (kể cả admin-force-deleted)
+    //   → biết truyện nào đã bị ẩn, liên hệ admin.
+    // - Người khác (Reader, EB, TE, Mangaka khác, anonymous): chỉ thấy series public + published,
+    //   loại trừ series đã soft-delete.
+    const isSelfView =
+      req.user && req.user.nameid && String(req.user.nameid) === String(authorId);
+
+    if (!isSelfView) {
+      filter.is_public = true;
+      filter.status = "published";
+      filter.deleted_at = null;
+    }
+    // isSelfView: không thêm filter is_public / status / deleted_at → author thấy tất cả.
+
     if (publication_status) filter.publication_status = publication_status;
 
     const pageNum = Math.max(1, parseInt(page));
