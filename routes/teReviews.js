@@ -2669,4 +2669,316 @@ router.patch("/series/:seriesId/publication-status", authMiddleware, requireTE, 
   }
 });
 
+// ─── GET /te-reviews/calendar ─────────────────────────────────────────────────
+/**
+ * @swagger
+ * /te-reviews/calendar:
+ *   get:
+ *     tags: [TEReviews]
+ *     summary: Lịch xuất bản các chapter cho TE quản lý
+ *     description: |
+ *       Trả về calendar các chapter được schedule publish trong tương lai
+ *       (status = approved_by_EB, is_scheduled = true) + các chapter vừa publish gần đây.
+ *
+ *       **Phân quyền:**
+ *       - TE mặc định chỉ thấy chapter được gán cho mình (`te_id = req.user.nameid`).
+ *       - Admin có thể truyền `scope=all` để xem tất cả chapter trên hệ thống.
+ *       - Có thể truyền `series_id=<id>` để lọc theo series cụ thể.
+ *
+ *       **Response gom theo từng ngày** (`days[]`) để FE dễ render lịch:
+ *       - Mỗi day có `date`, `weekday`, `chapters[]` (sort theo chapter_number ASC),
+ *         và `series_launches[]` (Series có scheduled_publish_at rơi vào ngày đó).
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: from_date
+ *         schema: { type: string, format: date }
+ *         description: Ngày bắt đầu (YYYY-MM-DD, mặc định = hôm nay)
+ *       - in: query
+ *         name: to_date
+ *         schema: { type: string, format: date }
+ *         description: Ngày kết thúc (YYYY-MM-DD, mặc định = hôm nay + 30 ngày)
+ *       - in: query
+ *         name: series_id
+ *         schema: { type: string }
+ *         description: Lọc theo Series ID cụ thể
+ *       - in: query
+ *         name: include_published
+ *         schema: { type: boolean, default: true }
+ *         description: Có lấy các chapter đã published trong khoảng from_date..to_date không
+ *       - in: query
+ *         name: scope
+ *         schema: { type: string, enum: [mine, all], default: mine }
+ *         description: Chỉ Admin mới dùng được `scope=all` để xem toàn bộ hệ thống
+ *     responses:
+ *       200:
+ *         description: Calendar gom theo ngày
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success: { type: boolean }
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     range:
+ *                       type: object
+ *                       properties:
+ *                         from_date: { type: string }
+ *                         to_date: { type: string }
+ *                         total_days: { type: number }
+ *                     stats:
+ *                       type: object
+ *                       properties:
+ *                         scheduled_chapters: { type: number }
+ *                         published_in_range: { type: number }
+ *                         series_launches_in_range: { type: number }
+ *                     days:
+ *                       type: array
+ *                       items:
+ *                         type: object
+ *                         properties:
+ *                           date: { type: string, format: date }
+ *                           weekday: { type: string }
+ *                           series_launches:
+ *                             type: array
+ *                             items:
+ *                               type: object
+ *                               properties:
+ *                                 _id: { type: string }
+ *                                 name: { type: string }
+ *                                 cover_image_url: { type: string }
+ *                                 author: { type: object }
+ *                           chapters:
+ *                             type: array
+ *                             items:
+ *                               type: object
+ *                               properties:
+ *                                 _id: { type: string }
+ *                                 chapter_number: { type: number }
+ *                                 title: { type: string }
+ *                                 status: { type: string }
+ *                                 is_published: { type: boolean }
+ *                                 published_at: { type: string, format: date-time }
+ *                                 scheduled_publish_at: { type: string, format: date-time }
+ *                                 publication_schedule: { type: string }
+ *                                 te:
+ *                                   type: object
+ *                                 series:
+ *                                   type: object
+ *       403: { description: TE không được gán chapter nào / không có quyền scope=all }
+ */
+router.get("/calendar", authMiddleware, requireTE, async (req, res, next) => {
+  try {
+    const isAdmin = req.user.role === ROLES.ADMIN;
+    const { from_date, to_date, series_id, include_published } = req.query;
+
+    // Khoảng thời gian mặc định: hôm nay → +30 ngày
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const defaultTo = new Date(today);
+    defaultTo.setDate(defaultTo.getDate() + 30);
+    defaultTo.setHours(23, 59, 59, 999);
+
+    const fromDate = from_date ? new Date(from_date) : today;
+    const toDate = to_date ? new Date(to_date) : defaultTo;
+    if (isNaN(fromDate.getTime()) || isNaN(toDate.getTime())) {
+      return next(new AppError("from_date / to_date không hợp lệ (YYYY-MM-DD).", 400));
+    }
+    if (fromDate > toDate) {
+      return next(new AppError("from_date phải nhỏ hơn hoặc bằng to_date.", 400));
+    }
+    // Set from về 00:00:00, to về 23:59:59 inclusive
+    const fromStart = new Date(fromDate);
+    fromStart.setHours(0, 0, 0, 0);
+    const toEnd = new Date(toDate);
+    toEnd.setHours(23, 59, 59, 999);
+
+    const includePublished = include_published === undefined
+      ? true
+      : String(include_published) !== "false";
+
+    // Build filter chapter:
+    //   - Lấy chapter được lên lịch (is_scheduled=true, scheduled_publish_at trong [fromStart, toEnd])
+    //   - Hoặc chapter đã published trong range nếu include_published=true
+    const orClauses = [
+      {
+        is_scheduled: true,
+        status: CHAPTER_STATUS.APPROVED_BY_EB,
+        scheduled_publish_at: { $gte: fromStart, $lte: toEnd },
+      },
+    ];
+    if (includePublished) {
+      orClauses.push({
+        is_published: true,
+        published_at: { $gte: fromStart, $lte: toEnd },
+      });
+    }
+
+    const chapterFilter = {
+      $or: orClauses,
+    };
+    if (series_id) {
+      if (!mongoose.Types.ObjectId.isValid(series_id)) {
+        return next(new AppError("series_id không hợp lệ.", 400));
+      }
+      chapterFilter.series_id = series_id;
+    }
+
+    // Phân quyền scope:
+    //   - TE (không phải Admin): mặc định chỉ xem chapter được gán cho mình.
+    //     Có thể truyền scope=all nhưng sẽ bị 403 (chỉ Admin dùng được).
+    //   - Admin: mặc định xem tất cả. Có thể truyền scope=mine để xem của riêng admin đó.
+    const requestedScope = req.query.scope || (isAdmin ? "all" : "mine");
+    if (requestedScope === "all" && !isAdmin) {
+      return next(new AppError("Chỉ Admin mới có quyền xem calendar toàn hệ thống.", 403));
+    }
+    if (requestedScope === "mine") {
+      chapterFilter.$and = (chapterFilter.$and || []).concat([
+        { $or: [{ te_id: req.user.nameid }, { te_id: null }] },
+      ]);
+    }
+
+    const chapters = await Chapter.find(chapterFilter)
+      .populate("series_id", "name cover_image_url status publication_schedule publication_status author_id scheduled_publish_at")
+      .populate("series_id.author_id", "username full_name")
+      .populate("te_id", "username full_name")
+      .populate("submitted_by", "username full_name")
+      .sort({ scheduled_publish_at: 1, published_at: 1, chapter_number: 1 })
+      .lean();
+
+    // Series launches: Series.scheduled_publish_at rơi vào range
+    const seriesFilter = {
+      scheduled_publish_at: { $gte: fromStart, $lte: toEnd, $ne: null },
+      deleted_at: null,
+    };
+    if (series_id) seriesFilter._id = series_id;
+    const seriesLaunches = await Series.find(seriesFilter)
+      .populate("author_id", "username full_name")
+      .select("_id name cover_image_url status publication_schedule publication_status scheduled_publish_at author_id")
+      .sort({ scheduled_publish_at: 1 })
+      .lean();
+
+    // Build map: date-string YYYY-MM-DD → { date, weekday, chapters[], series_launches[] }
+    const daysMap = {};
+    const toYMD = (d) => {
+      const dt = new Date(d);
+      const y = dt.getFullYear();
+      const m = String(dt.getMonth() + 1).padStart(2, "0");
+      const day = String(dt.getDate()).padStart(2, "0");
+      return `${y}-${m}-${day}`;
+    };
+    const weekdayLabels = ["CN", "T2", "T3", "T4", "T5", "T6", "T7"];
+    const ensureDay = (d) => {
+      const key = toYMD(d);
+      if (!daysMap[key]) {
+        const dt = new Date(d);
+        daysMap[key] = {
+          date: key,
+          weekday: weekdayLabels[dt.getDay()],
+          series_launches: [],
+          chapters: [],
+        };
+      }
+      return daysMap[key];
+    };
+
+    let scheduledCount = 0;
+    let publishedInRangeCount = 0;
+
+    for (const ch of chapters) {
+      const isPublished = !!ch.is_published && !!ch.published_at;
+      const refDate = isPublished ? ch.published_at : ch.scheduled_publish_at;
+      if (!refDate) continue;
+      const day = ensureDay(refDate);
+
+      day.chapters.push({
+        _id: ch._id,
+        chapter_number: ch.chapter_number,
+        title: ch.title,
+        status: ch.status,
+        is_published: isPublished,
+        published_at: isPublished ? ch.published_at : null,
+        scheduled_publish_at: !isPublished ? ch.scheduled_publish_at : null,
+        publication_schedule: ch.publication_schedule,
+        te: ch.te_id,
+        submitted_by: ch.submitted_by,
+        series: ch.series_id
+          ? {
+              _id: ch.series_id._id,
+              name: ch.series_id.name,
+              cover_image_url: ch.series_id.cover_image_url,
+              status: ch.series_id.status,
+              publication_schedule: ch.series_id.publication_schedule,
+              publication_status: ch.series_id.publication_status,
+            }
+          : null,
+      });
+
+      if (isPublished) publishedInRangeCount += 1;
+      else scheduledCount += 1;
+    }
+
+    for (const s of seriesLaunches) {
+      const day = ensureDay(s.scheduled_publish_at);
+      day.series_launches.push({
+        _id: s._id,
+        name: s.name,
+        cover_image_url: s.cover_image_url,
+        status: s.status,
+        publication_schedule: s.publication_schedule,
+        scheduled_publish_at: s.scheduled_publish_at,
+        author: s.author_id,
+      });
+    }
+
+    // Build danh sách ngày liên tục từ fromStart..toEnd (kể cả ngày không có event) để FE render calendar trống dễ dàng
+    const days = [];
+    const cursor = new Date(fromStart);
+    while (cursor <= toEnd) {
+      const key = toYMD(cursor);
+      if (daysMap[key]) {
+        // Sắp xếp chapters theo series rồi chapter_number
+        daysMap[key].chapters.sort((a, b) => {
+          const as = a.series?.name || "";
+          const bs = b.series?.name || "";
+          if (as !== bs) return as.localeCompare(bs);
+          return (a.chapter_number || 0) - (b.chapter_number || 0);
+        });
+        days.push(daysMap[key]);
+      } else {
+        days.push({
+          date: key,
+          weekday: weekdayLabels[cursor.getDay()],
+          series_launches: [],
+          chapters: [],
+        });
+      }
+      cursor.setDate(cursor.getDate() + 1);
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        range: {
+          from_date: toYMD(fromStart),
+          to_date: toYMD(toEnd),
+          total_days: days.length,
+        },
+        stats: {
+          scheduled_chapters: scheduledCount,
+          published_in_range: publishedInRangeCount,
+          series_launches_in_range: seriesLaunches.length,
+        },
+        scope: requestedScope,
+        days,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 module.exports = router;

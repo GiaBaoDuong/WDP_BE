@@ -4,6 +4,7 @@ const router = express.Router();
 const { authMiddleware } = require("../middleware/auth");
 const { requireAdmin } = require("../middleware/roles");
 const { AppError } = require("../middleware/errorHandler");
+const { CHAPTER_STATUS } = require("../utils/constants");
 const User = require("../models/User");
 const Series = require("../models/Series");
 const Chapter = require("../models/Chapter");
@@ -2132,6 +2133,262 @@ router.delete("/comments/:id", async (req, res, next) => {
     return res.json({
       success: true,
       message: "Comment deleted successfully",
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// PUBLICATION CALENDAR (Admin overview toàn hệ thống)
+// ════════════════════════════════════════════════════════════════════════════
+
+/**
+ * @swagger
+ * /admin/publication-calendar:
+ *   get:
+ *     summary: Lịch xuất bản toàn hệ thống (Admin only)
+ *     tags: [Admin - Calendar]
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: from_date
+ *         schema: { type: string, format: date }
+ *         description: Ngày bắt đầu (mặc định = hôm nay)
+ *       - in: query
+ *         name: to_date
+ *         schema: { type: string, format: date }
+ *         description: Ngày kết thúc (mặc định = hôm nay + 30 ngày)
+ *       - in: query
+ *         name: schedule
+ *         schema: { type: string, enum: [weekly, monthly] }
+ *         description: Lọc theo tần suất (chỉ áp dụng cho chapter)
+ *     responses:
+ *       200:
+ *         description: Calendar kèm stats tổng quan
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success: { type: boolean }
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     range: { type: object }
+ *                     overview:
+ *                       type: object
+ *                       properties:
+ *                         total_series: { type: number }
+ *                         total_chapters_published: { type: number }
+ *                         chapters_scheduled_in_range: { type: number }
+ *                         series_launches_in_range: { type: number }
+ *                         series_by_status: { type: object }
+ *                         series_by_publication_status: { type: object }
+ *                     upcoming_series:
+ *                       type: array
+ *                       description: Series sắp publish (status=approved_by_EB, scheduled_publish_at trong range)
+ *                     upcoming_chapters:
+ *                       type: array
+ *                       description: Chapter sắp publish (sort theo scheduled_publish_at)
+ *                     days:
+ *                       type: array
+ */
+router.get("/publication-calendar", async (req, res, next) => {
+  try {
+    const { from_date, to_date, schedule } = req.query;
+
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const defaultTo = new Date(today);
+    defaultTo.setDate(defaultTo.getDate() + 30);
+    defaultTo.setHours(23, 59, 59, 999);
+
+    const fromDate = from_date ? new Date(from_date) : today;
+    const toDate = to_date ? new Date(to_date) : defaultTo;
+    if (isNaN(fromDate.getTime()) || isNaN(toDate.getTime())) {
+      return next(new AppError("from_date / to_date không hợp lệ", 400));
+    }
+    if (fromDate > toDate) {
+      return next(new AppError("from_date phải nhỏ hơn hoặc bằng to_date", 400));
+    }
+    const fromStart = new Date(fromDate);
+    fromStart.setHours(0, 0, 0, 0);
+    const toEnd = new Date(toDate);
+    toEnd.setHours(23, 59, 59, 999);
+
+    // ═── 1. Tổng quan hệ thống (Promise.all cho nhanh) ────────────────────────
+    const [
+      totalSeries,
+      totalChaptersPublished,
+      chaptersInRange,
+      seriesInRange,
+      seriesByStatusAgg,
+      seriesByPubStatusAgg,
+    ] = await Promise.all([
+      Series.countDocuments({ deleted_at: null }),
+      Chapter.countDocuments({ is_published: true }),
+      Chapter.countDocuments({
+        is_scheduled: true,
+        status: CHAPTER_STATUS.APPROVED_BY_EB,
+        scheduled_publish_at: { $gte: fromStart, $lte: toEnd },
+      }),
+      Series.countDocuments({
+        scheduled_publish_at: { $gte: fromStart, $lte: toEnd, $ne: null },
+        deleted_at: null,
+      }),
+      Series.aggregate([
+        { $match: { deleted_at: null } },
+        { $group: { _id: "$status", count: { $sum: 1 } } },
+      ]),
+      Series.aggregate([
+        { $match: { deleted_at: null } },
+        { $group: { _id: "$publication_status", count: { $sum: 1 } } },
+      ]),
+    ]);
+
+    const seriesByStatus = {};
+    seriesByStatusAgg.forEach((row) => {
+      seriesByStatus[row._id || "unknown"] = row.count;
+    });
+    const seriesByPublicationStatus = {};
+    seriesByPubStatusAgg.forEach((row) => {
+      seriesByPublicationStatus[row._id || "unknown"] = row.count;
+    });
+
+    // ═── 2. Series sắp publish (ngày ra mắt) ────────────────────────────────
+    const upcomingSeries = await Series.find({
+      deleted_at: null,
+      scheduled_publish_at: { $gte: fromStart, $lte: toEnd, $ne: null },
+    })
+      .populate("author_id", "username full_name")
+      .select("_id name cover_image_url status publication_schedule publication_status scheduled_publish_at author_id")
+      .sort({ scheduled_publish_at: 1 })
+      .lean();
+
+    // ═── 3. Chapter sắp publish (full list) ─────────────────────────────────
+    const chapterFilter = {
+      is_scheduled: true,
+      status: CHAPTER_STATUS.APPROVED_BY_EB,
+      scheduled_publish_at: { $gte: fromStart, $lte: toEnd },
+    };
+    if (schedule && ["weekly", "monthly"].includes(schedule)) {
+      chapterFilter.publication_schedule = schedule;
+    }
+
+    const upcomingChapters = await Chapter.find(chapterFilter)
+      .populate("series_id", "name cover_image_url status publication_schedule publication_status author_id")
+      .populate("series_id.author_id", "username full_name")
+      .populate("te_id", "username full_name")
+      .populate("submitted_by", "username full_name")
+      .sort({ scheduled_publish_at: 1, chapter_number: 1 })
+      .lean();
+
+    // ═── 4. Calendar theo ngày (gom tất cả) ─────────────────────────────────
+    const daysMap = {};
+    const toYMD = (d) => {
+      const dt = new Date(d);
+      return `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, "0")}-${String(dt.getDate()).padStart(2, "0")}`;
+    };
+    const weekdayLabels = ["CN", "T2", "T3", "T4", "T5", "T6", "T7"];
+    const ensureDay = (d) => {
+      const key = toYMD(d);
+      if (!daysMap[key]) {
+        const dt = new Date(d);
+        daysMap[key] = {
+          date: key,
+          weekday: weekdayLabels[dt.getDay()],
+          series_launches: [],
+          chapters: [],
+        };
+      }
+      return daysMap[key];
+    };
+
+    upcomingSeries.forEach((s) => {
+      if (!s.scheduled_publish_at) return;
+      ensureDay(s.scheduled_publish_at).series_launches.push({
+        _id: s._id,
+        name: s.name,
+        cover_image_url: s.cover_image_url,
+        status: s.status,
+        publication_schedule: s.publication_schedule,
+        publication_status: s.publication_status,
+        scheduled_publish_at: s.scheduled_publish_at,
+        author: s.author_id,
+      });
+    });
+
+    upcomingChapters.forEach((ch) => {
+      if (!ch.scheduled_publish_at) return;
+      ensureDay(ch.scheduled_publish_at).chapters.push({
+        _id: ch._id,
+        chapter_number: ch.chapter_number,
+        title: ch.title,
+        status: ch.status,
+        scheduled_publish_at: ch.scheduled_publish_at,
+        publication_schedule: ch.publication_schedule,
+        te: ch.te_id,
+        submitted_by: ch.submitted_by,
+        series: ch.series_id
+          ? {
+              _id: ch.series_id._id,
+              name: ch.series_id.name,
+              cover_image_url: ch.series_id.cover_image_url,
+              status: ch.series_id.status,
+              publication_schedule: ch.series_id.publication_schedule,
+              publication_status: ch.series_id.publication_status,
+              author: ch.series_id.author_id,
+            }
+          : null,
+      });
+    });
+
+    // Trải ngày liên tục để FE dễ render
+    const days = [];
+    const cursor = new Date(fromStart);
+    while (cursor <= toEnd) {
+      const key = toYMD(cursor);
+      if (daysMap[key]) {
+        daysMap[key].chapters.sort((a, b) => {
+          const as = a.series?.name || "";
+          const bs = b.series?.name || "";
+          if (as !== bs) return as.localeCompare(bs);
+          return (a.chapter_number || 0) - (b.chapter_number || 0);
+        });
+        days.push(daysMap[key]);
+      } else {
+        days.push({
+          date: key,
+          weekday: weekdayLabels[cursor.getDay()],
+          series_launches: [],
+          chapters: [],
+        });
+      }
+      cursor.setDate(cursor.getDate() + 1);
+    }
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        range: {
+          from_date: toYMD(fromStart),
+          to_date: toYMD(toEnd),
+          total_days: days.length,
+        },
+        overview: {
+          total_series: totalSeries,
+          total_chapters_published: totalChaptersPublished,
+          chapters_scheduled_in_range: chaptersInRange,
+          series_launches_in_range: seriesInRange,
+          series_by_status: seriesByStatus,
+          series_by_publication_status: seriesByPublicationStatus,
+        },
+        upcoming_series: upcomingSeries,
+        upcoming_chapters: upcomingChapters,
+        days,
+      },
     });
   } catch (error) {
     next(error);
