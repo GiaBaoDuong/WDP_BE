@@ -2353,10 +2353,9 @@ router.get("/chapter/:chapterId/annotations", authMiddleware, requireTE, async (
  *       404:
  *         description: Chapter not found
  *
- *     Auto-claim:
- *       Nếu chapter chưa được gán TE (te_id = null), TE hiện tại sẽ tự động được gán
- *       khi gọi endpoint này — giống pattern POST /series-review/:seriesId/review-chapter.
- *       Audit trail: TEReview sẽ được tạo mới với reviewed_by = current TE nếu chưa tồn tại.
+*     Auto-claim: Nếu chapter chưa được gán TE (te_id = null), TE hiện tại sẽ tự động được gán
+*       khi gọi endpoint này. Giống pattern POST /series-review/:seriesId/review-chapter.
+*       Audit trail: TEReview sẽ được tạo mới với reviewed_by = current TE nếu chưa tồn tại.
  */
 router.post("/chapter/:chapterId/te-action", authMiddleware, requireTE, async (req, res, next) => {
   try {
