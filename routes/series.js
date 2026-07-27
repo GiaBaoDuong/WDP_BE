@@ -786,13 +786,16 @@ const { NOTIF_TYPES } = require("../utils/constants");
  *         application/json:
  *           schema:
  *             type: object
+ *             required:
+ *               - planned_final_chapter_number
  *             properties:
  *               reason:
  *                 type: string
  *                 description: Lý do muốn kết thúc truyện (max 1000 ký tự)
  *               planned_final_chapter_number:
- *                 type: number
- *                 description: Chapter cuối dự kiến (optional)
+ *                 type: integer
+ *                 minimum: 1
+ *                 description: Chapter cuối dự kiến (bắt buộc)
  *     responses:
  *       201: { description: Yêu cầu đã được gửi }
  *       400: { description: Series không hợp lệ để end }
@@ -802,9 +805,30 @@ const { NOTIF_TYPES } = require("../utils/constants");
 router.post("/:seriesId/end-request", authMiddleware, requireMangaka, async (req, res, next) => {
   try {
     const { seriesId } = req.params;
-    const { reason = "", planned_final_chapter_number = null } = req.body;
+    const { reason = "" } = req.body || {};
+    const rawFinalChapterNumber = req.body?.planned_final_chapter_number;
 
-    // 1. Tìm series — chỉ author mới được gửi yêu cầu cho series của mình
+    // 1. BẮT BUỘC: phải cung cấp chapter cuối muốn kết thúc
+    if (
+      rawFinalChapterNumber === undefined ||
+      rawFinalChapterNumber === null ||
+      rawFinalChapterNumber === ""
+    ) {
+      return next(
+        new AppError("planned_final_chapter_number là bắt buộc. Vui lòng nhập số chapter cuối cùng bạn muốn kết thúc.", 400)
+      );
+    }
+
+    const plannedFinalChapterNumber = Number(rawFinalChapterNumber);
+
+    // Validate: phải là số dương
+    if (!Number.isInteger(plannedFinalChapterNumber) || plannedFinalChapterNumber < 1) {
+      return next(
+        new AppError("planned_final_chapter_number phải là số nguyên dương (>= 1).", 400)
+      );
+    }
+
+    // 2. Tìm series — chỉ author mới được gửi yêu cầu cho series của mình
     const series = await Series.findOne({
       _id: seriesId,
       author_id: req.user.nameid,
@@ -824,14 +848,14 @@ router.post("/:seriesId/end-request", authMiddleware, requireMangaka, async (req
       );
     }
 
-    // 3. Kiểm tra đã có request pending chưa
+    // 3. Kiểm tra đã có request pending/approved đang active chưa
     const existing = await SeriesEndRequest.findOne({
       series_id: series._id,
-      status: "pending",
+      status: { $in: ["pending", "approved"] },
     });
     if (existing) {
       return next(
-        new AppError("Đã có yêu cầu kết thúc truyện đang chờ duyệt. Vui lòng chờ hoặc hủy yêu cầu cũ.", 409)
+        new AppError("Đã có yêu cầu kết thúc truyện đang chờ xử lý hoặc đã được duyệt. Vui lòng chờ chapter chốt được publish hoặc hủy yêu cầu cũ nếu còn pending.", 409)
       );
     }
 
@@ -840,7 +864,7 @@ router.post("/:seriesId/end-request", authMiddleware, requireMangaka, async (req
       series_id: series._id,
       requested_by: req.user.nameid,
       reason,
-      planned_final_chapter_number,
+      planned_final_chapter_number: plannedFinalChapterNumber,
       status: "pending",
     });
 

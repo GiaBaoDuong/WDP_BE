@@ -22,6 +22,10 @@ const {
   isValidSchedule,
 } = require("../utils/publicationSchedule");
 const {
+  getApprovedEndRequestForSeries,
+  toPositiveInteger,
+} = require("../services/seriesEndService");
+const {
   notifyChapterToTE,
   notifyChapterToEB,
   notifyChapterTERevision,
@@ -2596,6 +2600,22 @@ router.post("/chapter/:chapterId/publish", authMiddleware, requireTE, async (req
       return next(new AppError("Series chưa được EB duyệt", 400));
     }
 
+    const approvedEndRequest = await getApprovedEndRequestForSeries(series._id);
+    const approvedFinalChapterNumber = toPositiveInteger(
+      approvedEndRequest?.planned_final_chapter_number
+    );
+    if (
+      approvedFinalChapterNumber &&
+      Number(chapter.chapter_number) > approvedFinalChapterNumber
+    ) {
+      return next(
+        new AppError(
+          `Series đã có yêu cầu kết thúc được duyệt tại chapter #${approvedFinalChapterNumber}. Không thể schedule chapter #${chapter.chapter_number} vì vượt quá chapter chốt.`,
+          400
+        )
+      );
+    }
+
     // Series bắt buộc phải có publication_schedule + scheduled_publish_at
     if (!isValidSchedule(series.publication_schedule)) {
       return next(new AppError("Series chưa có publication_schedule hợp lệ (weekly/monthly). Vui lòng liên hệ EB.", 400));
@@ -2662,11 +2682,15 @@ router.post("/chapter/:chapterId/publish", authMiddleware, requireTE, async (req
       chapter.chapter_number
     );
     const isCompletedSeries = series.publication_status === "completed";
+    const isApprovedEndChapter =
+      approvedFinalChapterNumber &&
+      Number(chapter.chapter_number) === approvedFinalChapterNumber;
     // Chapter đầu tiên của Series (chưa từng publish) → buffer OK (ngoại lệ).
     const isFirstChapterOfSeries = isFirstChapter;
     const bufferOk =
       isFirstChapterOfSeries ||
       approvedCount >= 2 ||
+      isApprovedEndChapter ||
       (isCompletedSeries && isFinal);
 
     let warning = null;
@@ -2674,7 +2698,7 @@ router.post("/chapter/:chapterId/publish", authMiddleware, requireTE, async (req
       warning =
         `Hiện chỉ có ${approvedCount} chapter đã TE-approve và chưa publish. ` +
         `Job sẽ giữ chapter này cho đến khi có ít nhất 2 chapter approved ` +
-        `(hoặc đây là chapter cuối của Series đã completed).`;
+        `(hoặc đây là chapter chốt trong yêu cầu kết thúc đã được duyệt).`;
     }
 
     return res.status(200).json({
@@ -2688,6 +2712,7 @@ router.post("/chapter/:chapterId/publish", authMiddleware, requireTE, async (req
         min_required: 2,
         is_final_chapter: isFinal,
         is_first_chapter_of_series: isFirstChapterOfSeries,
+        is_approved_end_request_final_chapter: Boolean(isApprovedEndChapter),
         series_completed: isCompletedSeries,
         ok: bufferOk,
         warning,

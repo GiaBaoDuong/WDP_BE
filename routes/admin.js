@@ -2974,7 +2974,7 @@ router.patch("/end-requests/:id", async (req, res, next) => {
       // ─── APPROVED ─────────────────────────────────────────────────────────────
       const finalChapterNum = request.planned_final_chapter_number;
 
-      // 1. Tìm chapter cuối (nếu có) để kiểm tra trạng thái
+      // 1. Tìm chapter cuối để kiểm tra trạng thái
       let finalChapter = null;
       if (finalChapterNum) {
         finalChapter = await Chapter.findOne({
@@ -2985,11 +2985,11 @@ router.patch("/end-requests/:id", async (req, res, next) => {
 
       // 2. Kiểm tra xem chapter cuối đã publish chưa
       const isFinalChapterPublished = finalChapter && finalChapter.is_published;
-      const isFinalChapterScheduled = finalChapter && finalChapter.is_scheduled && finalChapter.scheduled_publish_at;
 
-      // 3. Update Series
+      // 3. Update Series - KHÔNG set completed ngay, chờ chapter cuối publish
+      // Sử dụng trạng thái mới "awaiting_final_chapter" để đánh dấu đang chờ
       await Series.findByIdAndUpdate(request.series_id._id, {
-        publication_status: "completed",
+        publication_status: isFinalChapterPublished ? "completed" : "awaiting_final_chapter",
         publication_schedule: null,
         scheduled_publish_at: null,
       });
@@ -3011,87 +3011,88 @@ router.patch("/end-requests/:id", async (req, res, next) => {
         $set: { scheduled_publish_at: null, is_scheduled: false },
       });
 
-      // 5. Notify Mangaka (requested_by)
-      let mangakaMessage = `Yêu cầu kết thúc truyện "${seriesName}" đã được Admin duyệt. Truyện đã được đánh dấu hoàn thành.`;
-      
-      if (finalChapterNum && !isFinalChapterPublished) {
-        // Chapter cuối chưa publish → cảnh báo mangaka
-        const chapterStatus = finalChapter 
-          ? `Chapter #${finalChapterNum} hiện đang ở trạng thái "${finalChapter.status}". ` +
-            `Bạn cần hoàn tất quy trình duyệt (TE/EB) để chapter này được publish trước khi series kết thúc.`
-          : `Chapter #${finalChapterNum} không tồn tại. Vui lòng tạo và hoàn tất chapter cuối.`;
-        
-        mangakaMessage += " " + chapterStatus;
-
-        await Notification.create({
-          user_id: request.requested_by,
-          type: NOTIF_TYPES.SERIES_END_APPROVED,
-          title: "Yêu cầu kết thúc truyện đã được duyệt — Cần xử lý chapter cuối",
-          message: mangakaMessage + (admin_note ? ` Ghi chú: ${admin_note}` : ""),
-          is_read: false,
-          related_entity_type: "series_end_request",
-          related_entity_id: request._id,
-        });
-      } else {
+      // 5. Notify Mangaka
+      if (isFinalChapterPublished) {
+        // Chapter cuối đã publish → series completed luôn
         await Notification.create({
           user_id: request.requested_by,
           type: NOTIF_TYPES.SERIES_END_APPROVED,
           title: "Yêu cầu kết thúc truyện đã được duyệt",
-          message: mangakaMessage + (admin_note ? ` Ghi chú: ${admin_note}` : ""),
+          message: `Yêu cầu kết thúc truyện "${seriesName}" đã được Admin duyệt. Series đã hoàn thành!${admin_note ? ` Ghi chú: ${admin_note}` : ""}`,
           is_read: false,
           related_entity_type: "series_end_request",
           related_entity_id: request._id,
         });
-      }
 
-      // 4. Notify Reader subscribers (theo dõi series)
-      const subscribers = await NotificationSubscription.find({
-        series_id: request.series_id._id,
-      }).select("reader_id");
-      if (subscribers.length > 0) {
-        const readerNotifs = subscribers.map((s) => ({
-          user_id: s.reader_id,
-          type: NOTIF_TYPES.SERIES_END_NOTIFY_READERS,
-          title: "Truyện đã kết thúc",
-          message: `Truyện "${seriesName}" mà bạn đang theo dõi đã kết thúc. Cảm ơn bạn đã đồng hành cùng tác phẩm!`,
-          is_read: false,
-          related_entity_type: "series",
-          related_entity_id: request.series_id._id,
-        }));
-        await Notification.insertMany(readerNotifs);
-      }
+        // Notify Reader subscribers (vì series đã completed)
+        const subscribers = await NotificationSubscription.find({
+          series_id: request.series_id._id,
+        }).select("reader_id");
+        if (subscribers.length > 0) {
+          const readerNotifs = subscribers.map((s) => ({
+            user_id: s.reader_id,
+            type: NOTIF_TYPES.SERIES_END_NOTIFY_READERS,
+            title: "Truyện đã kết thúc",
+            message: `Truyện "${seriesName}" mà bạn đang theo dõi đã kết thúc. Cảm ơn bạn đã đồng hành cùng tác phẩm!`,
+            is_read: false,
+            related_entity_type: "series",
+            related_entity_id: request.series_id._id,
+          }));
+          await Notification.insertMany(readerNotifs);
+        }
+      } else {
+        // Chapter cuối chưa publish → đang chờ
+      const chapterStatus = finalChapter
+          ? `Chapter #${finalChapterNum} hiện đang ở trạng thái "${finalChapter.status}". ` +
+            `Series sẽ được đánh dấu hoàn thành khi chapter này được publish.`
+          : `Chapter #${finalChapterNum} không tồn tại. Vui lòng tạo và hoàn tất chapter cuối để series được đánh dấu hoàn thành.`;
 
-      // 5. Notify Assistant đang hợp tác với series
-      const activeCoop = await Cooperation.findOne({
-        series_id: request.series_id._id,
-        agreed_at: { $ne: null },
-      }).select("assistant_id");
-      if (activeCoop) {
         await Notification.create({
-          user_id: activeCoop.assistant_id,
-          type: NOTIF_TYPES.SERIES_END_NOTIFY_ASSISTANT,
-          title: "Truyện đang hợp tác đã kết thúc",
-          message: `Series "${seriesName}" mà bạn đang hỗ trợ đã được đánh dấu kết thúc bởi Admin. Hợp tác đã hoàn thành.${admin_note ? ` Ghi chú: ${admin_note}` : ""}`,
+          user_id: request.requested_by,
+          type: NOTIF_TYPES.SERIES_END_APPROVED,
+          title: "Yêu cầu kết thúc truyện đã được duyệt — Đang chờ chapter cuối",
+          message: `Yêu cầu kết thúc truyện "${seriesName}" đã được Admin duyệt. ${chapterStatus}${admin_note ? ` Ghi chú: ${admin_note}` : ""}`,
           is_read: false,
           related_entity_type: "series_end_request",
           related_entity_id: request._id,
         });
+
+        // KHÔNG notify readers vì series chưa kết thúc thật sự
+      }
+
+      // 5. Notify Assistant đang hợp tác với series (chỉ khi series hoàn thành thật sự)
+      if (isFinalChapterPublished) {
+        const activeCoop = await Cooperation.findOne({
+          series_id: request.series_id._id,
+          agreed_at: { $ne: null },
+        }).select("assistant_id");
+        if (activeCoop) {
+          await Notification.create({
+            user_id: activeCoop.assistant_id,
+            type: NOTIF_TYPES.SERIES_END_NOTIFY_ASSISTANT,
+            title: "Truyện đang hợp tác đã kết thúc",
+            message: `Series "${seriesName}" mà bạn đang hỗ trợ đã hoàn thành. Cảm ơn bạn đã đồng hành!${admin_note ? ` Ghi chú: ${admin_note}` : ""}`,
+            is_read: false,
+            related_entity_type: "series_end_request",
+            related_entity_id: request._id,
+          });
+        }
       }
 
       res.json({
         success: true,
         message: isFinalChapterPublished
-          ? "Đã duyệt yêu cầu kết thúc truyện. Series được đánh dấu completed."
-          : `Đã duyệt yêu cầu kết thúc truyện. Chapter cuối #${finalChapterNum} chưa được publish — Mangaka cần hoàn tất.`,
+          ? "�ã duyệt yêu cầu kết thúc truyện. Series được đánh dấu completed."
+          : `Đã duyệt yêu cầu kết thúc truyện. Series đang chờ chapter cuối #${finalChapterNum} được publish để hoàn thành.`,
         data: {
           id: request._id,
           status: "approved",
-          series_publication_status: "completed",
+          series_publication_status: isFinalChapterPublished ? "completed" : "awaiting_final_chapter",
           final_chapter: finalChapterNum
             ? {
                 number: finalChapterNum,
                 is_published: isFinalChapterPublished,
-                is_scheduled: isFinalChapterScheduled,
+                is_scheduled: finalChapter?.is_scheduled || false,
                 status: finalChapter?.status || null,
               }
             : null,

@@ -6,9 +6,9 @@ const mongoose = require("mongoose");
  * Flow:
  *   1. Mangaka POST /manga/:seriesId/end-request  → status: "pending"
  *   2. Admin nhận notification → duyệt hoặc từ chối
- *   3a. Approved → Series.publication_status = "completed"
- *                      Hủy tất cả Chapter.scheduled_publish_at trong tương lai
- *                      Fan-out notification cho reader subscribers & assistant
+ *   3a. Approved → chờ planned_final_chapter_number được publish
+ *                   Khi chapter này published → Series.publication_status = "completed"
+ *                   Fan-out notification cho reader subscribers & assistant
  *   3b. Rejected → giữ nguyên series, Mangaka nhận notification
  *   4. Auto-cancel: sau 7 ngày pending mà không ai duyệt → tự hủy (status: "cancelled")
  */
@@ -31,7 +31,12 @@ const seriesEndRequestSchema = new mongoose.Schema(
     },
     planned_final_chapter_number: {
       type: Number,
-      default: null,
+      required: [true, "planned_final_chapter_number is required"],
+      min: [1, "planned_final_chapter_number must be >= 1"],
+      validate: {
+        validator: Number.isInteger,
+        message: "planned_final_chapter_number must be an integer",
+      },
     },
     status: {
       type: String,

@@ -31,6 +31,7 @@
  */
 const Chapter = require("../models/Chapter");
 const Series = require("../models/Series");
+const SeriesEndRequest = require("../models/SeriesEndRequest");
 const Page = require("../models/Page");
 const TEReview = require("../models/TEReview");
 const Notification = require("../models/Notification");
@@ -175,8 +176,16 @@ const publishChapter = async (chapter, series) => {
     await review.save();
   }
 
+  // Update Series.last_chapter_published_at
   await Series.findByIdAndUpdate(chapter.series_id, {
     $set: { last_chapter_published_at: publishedAt },
+  });
+
+  const completion = await completeSeriesIfTargetChapterPublished({
+    ...chapter,
+    status: CHAPTER_STATUS.PUBLISHED,
+    is_published: true,
+    published_at: publishedAt,
   });
 
   // Notify Mangaka + followers (lỗi hook không làm fail job)
@@ -204,7 +213,7 @@ const publishChapter = async (chapter, series) => {
     );
   }
 
-  return publishedAt;
+  return { completed: Boolean(completion), publishedAt };
 };
 
 /**
@@ -218,9 +227,11 @@ const publishChapter = async (chapter, series) => {
 const scheduleNextChapterIfNeeded = async (series, justPublishedChapter) => {
   if (!isValidSchedule(series.publication_schedule)) return null;
 
+  const approvedEndRequest = await getApprovedEndRequestForSeries(series._id);
   const nextChapter = await findNextUnpublishedChapter(
     series._id,
-    justPublishedChapter.chapter_number
+    justPublishedChapter.chapter_number,
+    approvedEndRequest?.planned_final_chapter_number
   );
   if (!nextChapter) return null;
 
@@ -247,11 +258,11 @@ const scheduleNextChapterIfNeeded = async (series, justPublishedChapter) => {
  *  - Ngoại lệ 1: Chapter đầu tiên của Series (chưa có chapter nào publish).
  *    Cho phép publish chapter 1 dù chỉ có 1 chapter approved (vì chưa có gì để buffer).
  *    Nếu series.ongoing/hiatus/upcoming và chapter 2 chưa tồn tại → vẫn cho publish.
- *  - Ngoại lệ 2: Series.publication_status === "completed" và chapter là final → bypass.
+ *  - Ngoại lệ 2: chapter là mốc chốt trong end request đã approved → bypass.
  *
  * Trả về { allowed, reason, approvedCount, isFinal, isFirstChapter }.
  */
-const checkBuffer = async (series, chapter) => {
+const checkBuffer = async (series, chapter, approvedEndRequest = null) => {
   const approvedCount = await countApprovedUnpublishedChapters(Chapter, series._id);
   const isFinal = await isFinalChapterOfSeries(
     Chapter,
@@ -265,6 +276,12 @@ const checkBuffer = async (series, chapter) => {
   const isFirstChapter = !last;
 
   const isCompletedSeries = series.publication_status === "completed";
+  const approvedFinalChapterNumber = toPositiveInteger(
+    approvedEndRequest?.planned_final_chapter_number
+  );
+  const isApprovedEndChapter =
+    approvedFinalChapterNumber &&
+    Number(chapter.chapter_number) === approvedFinalChapterNumber;
 
   // Ngoại lệ 1: chapter đầu tiên của Series (chưa từng publish) → cho phép publish.
   // Đảm bảo series ongoing vẫn có thể ra chapter 1 dù chưa có chapter 2.
@@ -273,6 +290,9 @@ const checkBuffer = async (series, chapter) => {
   }
   if (approvedCount >= MIN_BUFFER) {
     return { allowed: true, reason: "buffer_ok", approvedCount, isFinal, isFirstChapter };
+  }
+  if (isApprovedEndChapter) {
+    return { allowed: true, reason: "approved_end_request_final_chapter", approvedCount, isFinal, isFirstChapter };
   }
   if (isCompletedSeries && isFinal) {
     return { allowed: true, reason: "final_chapter_completed_series", approvedCount, isFinal, isFirstChapter };
@@ -345,6 +365,28 @@ const processScheduledPublish = async () => {
           continue;
         }
 
+        const approvedEndRequest = await getApprovedEndRequestForSeries(
+          series._id
+        );
+        const approvedFinalChapterNumber = toPositiveInteger(
+          approvedEndRequest?.planned_final_chapter_number
+        );
+
+        if (
+          approvedFinalChapterNumber &&
+          Number(chapter.chapter_number) > approvedFinalChapterNumber
+        ) {
+          await Chapter.findByIdAndUpdate(chapter._id, {
+            scheduled_publish_at: null,
+            is_scheduled: false,
+          });
+          console.log(
+            `[ScheduledPublish] Unschedule chapter ${chapter._id} (${chapter.chapter_number}): ` +
+            `approved end request stops at chapter ${approvedFinalChapterNumber}.`
+          );
+          continue;
+        }
+
         // Sanity check: chưa tới ngày publish Series (chờ job Series publish trước)
         if (
           series.status === SERIES_STATUS.APPROVED_BY_EB &&
@@ -372,7 +414,7 @@ const processScheduledPublish = async () => {
         }
 
         // ─── BUFFER CHECK: >= 2 chapter approved_by_EB chưa publish ───
-        const buffer = await checkBuffer(series, chapter);
+        const buffer = await checkBuffer(series, chapter, approvedEndRequest);
         if (!buffer.allowed) {
           // Áp dụng Policy B: dời lịch về tương lai, giữ cadence từ chapter vừa publish.
           const next = await recomputePolicyB(series, chapter);
@@ -394,15 +436,19 @@ const processScheduledPublish = async () => {
           continue;
         }
 
-        const publishedAt = await publishChapter(chapter, series);
+        const publishResult = await publishChapter(chapter, series);
+        const { publishedAt } = publishResult;
 
         // Nếu Series vẫn đang "approved_by_EB" → set Series = "published"
         // (fallback cho trường hợp Series.scheduled_publish_at không khớp hoặc job Series chạy sau).
         if (series.status === SERIES_STATUS.APPROVED_BY_EB) {
-          await Series.findByIdAndUpdate(series._id, {
+          const seriesUpdate = {
             status: SERIES_STATUS.PUBLISHED,
-            publication_status: series.publication_status || "ongoing",
-          });
+          };
+          if (!publishResult.completed) {
+            seriesUpdate.publication_status = series.publication_status || "ongoing";
+          }
+          await Series.findByIdAndUpdate(series._id, seriesUpdate);
           // (Risk B) Cũng notify followers — nếu nhánh này là nhánh đầu tiên
           // set series → published (khi Series.scheduled_publish_at không kịp chạy),
           // tránh miss thông báo new_series_from_author.
@@ -411,10 +457,12 @@ const processScheduledPublish = async () => {
         }
 
         // Tự lên lịch chapter kế tiếp theo cadence
-        await scheduleNextChapterIfNeeded(
-          series,
-          { ...chapter, published_at: publishedAt }
-        );
+        if (!publishResult.completed && series.publication_status !== "completed") {
+          await scheduleNextChapterIfNeeded(
+            series,
+            { ...chapter, published_at: publishedAt }
+          );
+        }
 
         console.log(
           `[ScheduledPublish] Chapter ${chapter._id} (${chapter.chapter_number}) published at ${publishedAt.toISOString()} ` +
