@@ -18,6 +18,7 @@ const Cooperation = require("../models/Cooperation");
 const CooperationRequest = require("../models/CooperationRequest");
 const Comment = require("../models/Comment");
 const upload = require("../middleware/upload");
+const { toPositiveInteger } = require("../services/seriesEndService");
 
 router.use(authMiddleware);
 router.use(requireAdmin);
@@ -2972,7 +2973,15 @@ router.patch("/end-requests/:id", async (req, res, next) => {
 
     if (decision === "approved") {
       // ─── APPROVED ─────────────────────────────────────────────────────────────
-      const finalChapterNum = request.planned_final_chapter_number;
+      const finalChapterNum = toPositiveInteger(request.planned_final_chapter_number);
+      if (!finalChapterNum) {
+        return next(
+          new AppError(
+            "Yêu cầu kết thúc truyện thiếu planned_final_chapter_number hợp lệ. Vui lòng yêu cầu Mangaka gửi lại request.",
+            400
+          )
+        );
+      }
 
       // 1. Tìm chapter cuối để kiểm tra trạng thái
       let finalChapter = null;
@@ -2986,30 +2995,31 @@ router.patch("/end-requests/:id", async (req, res, next) => {
       // 2. Kiểm tra xem chapter cuối đã publish chưa
       const isFinalChapterPublished = finalChapter && finalChapter.is_published;
 
-      // 3. Update Series - KHÔNG set completed ngay, chờ chapter cuối publish
-      // Sử dụng trạng thái mới "awaiting_final_chapter" để đánh dấu đang chờ
-      await Series.findByIdAndUpdate(request.series_id._id, {
-        publication_status: isFinalChapterPublished ? "completed" : "awaiting_final_chapter",
-        publication_schedule: null,
-        scheduled_publish_at: null,
-      });
+      // 3. Chỉ complete series khi chapter cuối đã publish.
+      // Nếu chưa publish, tuyệt đối giữ publication_schedule/scheduled_publish_at của series.
+      if (isFinalChapterPublished) {
+        await Series.findByIdAndUpdate(request.series_id._id, {
+          publication_status: "completed",
+          publication_schedule: null,
+          scheduled_publish_at: null,
+        });
+      }
 
-      // 4. Hủy tất cả chapter scheduled trong tương lai (TRỪ chapter cuối nếu chưa publish)
+      // 4. Hủy các chapter scheduled vượt quá mốc end, giữ lịch của chapter cuối.
       const cancelQuery = {
         series_id: request.series_id._id,
         is_published: false,
         is_scheduled: true,
-        scheduled_publish_at: { $gt: new Date() },
+        chapter_number: { $gt: finalChapterNum },
       };
-
-      // Nếu chapter cuối chưa publish, giữ lại schedule của nó
-      if (finalChapter && !isFinalChapterPublished && finalChapter.is_scheduled) {
-        cancelQuery.chapter_number = { $ne: finalChapterNum };
-      }
 
       await Chapter.updateMany(cancelQuery, {
         $set: { scheduled_publish_at: null, is_scheduled: false },
       });
+
+      const currentSeries = await Series.findById(request.series_id._id)
+        .select("publication_status publication_schedule scheduled_publish_at")
+        .lean();
 
       // 5. Notify Mangaka
       if (isFinalChapterPublished) {
@@ -3082,12 +3092,15 @@ router.patch("/end-requests/:id", async (req, res, next) => {
       res.json({
         success: true,
         message: isFinalChapterPublished
-          ? "�ã duyệt yêu cầu kết thúc truyện. Series được đánh dấu completed."
-          : `Đã duyệt yêu cầu kết thúc truyện. Series đang chờ chapter cuối #${finalChapterNum} được publish để hoàn thành.`,
+          ? "Đã duyệt yêu cầu kết thúc truyện. Series được đánh dấu completed vì chapter cuối đã publish."
+          : `Đã duyệt yêu cầu kết thúc truyện. Series sẽ completed khi chapter cuối #${finalChapterNum} được publish.`,
         data: {
           id: request._id,
           status: "approved",
-          series_publication_status: isFinalChapterPublished ? "completed" : "awaiting_final_chapter",
+          series_publication_status: currentSeries?.publication_status || null,
+          series_publication_schedule: currentSeries?.publication_schedule || null,
+          series_scheduled_publish_at: currentSeries?.scheduled_publish_at || null,
+          completed_now: Boolean(isFinalChapterPublished),
           final_chapter: finalChapterNum
             ? {
                 number: finalChapterNum,
