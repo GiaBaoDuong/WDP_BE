@@ -755,4 +755,234 @@ router.get("/:id/chapters", optionalAuth, async (req, res, next) => {
   }
 });
 
+// ════════════════════════════════════════════════════════════════════════════════
+// SERIES END REQUEST (Mangaka gửi yêu cầu kết thúc truyện)
+// ════════════════════════════════════════════════════════════════════════════════
+
+const SeriesEndRequest = require("../models/SeriesEndRequest");
+const Notification = require("../models/Notification");
+const NotificationSubscription = require("../models/NotificationSubscription");
+const Cooperation = require("../models/Cooperation");
+const User = require("../models/User");
+const { NOTIF_TYPES } = require("../utils/constants");
+
+// ─── POST /series/:seriesId/end-request ────────────────────────────────────────
+/**
+ * @swagger
+ * /series/{seriesId}/end-request:
+ *   post:
+ *     summary: Gửi yêu cầu kết thúc truyện (Mangaka only)
+ *     tags: [Series]
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: seriesId
+ *         required: true
+ *         schema: { type: string }
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               reason:
+ *                 type: string
+ *                 description: Lý do muốn kết thúc truyện (max 1000 ký tự)
+ *               planned_final_chapter_number:
+ *                 type: number
+ *                 description: Chapter cuối dự kiến (optional)
+ *     responses:
+ *       201: { description: Yêu cầu đã được gửi }
+ *       400: { description: Series không hợp lệ để end }
+ *       404: { description: Series not found }
+ *       409: { description: Đã có yêu cầu đang chờ duyệt }
+ */
+router.post("/:seriesId/end-request", authMiddleware, requireMangaka, async (req, res, next) => {
+  try {
+    const { seriesId } = req.params;
+    const { reason = "", planned_final_chapter_number = null } = req.body;
+
+    // 1. Tìm series — chỉ author mới được gửi yêu cầu cho series của mình
+    const series = await Series.findOne({
+      _id: seriesId,
+      author_id: req.user.nameid,
+      deleted_at: null,
+    }).lean();
+    if (!series) return next(new AppError("Series not found or you are not the author", 404));
+
+    // 2. Chỉ cho phép end khi publication_status đang active
+    const allowed = ["upcoming", "ongoing", "hiatus"];
+    if (!allowed.includes(series.publication_status)) {
+      return next(
+        new AppError(
+          `Không thể yêu cầu end truyện khi publication_status = "${series.publication_status}". ` +
+          `Chỉ áp dụng với: ${allowed.join(", ")}.`,
+          400
+        )
+      );
+    }
+
+    // 3. Kiểm tra đã có request pending chưa
+    const existing = await SeriesEndRequest.findOne({
+      series_id: series._id,
+      status: "pending",
+    });
+    if (existing) {
+      return next(
+        new AppError("Đã có yêu cầu kết thúc truyện đang chờ duyệt. Vui lòng chờ hoặc hủy yêu cầu cũ.", 409)
+      );
+    }
+
+    // 4. Tạo request
+    const endRequest = await SeriesEndRequest.create({
+      series_id: series._id,
+      requested_by: req.user.nameid,
+      reason,
+      planned_final_chapter_number,
+      status: "pending",
+    });
+
+    // 5. Thông báo cho tất cả Admin
+    const admins = await User.find({ role: "Admin" }).select("_id").lean();
+    const notifDocs = admins.map((admin) => ({
+      user_id: admin._id,
+      type: NOTIF_TYPES.SERIES_END_REQUEST_SUBMITTED,
+      title: "Yêu cầu kết thúc truyện",
+      message: `Mangaka "${req.user.full_name || req.user.username}" yêu cầu kết thúc truyện "${series.name}". Lý do: ${reason || "(không có)"}`,
+      is_read: false,
+      related_entity_type: "series_end_request",
+      related_entity_id: endRequest._id,
+      meta: {
+        series_id: series._id,
+        series_name: series.name,
+        requested_by_name: req.user.full_name || req.user.username,
+        reason,
+      },
+    }));
+    if (notifDocs.length > 0) await Notification.insertMany(notifDocs);
+
+    res.status(201).json({
+      success: true,
+      message: "Yêu cầu kết thúc truyện đã được gửi. Admin sẽ xem xét trong 7 ngày.",
+      data: {
+        id: endRequest._id,
+        series_id: endRequest.series_id,
+        status: endRequest.status,
+        reason: endRequest.reason,
+        planned_final_chapter_number: endRequest.planned_final_chapter_number,
+        createdAt: endRequest.createdAt,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ─── GET /series/end-requests/my ───────────────────────────────────────────────
+/**
+ * @swagger
+ * /series/end-requests/my:
+ *   get:
+ *     summary: Lấy lịch sử yêu cầu kết thúc truyện của Mangaka hiện tại
+ *     tags: [Series]
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: status
+ *         schema: { type: string, enum: [pending, approved, rejected, cancelled] }
+ *       - in: query
+ *         name: page
+ *         schema: { type: integer, default: 1 }
+ *       - in: query
+ *         name: limit
+ *         schema: { type: integer, default: 20 }
+ *     responses:
+ *       200: { description: Danh sách yêu cầu }
+ */
+router.get("/end-requests/my", authMiddleware, requireMangaka, async (req, res, next) => {
+  try {
+    const { status, page = 1, limit = 20 } = req.query;
+    const filter = { requested_by: req.user.nameid };
+    if (status) filter.status = status;
+
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+    const [requests, total] = await Promise.all([
+      SeriesEndRequest.find(filter)
+        .populate("series_id", "name cover_image_url publication_status")
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(parseInt(limit))
+        .lean(),
+      SeriesEndRequest.countDocuments(filter),
+    ]);
+
+    res.json({
+      success: true,
+      data: requests.map((r) => ({
+        id: r._id,
+        series: r.series_id
+          ? { id: r.series_id._id, name: r.series_id.name, cover_image_url: r.series_id.cover_image_url }
+          : null,
+        reason: r.reason,
+        planned_final_chapter_number: r.planned_final_chapter_number,
+        status: r.status,
+        admin_note: r.admin_note || "",
+        decided_at: r.decided_at,
+        createdAt: r.createdAt,
+      })),
+      total,
+      page: parseInt(page),
+      limit: parseInt(limit),
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ─── DELETE /series/end-requests/:requestId ────────────────────────────────────
+/**
+ * @swagger
+ * /series/end-requests/{requestId}:
+ *   delete:
+ *     summary: Hủy yêu cầu kết thúc truyện (chỉ khi pending & là người gửi)
+ *     tags: [Series]
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: requestId
+ *         required: true
+ *         schema: { type: string }
+ *     responses:
+ *       200: { description: Đã hủy }
+ *       404: { description: Không tìm thấy }
+ *       409: { description: Yêu cầu không ở trạng thái pending }
+ */
+router.delete("/end-requests/:requestId", authMiddleware, requireMangaka, async (req, res, next) => {
+  try {
+    const request = await SeriesEndRequest.findOne({
+      _id: req.params.requestId,
+      requested_by: req.user.nameid,
+    });
+    if (!request) return next(new AppError("Yêu cầu không tìm thấy", 404));
+    if (request.status !== "pending") {
+      return next(new AppError("Chỉ có thể hủy yêu cầu đang ở trạng thái pending", 409));
+    }
+
+    request.status = "cancelled";
+    await request.save();
+
+    res.json({
+      success: true,
+      message: "Đã hủy yêu cầu kết thúc truyện",
+      data: { id: request._id, status: request.status },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 module.exports = router;

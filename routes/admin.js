@@ -2712,4 +2712,362 @@ router.get("/publication-calendar", async (req, res, next) => {
   }
 });
 
+// ════════════════════════════════════════════════════════════════════════════════════
+// SERIES END REQUEST (Admin duyệt / từ chối)
+// ════════════════════════════════════════════════════════════════════════════════════
+
+const SeriesEndRequest = require("../models/SeriesEndRequest");
+const NotificationSubscription = require("../models/NotificationSubscription");
+const { NOTIF_TYPES } = require("../utils/constants");
+
+// ─── GET /admin/end-requests ────────────────────────────────────────────────────
+/**
+ * @swagger
+ * /admin/end-requests:
+ *   get:
+ *     summary: Danh sách yêu cầu kết thúc truyện (Admin only)
+ *     tags: [Admin - Series End Request]
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: status
+ *         schema: { type: string, enum: [pending, approved, rejected, cancelled] }
+ *       - in: query
+ *         name: page
+ *         schema: { type: integer, default: 1 }
+ *       - in: query
+ *         name: limit
+ *         schema: { type: integer, default: 20 }
+ *     responses:
+ *       200: { description: Danh sách yêu cầu }
+ *       401: { description: Unauthorized }
+ *       403: { description: Forbidden }
+ */
+router.get("/end-requests", async (req, res, next) => {
+  try {
+    const { status, page = 1, limit = 20 } = req.query;
+    const filter = {};
+    if (status) filter.status = status;
+
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+    const [requests, total] = await Promise.all([
+      SeriesEndRequest.find(filter)
+        .populate("series_id", "name cover_image_url publication_status author_id")
+        .populate("requested_by", "username full_name email")
+        .populate("decided_by", "username full_name")
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(parseInt(limit))
+        .lean(),
+      SeriesEndRequest.countDocuments(filter),
+    ]);
+
+    res.json({
+      success: true,
+      data: requests.map((r) => ({
+        id: r._id,
+        series: r.series_id
+          ? {
+              id: r.series_id._id,
+              name: r.series_id.name,
+              cover_image_url: r.series_id.cover_image_url,
+              publication_status: r.series_id.publication_status,
+            }
+          : null,
+        requested_by: r.requested_by
+          ? {
+              id: r.requested_by._id,
+              name: r.requested_by.full_name || r.requested_by.username,
+              email: r.requested_by.email,
+            }
+          : null,
+        reason: r.reason,
+        planned_final_chapter_number: r.planned_final_chapter_number,
+        status: r.status,
+        admin_note: r.admin_note || "",
+        decided_by: r.decided_by
+          ? { id: r.decided_by._id, name: r.decided_by.full_name || r.decided_by.username }
+          : null,
+        decided_at: r.decided_at,
+        createdAt: r.createdAt,
+      })),
+      total,
+      page: parseInt(page),
+      limit: parseInt(limit),
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ─── GET /admin/end-requests/:id ───────────────────────────────────────────────
+/**
+ * @swagger
+ * /admin/end-requests/{id}:
+ *   get:
+ *     summary: Chi tiết yêu cầu kết thúc truyện (Admin only)
+ *     tags: [Admin - Series End Request]
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema: { type: string }
+ *     responses:
+ *       200: { description: Chi tiết yêu cầu }
+ *       404: { description: Không tìm thấy }
+ */
+router.get("/end-requests/:id", async (req, res, next) => {
+  try {
+    const request = await SeriesEndRequest.findById(req.params.id)
+      .populate("series_id", "name cover_image_url publication_status author_id status")
+      .populate("requested_by", "username full_name email phoneNumber")
+      .populate("decided_by", "username full_name")
+      .lean();
+    if (!request) return next(new AppError("Yêu cầu không tìm thấy", 404));
+
+    // Lấy thêm thông tin series để admin xem
+    let seriesChapters = [];
+    let scheduledChapters = [];
+    if (request.series_id) {
+      seriesChapters = await Chapter.find({ series_id: request.series_id._id })
+        .select("chapter_number title status is_published is_scheduled scheduled_publish_at")
+        .sort({ chapter_number: 1 })
+        .lean();
+      scheduledChapters = seriesChapters.filter(
+        (c) => c.is_scheduled && c.scheduled_publish_at && new Date(c.scheduled_publish_at) > new Date()
+      );
+    }
+
+    // Lấy assistant đang hợp tác với series
+    let activeCooperation = null;
+    if (request.series_id) {
+      activeCooperation = await Cooperation.findOne({
+        series_id: request.series_id._id,
+        agreed_at: { $ne: null },
+      })
+        .populate("assistant_id", "username full_name email")
+        .lean();
+    }
+
+    res.json({
+      success: true,
+      data: {
+        id: request._id,
+        series: request.series_id
+          ? {
+              id: request.series_id._id,
+              name: request.series_id.name,
+              cover_image_url: request.series_id.cover_image_url,
+              publication_status: request.series_id.publication_status,
+              status: request.series_id.status,
+            }
+          : null,
+        requested_by: request.requested_by
+          ? {
+              id: request.requested_by._id,
+              name: request.requested_by.full_name || request.requested_by.username,
+              email: request.requested_by.email,
+              phoneNumber: request.requested_by.phoneNumber || "",
+            }
+          : null,
+        reason: request.reason,
+        planned_final_chapter_number: request.planned_final_chapter_number,
+        status: request.status,
+        admin_note: request.admin_note || "",
+        decided_by: request.decided_by
+          ? { id: request.decided_by._id, name: request.decided_by.full_name || request.decided_by.username }
+          : null,
+        decided_at: request.decided_at,
+        createdAt: request.createdAt,
+        series_chapters_summary: {
+          total: seriesChapters.length,
+          published: seriesChapters.filter((c) => c.is_published).length,
+          scheduled_future: scheduledChapters.length,
+        },
+        scheduled_chapters: scheduledChapters.map((c) => ({
+          id: c._id,
+          chapter_number: c.chapter_number,
+          title: c.title || "",
+          status: c.status,
+          scheduled_publish_at: c.scheduled_publish_at,
+        })),
+        active_cooperation: activeCooperation
+          ? {
+              id: activeCooperation._id,
+              assistant: activeCooperation.assistant_id
+                ? {
+                    id: activeCooperation.assistant_id._id,
+                    name:
+                      activeCooperation.assistant_id.full_name ||
+                      activeCooperation.assistant_id.username,
+                  }
+                : null,
+            }
+          : null,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ─── PATCH /admin/end-requests/:id ─────────────────────────────────────────────
+/**
+ * @swagger
+ * /admin/end-requests/{id}:
+ *   patch:
+ *     summary: Duyệt / Từ chối yêu cầu kết thúc truyện (Admin only)
+ *     tags: [Admin - Series End Request]
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema: { type: string }
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [decision]
+ *             properties:
+ *               decision:
+ *                 type: string
+ *                 enum: [approved, rejected]
+ *               admin_note:
+ *                 type: string
+ *     responses:
+ *       200: { description: Xử lý thành công }
+ *       400: { description: Decision không hợp lệ }
+ *       404: { description: Không tìm thấy }
+ *       409: { description: Yêu cầu đã được xử lý }
+ */
+router.patch("/end-requests/:id", async (req, res, next) => {
+  try {
+    const { decision, admin_note = "" } = req.body;
+
+    if (!["approved", "rejected"].includes(decision)) {
+      return next(new AppError('decision must be "approved" or "rejected"', 400));
+    }
+
+    const request = await SeriesEndRequest.findOne({
+      _id: req.params.id,
+      status: "pending",
+    }).populate("series_id", "name author_id");
+    if (!request) return next(new AppError("Yêu cầu không tìm thấy hoặc đã được xử lý", 404));
+
+    // Cập nhật request
+    request.status = decision;
+    request.decided_by = req.user.nameid;
+    request.decided_at = new Date();
+    request.admin_note = admin_note;
+    await request.save();
+
+    const seriesName = request.series_id?.name || "(đã xóa)";
+
+    if (decision === "approved") {
+      // ─── APPROVED ─────────────────────────────────────────────────────────────
+      // 1. Update Series
+      await Series.findByIdAndUpdate(request.series_id._id, {
+        publication_status: "completed",
+        publication_schedule: null,
+        scheduled_publish_at: null,
+      });
+
+      // 2. Hủy tất cả chapter scheduled trong tương lai (chưa published)
+      const cancelResult = await Chapter.updateMany(
+        {
+          series_id: request.series_id._id,
+          is_published: false,
+          is_scheduled: true,
+          scheduled_publish_at: { $gt: new Date() },
+        },
+        {
+          $set: { scheduled_publish_at: null, is_scheduled: false },
+        }
+      );
+
+      // 3. Notify Mangaka (requested_by)
+      await Notification.create({
+        user_id: request.requested_by,
+        type: NOTIF_TYPES.SERIES_END_APPROVED,
+        title: "Yêu cầu kết thúc truyện đã được duyệt",
+        message: `Yêu cầu kết thúc truyện "${seriesName}" đã được Admin duyệt. Truyện đã được đánh dấu hoàn thành và tất cả lịch publish trong tương lai đã bị hủy.${admin_note ? ` Ghi chú: ${admin_note}` : ""}`,
+        is_read: false,
+        related_entity_type: "series_end_request",
+        related_entity_id: request._id,
+      });
+
+      // 4. Notify Reader subscribers (theo dõi series)
+      const subscribers = await NotificationSubscription.find({
+        series_id: request.series_id._id,
+      }).select("reader_id");
+      if (subscribers.length > 0) {
+        const readerNotifs = subscribers.map((s) => ({
+          user_id: s.reader_id,
+          type: NOTIF_TYPES.SERIES_END_NOTIFY_READERS,
+          title: "Truyện đã kết thúc",
+          message: `Truyện "${seriesName}" mà bạn đang theo dõi đã kết thúc. Cảm ơn bạn đã đồng hành cùng tác phẩm!`,
+          is_read: false,
+          related_entity_type: "series",
+          related_entity_id: request.series_id._id,
+        }));
+        await Notification.insertMany(readerNotifs);
+      }
+
+      // 5. Notify Assistant đang hợp tác với series
+      const activeCoop = await Cooperation.findOne({
+        series_id: request.series_id._id,
+        agreed_at: { $ne: null },
+      }).select("assistant_id");
+      if (activeCoop) {
+        await Notification.create({
+          user_id: activeCoop.assistant_id,
+          type: NOTIF_TYPES.SERIES_END_NOTIFY_ASSISTANT,
+          title: "Truyện đang hợp tác đã kết thúc",
+          message: `Series "${seriesName}" mà bạn đang hỗ trợ đã được đánh dấu kết thúc bởi Admin. Hợp tác đã hoàn thành.${admin_note ? ` Ghi chú: ${admin_note}` : ""}`,
+          is_read: false,
+          related_entity_type: "series_end_request",
+          related_entity_id: request._id,
+        });
+      }
+
+      res.json({
+        success: true,
+        message: "Đã duyệt yêu cầu kết thúc truyện. Series được đánh dấu completed.",
+        data: {
+          id: request._id,
+          status: "approved",
+          series_publication_status: "completed",
+          chapters_cancelled: cancelResult.modifiedCount,
+        },
+      });
+    } else {
+      // ─── REJECTED ─────────────────────────────────────────────────────────────
+      await Notification.create({
+        user_id: request.requested_by,
+        type: NOTIF_TYPES.SERIES_END_REJECTED,
+        title: "Yêu cầu kết thúc truyện bị từ chối",
+        message: `Yêu cầu kết thúc truyện "${seriesName}" đã bị Admin từ chối.${admin_note ? ` Lý do: ${admin_note}` : ""} Truyện tiếp tục hoạt động bình thường.`,
+        is_read: false,
+        related_entity_type: "series_end_request",
+        related_entity_id: request._id,
+      });
+
+      res.json({
+        success: true,
+        message: "Đã từ chối yêu cầu kết thúc truyện",
+        data: { id: request._id, status: "rejected" },
+      });
+    }
+  } catch (error) {
+    next(error);
+  }
+});
+
 module.exports = router;

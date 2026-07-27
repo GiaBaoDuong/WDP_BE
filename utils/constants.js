@@ -127,6 +127,13 @@ const NOTIF_TYPES = {
   ADMIN_USER_BANNED: "admin_user_banned",       // Admin ban user
   ADMIN_CONTENT_REMOVED: "admin_content_removed", // Admin xoá nội dung
   ADMIN_ROLE_CHANGED: "admin_role_changed",     // Admin đổi vai trò user
+  // ─── Series End Request ───────────────────────────────────────────────
+  SERIES_END_REQUEST_SUBMITTED: "series_end_request_submitted", // Mangaka gửi yêu cầu end truyện → Admin nhận
+  SERIES_END_APPROVED: "series_end_approved", // Admin duyệt → Mangaka nhận
+  SERIES_END_REJECTED: "series_end_rejected", // Admin từ chối → Mangaka nhận
+  SERIES_END_AUTO_CANCELLED: "series_end_auto_cancelled", // Tự hủy sau 7 ngày → Mangaka nhận
+  SERIES_END_NOTIFY_READERS: "series_end_notify_readers", // Series đã end → Reader subscribers nhận
+  SERIES_END_NOTIFY_ASSISTANT: "series_end_notify_assistant", // Series đã end → Assistant đang hợp tác nhận
 };
 
 // ─── EB Scoring ───────────────────────────────────────────────────────────────

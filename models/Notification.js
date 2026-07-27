@@ -23,6 +23,7 @@ const notificationSchema = new mongoose.Schema(
         "te_review",
         "eb_evaluation",
         "vote",
+        "series_end_request",
         null,
       ],
       default: null,
