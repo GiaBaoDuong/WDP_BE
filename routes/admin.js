@@ -2513,6 +2513,280 @@ router.delete("/comments/:id", async (req, res, next) => {
  *                     days:
  *                       type: array
  */
+
+// ─── GET /admin/notifications ──────────────────────────────────────────────────
+/**
+ * @swagger
+ * /admin/notifications:
+ *   get:
+ *     summary: Lấy danh sách notification của Admin hiện tại (chỉ Admin nhận)
+ *     tags: [Admin - Notifications]
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: page
+ *         schema: { type: integer, default: 1 }
+ *       - in: query
+ *         name: limit
+ *         schema: { type: integer, default: 20 }
+ *       - in: query
+ *         name: is_read
+ *         schema: { type: boolean }
+ *         description: Filter theo trạng thái đã đọc
+ *       - in: query
+ *         name: type
+ *         schema: { type: string }
+ *         description: "Filter theo type, cách nhau bằng dấu phẩy. Ví dụ: series_end_request_submitted,chapter_to_TE,chapter_to_EB"
+ *       - in: query
+ *         name: related_entity_type
+ *         schema: { type: string }
+ *         description: "Filter theo related_entity_type, ví dụ: series_end_request,series,chapter"
+ *     responses:
+ *       200:
+ *         description: Danh sách notification
+ */
+router.get("/notifications", async (req, res, next) => {
+  try {
+    const { page = 1, limit = 20, is_read, type, related_entity_type } = req.query;
+    const filter = { user_id: req.user.nameid };
+
+    if (is_read !== undefined) {
+      filter.is_read = is_read === "true";
+    }
+
+    if (type) {
+      const types = type.split(",").map((t) => t.trim()).filter((t) => t);
+      if (types.length > 0) {
+        filter.type = { $in: types };
+      }
+    }
+
+    if (related_entity_type) {
+      filter.related_entity_type = related_entity_type;
+    }
+
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+    const [notifications, total, unreadCount] = await Promise.all([
+      Notification.find(filter)
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(parseInt(limit))
+        .lean(),
+      Notification.countDocuments(filter),
+      Notification.countDocuments({ user_id: req.user.nameid, is_read: false }),
+    ]);
+
+    return res.status(200).json({
+      success: true,
+      data: notifications,
+      pagination: {
+        total,
+        page: parseInt(page),
+        limit: parseInt(limit),
+        pages: Math.ceil(total / parseInt(limit)),
+      },
+      unreadCount,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ─── PATCH /admin/notifications/read-all ──────────────────────────────────────
+/**
+ * @swagger
+ * /admin/notifications/read-all:
+ *   patch:
+ *     summary: Đánh dấu tất cả notification của Admin đã đọc
+ *     tags: [Admin - Notifications]
+ *     security:
+ *       - BearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Đã đánh dấu tất cả là đã đọc
+ */
+router.patch("/notifications/read-all", async (req, res, next) => {
+  try {
+    const result = await Notification.updateMany(
+      { user_id: req.user.nameid, is_read: false },
+      { is_read: true }
+    );
+
+    return res.status(200).json({
+      success: true,
+      message: `Đã đánh dấu ${result.modifiedCount} notification là đã đọc.`,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ─── GET /admin/notifications/history ──────────────────────────────────────────
+/**
+ * @swagger
+ * /admin/notifications/history:
+ *   get:
+ *     summary: Lấy lịch sử tất cả notification của Admin (kể cả đã đọc)
+ *     tags: [Admin - Notifications]
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: query
+ *         name: page
+ *         schema: { type: integer, default: 1 }
+ *       - in: query
+ *         name: limit
+ *         schema: { type: integer, default: 50 }
+ *       - in: query
+ *         name: type
+ *         schema: { type: string }
+ *         description: "Filter theo type, cách nhau bằng dấu phẩy"
+ *       - in: query
+ *         name: from_date
+ *         schema: { type: string, format: date-time }
+ *         description: Từ ngày (ISO 8601)
+ *       - in: query
+ *         name: to_date
+ *         schema: { type: string, format: date-time }
+ *         description: Đến ngày (ISO 8601)
+ *       - in: query
+ *         name: search
+ *         schema: { type: string }
+ *         description: Tìm kiếm trong title hoặc message
+ *     responses:
+ *       200:
+ *         description: Lịch sử notification
+ */
+router.get("/notifications/history", async (req, res, next) => {
+  try {
+    const { page = 1, limit = 50, type, from_date, to_date, search } = req.query;
+    const filter = { user_id: req.user.nameid };
+
+    // Filter theo type
+    if (type) {
+      const types = type.split(",").map((t) => t.trim()).filter((t) => t);
+      if (types.length > 0) {
+        filter.type = { $in: types };
+      }
+    }
+
+    // Filter theo khoảng thời gian
+    if (from_date || to_date) {
+      filter.createdAt = {};
+      if (from_date) {
+        filter.createdAt.$gte = new Date(from_date);
+      }
+      if (to_date) {
+        filter.createdAt.$lte = new Date(to_date);
+      }
+    }
+
+    // Tìm kiếm trong title hoặc message
+    if (search) {
+      filter.$or = [
+        { title: { $regex: search, $options: "i" } },
+        { message: { $regex: search, $options: "i" } },
+      ];
+    }
+
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+    const [notifications, total] = await Promise.all([
+      Notification.find(filter)
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(parseInt(limit))
+        .lean(),
+      Notification.countDocuments(filter),
+    ]);
+
+    // Thống kê tóm tắt theo ngày
+    const dateStats = await Notification.aggregate([
+      { $match: filter },
+      {
+        $group: {
+          _id: {
+            $dateToString: { format: "%Y-%m-%d", date: "$createdAt" },
+          },
+          count: { $sum: 1 },
+          unread: {
+            $sum: { $cond: [{ $eq: ["$is_read", false] }, 1, 0] },
+          },
+        },
+      },
+      { $sort: { _id: -1 } },
+      { $limit: 30 },
+    ]);
+
+    return res.status(200).json({
+      success: true,
+      data: notifications,
+      pagination: {
+        total,
+        page: parseInt(page),
+        limit: parseInt(limit),
+        pages: Math.ceil(total / parseInt(limit)),
+      },
+      dateStats: dateStats.map((d) => ({
+        date: d._id,
+        total: d.count,
+        unread: d.unread,
+      })),
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ─── GET /admin/notifications/stats ───────────────────────────────────────────
+/**
+ * @swagger
+ * /admin/notifications/stats:
+ *   get:
+ *     summary: Lấy thống kê notification của Admin
+ *     tags: [Admin - Notifications]
+ *     security:
+ *       - BearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Thống kê notification
+ */
+router.get("/notifications/stats", async (req, res, next) => {
+  try {
+    const adminId = req.user.nameid;
+
+    const [totalUnread, totalRead, byType, recentActivity] = await Promise.all([
+      Notification.countDocuments({ user_id: adminId, is_read: false }),
+      Notification.countDocuments({ user_id: adminId, is_read: true }),
+      Notification.aggregate([
+        { $match: { user_id: new mongoose.Types.ObjectId(adminId) } },
+        { $group: { _id: "$type", count: { $sum: 1 } } },
+        { $sort: { count: -1 } },
+      ]),
+      Notification.find({ user_id: adminId })
+        .sort({ createdAt: -1 })
+        .limit(5)
+        .lean(),
+    ]);
+
+    return res.status(200).json({
+      success: true,
+      data: {
+        totalUnread,
+        totalRead,
+        total: totalUnread + totalRead,
+        byType: byType.map((item) => ({
+          type: item._id,
+          count: item.count,
+        })),
+        recentActivity,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 router.get("/publication-calendar", async (req, res, next) => {
   try {
     const { from_date, to_date, schedule } = req.query;
