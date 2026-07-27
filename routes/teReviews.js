@@ -2317,6 +2317,10 @@ router.get("/chapter/:chapterId/annotations", authMiddleware, requireTE, async (
  *       **Action reject:**
  *       - Chapter → `TE_revision`, lưu revision_notes + annotations
  *       - Notify Mangaka
+ *
+ *       **Auto-claim:**
+ *       - Neu chapter chua duoc gan TE (`te_id = null`), TE hien tai se tu dong duoc gan khi goi endpoint nay.
+ *       - Audit trail: tao TEReview moi voi `reviewed_by = current TE` neu chua ton tai.
  *     tags: [TEReviews]
  *     security:
  *       - BearerAuth: []
@@ -2352,10 +2356,6 @@ router.get("/chapter/:chapterId/annotations", authMiddleware, requireTE, async (
  *         description: Không có quyền (chapter đã được gán cho TE khác)
  *       404:
  *         description: Chapter not found
- *
-*     Auto-claim: Nếu chapter chưa được gán TE (te_id = null), TE hiện tại sẽ tự động được gán
-*       khi gọi endpoint này. Giống pattern POST /series-review/:seriesId/review-chapter.
-*       Audit trail: TEReview sẽ được tạo mới với reviewed_by = current TE nếu chưa tồn tại.
  */
 router.post("/chapter/:chapterId/te-action", authMiddleware, requireTE, async (req, res, next) => {
   try {
