@@ -2972,36 +2972,77 @@ router.patch("/end-requests/:id", async (req, res, next) => {
 
     if (decision === "approved") {
       // ─── APPROVED ─────────────────────────────────────────────────────────────
-      // 1. Update Series
+      const finalChapterNum = request.planned_final_chapter_number;
+
+      // 1. Tìm chapter cuối (nếu có) để kiểm tra trạng thái
+      let finalChapter = null;
+      if (finalChapterNum) {
+        finalChapter = await Chapter.findOne({
+          series_id: request.series_id._id,
+          chapter_number: finalChapterNum,
+        }).lean();
+      }
+
+      // 2. Kiểm tra xem chapter cuối đã publish chưa
+      const isFinalChapterPublished = finalChapter && finalChapter.is_published;
+      const isFinalChapterScheduled = finalChapter && finalChapter.is_scheduled && finalChapter.scheduled_publish_at;
+
+      // 3. Update Series
       await Series.findByIdAndUpdate(request.series_id._id, {
         publication_status: "completed",
         publication_schedule: null,
         scheduled_publish_at: null,
       });
 
-      // 2. Hủy tất cả chapter scheduled trong tương lai (chưa published)
-      const cancelResult = await Chapter.updateMany(
-        {
-          series_id: request.series_id._id,
-          is_published: false,
-          is_scheduled: true,
-          scheduled_publish_at: { $gt: new Date() },
-        },
-        {
-          $set: { scheduled_publish_at: null, is_scheduled: false },
-        }
-      );
+      // 4. Hủy tất cả chapter scheduled trong tương lai (TRỪ chapter cuối nếu chưa publish)
+      const cancelQuery = {
+        series_id: request.series_id._id,
+        is_published: false,
+        is_scheduled: true,
+        scheduled_publish_at: { $gt: new Date() },
+      };
 
-      // 3. Notify Mangaka (requested_by)
-      await Notification.create({
-        user_id: request.requested_by,
-        type: NOTIF_TYPES.SERIES_END_APPROVED,
-        title: "Yêu cầu kết thúc truyện đã được duyệt",
-        message: `Yêu cầu kết thúc truyện "${seriesName}" đã được Admin duyệt. Truyện đã được đánh dấu hoàn thành và tất cả lịch publish trong tương lai đã bị hủy.${admin_note ? ` Ghi chú: ${admin_note}` : ""}`,
-        is_read: false,
-        related_entity_type: "series_end_request",
-        related_entity_id: request._id,
+      // Nếu chapter cuối chưa publish, giữ lại schedule của nó
+      if (finalChapter && !isFinalChapterPublished && finalChapter.is_scheduled) {
+        cancelQuery.chapter_number = { $ne: finalChapterNum };
+      }
+
+      await Chapter.updateMany(cancelQuery, {
+        $set: { scheduled_publish_at: null, is_scheduled: false },
       });
+
+      // 5. Notify Mangaka (requested_by)
+      let mangakaMessage = `Yêu cầu kết thúc truyện "${seriesName}" đã được Admin duyệt. Truyện đã được đánh dấu hoàn thành.`;
+      
+      if (finalChapterNum && !isFinalChapterPublished) {
+        // Chapter cuối chưa publish → cảnh báo mangaka
+        const chapterStatus = finalChapter 
+          ? `Chapter #${finalChapterNum} hiện đang ở trạng thái "${finalChapter.status}". ` +
+            `Bạn cần hoàn tất quy trình duyệt (TE/EB) để chapter này được publish trước khi series kết thúc.`
+          : `Chapter #${finalChapterNum} không tồn tại. Vui lòng tạo và hoàn tất chapter cuối.`;
+        
+        mangakaMessage += " " + chapterStatus;
+
+        await Notification.create({
+          user_id: request.requested_by,
+          type: NOTIF_TYPES.SERIES_END_APPROVED,
+          title: "Yêu cầu kết thúc truyện đã được duyệt — Cần xử lý chapter cuối",
+          message: mangakaMessage + (admin_note ? ` Ghi chú: ${admin_note}` : ""),
+          is_read: false,
+          related_entity_type: "series_end_request",
+          related_entity_id: request._id,
+        });
+      } else {
+        await Notification.create({
+          user_id: request.requested_by,
+          type: NOTIF_TYPES.SERIES_END_APPROVED,
+          title: "Yêu cầu kết thúc truyện đã được duyệt",
+          message: mangakaMessage + (admin_note ? ` Ghi chú: ${admin_note}` : ""),
+          is_read: false,
+          related_entity_type: "series_end_request",
+          related_entity_id: request._id,
+        });
+      }
 
       // 4. Notify Reader subscribers (theo dõi series)
       const subscribers = await NotificationSubscription.find({
@@ -3039,12 +3080,21 @@ router.patch("/end-requests/:id", async (req, res, next) => {
 
       res.json({
         success: true,
-        message: "Đã duyệt yêu cầu kết thúc truyện. Series được đánh dấu completed.",
+        message: isFinalChapterPublished
+          ? "Đã duyệt yêu cầu kết thúc truyện. Series được đánh dấu completed."
+          : `Đã duyệt yêu cầu kết thúc truyện. Chapter cuối #${finalChapterNum} chưa được publish — Mangaka cần hoàn tất.`,
         data: {
           id: request._id,
           status: "approved",
           series_publication_status: "completed",
-          chapters_cancelled: cancelResult.modifiedCount,
+          final_chapter: finalChapterNum
+            ? {
+                number: finalChapterNum,
+                is_published: isFinalChapterPublished,
+                is_scheduled: isFinalChapterScheduled,
+                status: finalChapter?.status || null,
+              }
+            : null,
         },
       });
     } else {
