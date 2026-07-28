@@ -1343,7 +1343,7 @@ router.get("/rankings", authMiddleware, requireReader, async (req, res, next) =>
  *       200:
  *         description: Dashboard rankings data
  */
-router.get("/rankings/dashboard", authMiddleware, requireReader, async (req, res, next) => {
+router.get("/rankings/dashboard", optionalAuth, async (req, res, next) => {
   try {
     const { period = "weekly", limit = 10 } = req.query;
     const parsedLimit = Math.min(Math.max(parseInt(limit) || 10, 1), 50);

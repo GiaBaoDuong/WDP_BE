@@ -17,6 +17,8 @@ const EBEvaluation = require("../models/EBEvaluation");
 const Cooperation = require("../models/Cooperation");
 const CooperationRequest = require("../models/CooperationRequest");
 const Comment = require("../models/Comment");
+const NotificationSubscription = require("../models/NotificationSubscription");
+const SeriesStats = require("../models/SeriesStats");
 const upload = require("../middleware/upload");
 const { toPositiveInteger } = require("../services/seriesEndService");
 
@@ -710,10 +712,18 @@ router.delete("/manga/:id", async (req, res, next) => {
     const allChapters = await Chapter.find({ series_id: series._id }).select("_id").lean();
     const allChapterIds = allChapters.map((c) => c._id);
 
-    // Hard delete Pages + Tasks của TẤT CẢ chapters (kể cả đã soft-delete từ trước)
+    // Hard delete Pages + Tasks của TẤT CẢ chapters
     const [pagesResult, tasksResult] = await Promise.all([
       Page.deleteMany({ chapter_id: { $in: allChapterIds } }),
       Task.deleteMany({ chapter_id: { $in: allChapterIds } }),
+    ]);
+
+    // Hard delete Votes, Comments, NotificationSubscriptions, SeriesStats
+    const [votesResult, commentsResult, subscriptionsResult, statsResult] = await Promise.all([
+      Vote.deleteMany({ series_id: series._id }),
+      Comment.deleteMany({ series_id: series._id }),
+      NotificationSubscription.deleteMany({ series_id: series._id }),
+      SeriesStats.deleteMany({ series_id: series._id }),
     ]);
 
     // 4. Notify author
@@ -734,7 +744,7 @@ router.delete("/manga/:id", async (req, res, next) => {
 
     res.json({
       success: true,
-      message: "Manga force-deleted (soft delete series + chapters, hard delete pages + tasks)",
+      message: "Manga force-deleted (votes, comments, subscriptions, stats hard deleted; pages, tasks, cooperations kept for author)",
       data: {
         id: series._id,
         title: series.name,
@@ -742,6 +752,10 @@ router.delete("/manga/:id", async (req, res, next) => {
         chapters_soft_deleted: chapterUpdate.modifiedCount,
         pages_hard_deleted: pagesResult.deletedCount,
         tasks_hard_deleted: tasksResult.deletedCount,
+        votes_hard_deleted: votesResult.deletedCount,
+        comments_hard_deleted: commentsResult.deletedCount,
+        subscriptions_hard_deleted: subscriptionsResult.deletedCount,
+        stats_hard_deleted: statsResult.deletedCount,
       },
     });
   } catch (error) {
@@ -1502,9 +1516,16 @@ router.delete("/series/:id", async (req, res, next) => {
       Task.deleteMany({ chapter_id: { $in: allChapterIds } }),
     ]);
 
+    const [votesResult, commentsResult, subscriptionsResult, statsResult] = await Promise.all([
+      Vote.deleteMany({ series_id: series._id }),
+      Comment.deleteMany({ series_id: series._id }),
+      NotificationSubscription.deleteMany({ series_id: series._id }),
+      SeriesStats.deleteMany({ series_id: series._id }),
+    ]);
+
     res.json({
       success: true,
-      message: "Series force-deleted (soft delete series + chapters, hard delete pages + tasks)",
+      message: "Series force-deleted (votes, comments, subscriptions, stats hard deleted; pages, tasks, cooperations kept for author)",
       data: {
         id: series._id,
         title: series.name,
@@ -1512,6 +1533,10 @@ router.delete("/series/:id", async (req, res, next) => {
         chapters_soft_deleted: chapterUpdate.modifiedCount,
         pages_hard_deleted: pagesResult.deletedCount,
         tasks_hard_deleted: tasksResult.deletedCount,
+        votes_hard_deleted: votesResult.deletedCount,
+        comments_hard_deleted: commentsResult.deletedCount,
+        subscriptions_hard_deleted: subscriptionsResult.deletedCount,
+        stats_hard_deleted: statsResult.deletedCount,
       },
     });
   } catch (error) {
