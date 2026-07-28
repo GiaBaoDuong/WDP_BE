@@ -3017,7 +3017,6 @@ router.get("/publication-calendar", async (req, res, next) => {
 // ════════════════════════════════════════════════════════════════════════════════════
 
 const SeriesEndRequest = require("../models/SeriesEndRequest");
-const NotificationSubscription = require("../models/NotificationSubscription");
 const { NOTIF_TYPES } = require("../utils/constants");
 
 // ─── GET /admin/end-requests ────────────────────────────────────────────────────
