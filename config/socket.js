@@ -2,6 +2,16 @@ const { Server } = require("socket.io");
 
 let io = null;
 
+const normalizeUserId = (payload) => {
+  if (!payload) return null;
+  if (typeof payload === "string") return payload.trim();
+  if (typeof payload === "object") {
+    const value = payload.userId || payload.user_id || payload.id || payload._id;
+    return value ? String(value).trim() : null;
+  }
+  return String(payload).trim();
+};
+
 const initSocket = (server) => {
   if (io) return io;
 
@@ -22,7 +32,13 @@ const initSocket = (server) => {
     console.log("[Socket] Client connected:", socket.id);
 
     // Client join phòng user riêng để nhận notification
-    socket.on("join_user_room", (userId) => {
+    socket.on("join_user_room", (payload) => {
+      const userId = normalizeUserId(payload);
+      console.log(`[Socket] join_user_room received: ${userId || "invalid"}`);
+      if (!userId) {
+        console.warn("[Socket] join_user_room ignored: missing userId", payload);
+        return;
+      }
       socket.join(`user_${userId}`);
       console.log(`[Socket] ${socket.id} joined user_${userId}`);
     });

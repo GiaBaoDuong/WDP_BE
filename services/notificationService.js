@@ -1,10 +1,28 @@
 const { getIO } = require("../config/socket");
 
+const stringifyForLog = (data) => {
+  try {
+    const payload =
+      data && typeof data.toObject === "function"
+        ? data.toObject({ depopulate: true })
+        : data;
+    return JSON.stringify(payload, (_key, value) =>
+      typeof value === "bigint" ? value.toString() : value
+    );
+  } catch (_e) {
+    return "[unserializable payload]";
+  }
+};
+
 const sendToUser = (userId, event, data) => {
+  const room = `user_${userId}`;
   try {
     const io = getIO();
-    io.to(`user_${userId}`).emit(event, data);
+    console.log(`[Socket Emit] Room: ${room}, Event: ${event}`);
+    console.log(`[Socket Emit] Data: ${stringifyForLog(data)}`);
+    io.to(room).emit(event, data);
   } catch (e) {
+    console.warn(`[Socket Emit] skipped Room: ${room}, Event: ${event}. ${e.message}`);
     // Socket chưa init, bỏ qua
   }
 };
@@ -14,6 +32,9 @@ const notifyUser = async (Notification, userId, notifData) => {
     user_id: userId,
     ...notifData,
   });
+  console.log(
+    `[Notification] Created: id=${notif._id}, user=${userId}, type=${notif.type}`
+  );
   sendToUser(userId, "notification", notif);
   return notif;
 };
@@ -287,6 +308,9 @@ const notifyFollowersNewChapter = async (Notification, chapter, seriesOpt) => {
       reader_id: { $ne: series.author_id },
     }).lean();
 
+    console.log(
+      `[Notification] Series ${series._id} new chapter subscribers: ${subs.length}`
+    );
     if (subs.length === 0) return [];
 
     const docs = subs.map((s) => ({
@@ -307,6 +331,9 @@ const notifyFollowersNewChapter = async (Notification, chapter, seriesOpt) => {
     }));
 
     const created = await Notification.insertMany(docs, { ordered: false });
+    console.log(
+      `[Notification] Created ${created.length} new_chapter_published notifications for chapter ${chapter._id}`
+    );
     for (const notif of created) {
       sendToUser(notif.user_id, "notification", notif);
     }
@@ -347,6 +374,9 @@ const notifyFollowersAuthorNewSeries = async (Notification, series) => {
       reader_id: { $ne: authorId },
     }).lean();
 
+    console.log(
+      `[Notification] Author ${authorId} followers: ${followers.length} for new series ${series._id}`
+    );
     if (followers.length === 0) return [];
 
     // Resolve author_name phòng trường hợp caller chưa populate.
@@ -372,6 +402,9 @@ const notifyFollowersAuthorNewSeries = async (Notification, series) => {
     }));
 
     const created = await Notification.insertMany(docs, { ordered: false });
+    console.log(
+      `[Notification] Created ${created.length} new_series_from_author notifications for series ${series._id}`
+    );
     for (const notif of created) {
       sendToUser(notif.user_id, "notification", notif);
     }

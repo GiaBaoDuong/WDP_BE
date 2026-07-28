@@ -72,6 +72,9 @@ const notifyFollowersForPublishedSeries = async (series) => {
       series._id
     );
     if (alreadySent) {
+      console.log(
+        `[ScheduledPublish] new_series_from_author already sent for series ${series._id}, skipping.`
+      );
       return [];
     }
 
@@ -85,7 +88,11 @@ const notifyFollowersForPublishedSeries = async (series) => {
       populated.author_id?.username ||
       "Tác giả";
 
-    return await notifyFollowersAuthorNewSeries(Notification, populated);
+    const created = await notifyFollowersAuthorNewSeries(Notification, populated);
+    console.log(
+      `[ScheduledPublish] new_series_from_author fanout for series ${series._id}: ${created.length}`
+    );
+    return created;
   } catch (err) {
     console.error(
       `[ScheduledPublish] notify hook error for series ${series._id}:`,
