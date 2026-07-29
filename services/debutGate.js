@@ -1,16 +1,17 @@
 /**
- * Debut Gate — kiểm soát việc tạo chapter + chấm điểm cho series mới.
+ * Debut Gate — kiểm soát việc submit chapter + chấm điểm cho series mới.
  *
- * Rule nghiệp vụ:
+ * Rule nghiệp vụ (luồng 1 — debut):
  *  - Series mới (chưa EB chấm + chưa confirm-publish) chỉ được phép:
- *      1) Mangaka tạo đúng 1 chapter (chapter đầu / chapter 1).
- *      2) EB chỉ chấm đúng 1 chapter (chapter đầu) của series.
+ *      1) Mangaka tạo nhiều chapter nháp (gate không chặn ở POST /chapters).
+ *      2) Chỉ được submit đúng 1 chapter (chapter đầu) cho TE.
  *      3) TE chỉ forward đúng 1 chapter sang EB để chấm.
+ *      4) EB chỉ chấm đúng 1 chapter (chapter đầu) của series.
  *
- *  - Sau khi EB evaluate pass + confirm-publish → gate mở → cho phép tạo / chấm
- *    chapter tiếp theo.
+ *  - Sau khi EB evaluate pass + confirm-publish → gate mở → cho phép submit/chấm chapter tiếp theo.
  *
- *  - Series cũ (đã published hoặc đã có ≥2 chapters) coi như unlocked (legacy).
+ *  - Series legacy (đã `published` hoặc có cờ `legacy_unlocked = true`) coi như unlocked.
+ *  - KHÔNG dùng "≥2 chapters tồn tại" làm legacy condition (sai logic flow 1).
  */
 const Series = require("../models/Series");
 const Chapter = require("../models/Chapter");
@@ -41,15 +42,22 @@ function isSeriesUnlocked(series) {
 }
 
 /**
- * Legacy exemption: series cũ đã published hoặc đã có ≥2 chapters trước rule này
- * → coi như unlocked, không khóa ngược.
+ * Legacy exemption: series cũ đã published (đã qua hết vòng đời debut) → coi như unlocked.
+ *
+ * Lưu ý quan trọng (sau khi sửa bug luồng 1):
+ *  - KHÔNG dùng rule "≥2 chapters tồn tại" để bypass gate. Rule này sai vì:
+ *      + Mangaka có thể tạo sẵn nhiều chapter nháp trước khi submit chapter đầu
+ *      + Nếu 2+ chapter tồn tại → bypass → cho submit nhiều chapter → sai flow 1.
+ *  - Rule "≥2 chapters" thuộc về flow 2 (sau khi series unlocked rồi), không phải flow 1.
+ *  - Flow 1 chỉ quan tâm: series đã published (legacy chắc chắn) HOẶC đã qua gate (isSeriesUnlocked).
+ *  - Nếu cần grandfather series cũ chưa published nhưng đã có nhiều chapter từ trước rule debut gate,
+ *    hãy set cờ `series.legacy_unlocked = true` qua migration script.
  */
 async function isLegacyUnlocked(series) {
   if (!series) return false;
   if (series.status === SERIES_STATUS.PUBLISHED) return true;
-  // Nếu series đã có ≥2 chapters (không phân biệt status) → coi như unlocked
-  const chapterCount = await Chapter.countDocuments({ series_id: series._id });
-  if (chapterCount >= 2) return true;
+  // Cho phép grandfather thủ công qua flag (nếu đã set trong DB)
+  if (series.legacy_unlocked === true) return true;
   return false;
 }
 
