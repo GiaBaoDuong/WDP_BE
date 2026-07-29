@@ -111,6 +111,11 @@ async function isSeriesLockedForEBChapterReview(seriesId) {
  *  - FE dùng các field `can_submit_first_chapter` / `can_submit_more_chapters`
  *    để quyết định hiển thị nút "Gửi cho TE" cho chapter nào.
  *
+ * QUAN TRỌNG: `current_submitted_chapter_count` chỉ đếm chapter ĐÃ QUA CỔNG submit-to-te
+ * (status ∈ pending_TE / pending_EB / EB_revision / approved_by_EB / published / TE_revision).
+ * KHÔNG tính `submitted_by_assistant` vì status này chỉ là "Assistant đã nộp, chờ Mangaka duyệt",
+ * CHƯA qua cổng submit-to-te. Nếu tính nhầm sẽ block khi chapter chưa từng submit.
+ *
  * @param {Object} series - Series doc (lean hoặc đầy đủ)
  * @returns {Promise<Object>} block debut_gate
  */
@@ -122,16 +127,20 @@ async function buildDebutGate(series) {
   const isUnlocked = legacyUnlocked || unlocked;
 
   const chapterCount = await Chapter.countDocuments({ series_id: series._id });
+  // Đếm số chapter ĐÃ QUA CỔNG submit-to-te (Mangaka → TE → EB → published).
+  // Status "submitted_by_assistant" KHÔNG tính — chỉ là Assistant nộp bài cho Mangaka duyệt,
+  // chưa qua cổng submit-to-te. Gate chỉ tính những status sau khi chapter đã được Mangaka submit.
   const submittedCount = await Chapter.countDocuments({
     series_id: series._id,
     status: {
       $in: [
         CHAPTER_STATUS.PENDING_TE,
-        CHAPTER_STATUS.SUBMITTED_BY_ASSISTANT,
         CHAPTER_STATUS.PENDING_EB,
         CHAPTER_STATUS.EB_REVISION,
         CHAPTER_STATUS.APPROVED_BY_EB,
         CHAPTER_STATUS.PUBLISHED,
+        // TE_revision cũng tính (chapter đã từng được submit rồi, đang quay về TE revision)
+        CHAPTER_STATUS.TE_REVISION,
       ],
     },
   });
