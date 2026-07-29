@@ -3167,7 +3167,7 @@ router.get("/calendar", authMiddleware, requireTE, async (req, res, next) => {
         published_at: isPublished ? ch.published_at : null,
         scheduled_publish_at: !isPublished ? ch.scheduled_publish_at : null,
         publication_schedule: ch.publication_schedule,
-        te: ch.te_id,
+        te_id: ch.te_id,
         submitted_by: ch.submitted_by,
         series: ch.series_id
           ? {
@@ -3177,6 +3177,8 @@ router.get("/calendar", authMiddleware, requireTE, async (req, res, next) => {
               status: ch.series_id.status,
               publication_schedule: ch.series_id.publication_schedule,
               publication_status: ch.series_id.publication_status,
+              scheduled_publish_at: ch.series_id.scheduled_publish_at,
+              author_id: ch.series_id.author_id,
             }
           : null,
       });
