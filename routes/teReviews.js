@@ -13,6 +13,7 @@ const SeriesReview = require("../models/SeriesReview");
 const Notification = require("../models/Notification");
 const { CHAPTER_STATUS, TE_DECISION, SERIES_STATUS } = require("../utils/constants");
 const { ROLES } = require("../utils/constants");
+const { isSeriesLockedForEBChapterReview, buildEBChapterLockError } = require("../services/debutGate");
 const {
   addInterval,
   computeNextChapterSchedule,
@@ -1123,26 +1124,59 @@ router.post("/series-review/:seriesId/submit", authMiddleware, requireTE, async 
       review.decision = "approved";
       await review.save();
 
-      const chaptersToEB = await Chapter.find({
-        series_id: seriesId,
-        status: CHAPTER_STATUS.PENDING_TE,
-        te_id: req.user.nameid,
-      }).lean();
+      // ─── Debut Gate: nếu series bị khóa, chỉ forward đúng 1 chapter (chapter đầu) ───
+      const gateCheck = await isSeriesLockedForEBChapterReview(seriesId);
+      const isLocked = gateCheck.locked;
 
-      await Chapter.updateMany(
-        {
+      let chaptersToEB;
+      if (isLocked) {
+        // Series locked → chỉ lấy chapter đầu tiên (chapter_number nhỏ nhất)
+        chaptersToEB = await Chapter.findOne({
           series_id: seriesId,
           status: CHAPTER_STATUS.PENDING_TE,
           te_id: req.user.nameid,
-        },
-        {
-          status: CHAPTER_STATUS.PENDING_EB,
-          revision_notes: "",
-          revision_annotations: [],
-          revision_source: "",
-          is_published: false,
+        })
+          .sort({ chapter_number: 1 })
+          .lean();
+
+        if (chaptersToEB) {
+          await Chapter.updateOne(
+            { _id: chaptersToEB._id },
+            {
+              status: CHAPTER_STATUS.PENDING_EB,
+              revision_notes: "",
+              revision_annotations: [],
+              revision_source: "",
+              is_published: false,
+            }
+          );
+          chaptersToEB = [chaptersToEB];
+        } else {
+          chaptersToEB = [];
         }
-      );
+      } else {
+        // Series đã qua gate → forward tất cả (flow cũ)
+        chaptersToEB = await Chapter.find({
+          series_id: seriesId,
+          status: CHAPTER_STATUS.PENDING_TE,
+          te_id: req.user.nameid,
+        }).lean();
+
+        await Chapter.updateMany(
+          {
+            series_id: seriesId,
+            status: CHAPTER_STATUS.PENDING_TE,
+            te_id: req.user.nameid,
+          },
+          {
+            status: CHAPTER_STATUS.PENDING_EB,
+            revision_notes: "",
+            revision_annotations: [],
+            revision_source: "",
+            is_published: false,
+          }
+        );
+      }
 
       const ebUsers = await require("../models/User").find({ role: ROLES.EB }).lean();
       for (const eb of ebUsers) {
@@ -1155,8 +1189,11 @@ router.post("/series-review/:seriesId/submit", authMiddleware, requireTE, async 
         success: true,
         data: {
           action: "approve",
-          message: `${chaptersToEB.length} chapter(s) chuyển sang pending_EB.`,
+          message: isLocked
+            ? `Series đang ở chế độ debut (chỉ được chấm 1 chapter). ${chaptersToEB.length} chapter đầu tiên chuyển sang pending_EB.`
+            : `${chaptersToEB.length} chapter(s) chuyển sang pending_EB.`,
           chapters_to_eb: chaptersToEB.map((c) => ({ _id: c._id, chapter_number: c.chapter_number, title: c.title })),
+          ...(isLocked && { debut_gate_locked: true }),
           review: {
             _id: review._id,
             decision: review.decision,
@@ -1368,6 +1405,38 @@ router.post("/series-review/:seriesId/review-chapter", authMiddleware, requireTE
         });
       } else {
         // Series chưa EB-approved → Chapter → pending_EB (gửi EB duyệt)
+
+        // ─── Debut Gate: chặn forward chapter 2+ khi series locked ───────────
+        const gateCheck = await isSeriesLockedForEBChapterReview(seriesId);
+        if (gateCheck.locked) {
+          // Tìm chapter đã được EB chấm trong series (nếu có)
+          const alreadyEvaluated = await require("../models/EBEvaluation").find({
+            series_id: seriesId,
+            chapter_id: { $exists: true, $ne: null },
+            result: { $in: ["approved", "rejected", "revision"] },
+          })
+            .select("chapter_id result")
+            .lean();
+
+          const errPayload = buildEBChapterLockError({
+            series: gateCheck.series,
+            reason:
+              "EB đã chấm 1 chapter của series này. Series phải được confirm-publish trước khi chấm chapter tiếp theo.",
+            extra: {
+              already_evaluated_chapters: alreadyEvaluated.map((ev) => ({
+                chapter_id: ev.chapter_id,
+                result: ev.result,
+              })),
+              unlock_requirements: {
+                eb_evaluated: true,
+                publish_confirmed: false,
+                missing_step: "EB must call POST /eb-evaluations/series/:seriesId/confirm-publish to unlock further chapter reviews.",
+              },
+            },
+          });
+          return next(new AppError(errPayload.message, 409, errPayload.data));
+        }
+
         chapter.status = CHAPTER_STATUS.PENDING_EB;
         chapter.revision_notes = "";
         chapter.revision_annotations = [];
@@ -2428,6 +2497,39 @@ router.post("/chapter/:chapterId/te-action", authMiddleware, requireTE, async (r
         });
       } else {
         // Series chưa approved → gửi EB duyệt (chờ EB approve Series)
+
+        // ─── Debut Gate: chặn forward chapter 2+ khi series locked ───────────
+        const gateCheck = await isSeriesLockedForEBChapterReview(chapter.series_id);
+        if (gateCheck.locked) {
+          // Tìm chapter đã được EB chấm trong series (nếu có)
+          const alreadyEvaluated = await require("../models/EBEvaluation").find({
+            series_id: chapter.series_id,
+            chapter_id: { $exists: true, $ne: null },
+            result: { $in: ["approved", "rejected", "revision"] },
+          })
+            .select("chapter_id result")
+            .lean();
+
+          const errPayload = buildEBChapterLockError({
+            series: gateCheck.series,
+            reason:
+              "EB đã chấm 1 chapter của series này. Series phải được confirm-publish trước khi chấm chapter tiếp theo.",
+            extra: {
+              already_evaluated_chapters: alreadyEvaluated.map((ev) => ({
+                chapter_id: ev.chapter_id,
+                result: ev.result,
+              })),
+              unlock_requirements: {
+                eb_evaluated: true,
+                publish_confirmed: false,
+                missing_step:
+                  "EB must call POST /eb-evaluations/series/:seriesId/confirm-publish to unlock further chapter reviews.",
+              },
+            },
+          });
+          return next(new AppError(errPayload.message, 409, errPayload.data));
+        }
+
         chapter.status = CHAPTER_STATUS.PENDING_EB;
         chapter.revision_notes = "";
         chapter.revision_annotations = [];

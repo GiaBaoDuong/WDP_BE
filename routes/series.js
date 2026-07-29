@@ -11,6 +11,7 @@ const Page = require("../models/Page");
 const upload = require("../middleware/upload");
 const { uploadCover, uploadToCloudinary } = require("../middleware/uploadCoverCloudinary");
 const cloudinary = require("../config/cloudinary");
+const { buildDebutGate } = require("../services/debutGate");
 
 // ─── GET /series ─────────────────────────────────────────────────────────────
 // Tất cả series đã publish (Reader thấy)
@@ -272,7 +273,15 @@ router.get("/mine", authMiddleware, requireMangaka, async (req, res, next) => {
       .sort({ createdAt: -1 })
       .lean();
 
-    return res.status(200).json({ success: true, data: series });
+    // Attach debut_gate cho từng series (FE dùng để disable nút tạo chapter)
+    const enriched = await Promise.all(
+      series.map(async (s) => ({
+        ...s,
+        debut_gate: await buildDebutGate(s),
+      }))
+    );
+
+    return res.status(200).json({ success: true, data: enriched });
   } catch (error) {
     next(error);
   }
@@ -335,7 +344,17 @@ router.get("/:id", authMiddleware, async (req, res, next) => {
       return next(new AppError("Series not found", 404));
     }
 
-    return res.status(200).json({ success: true, data: series });
+    // Attach debut_gate cho Mangaka (FE dùng để disable nút tạo chapter)
+    const isMangakaOwner =
+      req.user && req.user.role === "Mangaka" &&
+      series.author_id._id.toString() === req.user.nameid;
+
+    const responseData = { ...series };
+    if (isMangakaOwner) {
+      responseData.debut_gate = await buildDebutGate(series);
+    }
+
+    return res.status(200).json({ success: true, data: responseData });
   } catch (error) {
     next(error);
   }

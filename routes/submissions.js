@@ -10,6 +10,7 @@ const Notification = require("../models/Notification");
 const User = require("../models/User");
 const { CHAPTER_STATUS, ROLES, SERIES_STATUS } = require("../utils/constants");
 const { notifyChapterToTE } = require("../services/notificationService");
+const { canSubmitChapterToTE } = require("../services/debutGate");
 
 // ─── GET /submissions/te-users ────────────────────────────────────────────────
 /**
@@ -384,13 +385,21 @@ router.post("/chapters/:chapterId/submit-to-te", authMiddleware, requireMangaka,
       return next(new AppError(`${unfinishedTasks} task chưa hoàn thành. Vui lòng duyệt hết trước khi gửi cho TE.`, 400));
     }
 
+    const series = await Series.findById(chapter.series_id).lean();
+    if (!series) return next(new AppError("Series not found", 404));
+
+    // ─── Debut Gate (luồng 1): chỉ cho submit 1 chapter (chapter đầu) khi series locked ───────────
+    // Gate này chặn việc Mangaka submit nhiều chapter lên TE khi series chưa qua debut pipeline.
+    // Sau khi EB confirm-publish → gate mở → cho submit chapter 2+.
+    const submitGate = await canSubmitChapterToTE({ series, chapterNumber: chapter.chapter_number });
+    if (!submitGate.allowed) {
+      return next(new AppError(submitGate.message, 409, submitGate.data));
+    }
+
     chapter.status = CHAPTER_STATUS.PENDING_TE;
     chapter.revision_notes = "";
     chapter.revision_annotations = [];
     chapter.revision_source = "";
-
-    const series = await Series.findById(chapter.series_id).lean();
-    if (!series) return next(new AppError("Series not found", 404));
 
     // Phân biệt 2 giai đoạn theo Series.status:
     //   - Giai đoạn 1: Series chưa EB-approved (draft/submitted/rejected/cancelled)

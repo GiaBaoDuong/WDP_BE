@@ -185,6 +185,9 @@ router.post("/", authMiddleware, requireMangaka, uploadPages.array("pages", 50),
     const series = await Series.findOne({ _id: seriesId, author_id: req.user.nameid });
     if (!series) return next(new AppError("Series not found or unauthorized", 404));
 
+    // Lưu ý: Debut Gate KHÔNG chặn ở POST /chapters — Mangaka được tạo nhiều chapter.
+    // Gate chuyển sang chặn ở POST /chapters/:chapterId/submit-to-te (chỉ cho submit chapter 1 khi series locked).
+
     // Nếu FE gửi assistant_id ở top-level → validate User + Cooperation ngay tại đây
     // để set chapter.assistant_id ngay khi tạo (FE đã gửi sẵn theo contract mới).
     let validatedAssistantId = null;

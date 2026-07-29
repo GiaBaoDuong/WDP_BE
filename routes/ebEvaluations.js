@@ -18,6 +18,7 @@ const {
   notifyChapterPublishConfirmed,
   notifySeriesPublished,
 } = require("../services/notificationService");
+const { isSeriesLockedForEBChapterReview, buildEBChapterLockError } = require("../services/debutGate");
 const {
   EB_CRITERIA_KEYS,
   EB_RESULT_LABELS,
@@ -1411,6 +1412,40 @@ router.post("/chapter/:chapterId/evaluate", authMiddleware, requireEB, async (re
 
     const series = await Series.findById(chapter.series_id).lean();
     if (!series) return next(new AppError("Series not found", 404));
+
+    // ─── Debut Gate: chặn EB chấm chapter 2+ của series locked ───────────
+    // Sau khi EB đã chấm 1 chapter (result ∈ {approved, rejected, revision})
+    // của series này thì không cho chấm chapter nào khác nữa, trừ khi series
+    // đã được confirm-publish (gate mở).
+    const gateCheck = await isSeriesLockedForEBChapterReview(chapter.series_id);
+    if (gateCheck.locked) {
+      const alreadyEvaluated = await EBEvaluation.find({
+        series_id: chapter.series_id,
+        chapter_id: { $exists: true, $ne: null },
+        result: { $in: ["approved", "rejected", "revision"] },
+      })
+        .select("chapter_id result")
+        .lean();
+
+      const errPayload = buildEBChapterLockError({
+        series: gateCheck.series,
+        reason:
+          "EB đã chấm 1 chapter của series này. Sau khi chấm, không được chấm chapter nào khác nữa cho đến khi series được confirm-publish.",
+        extra: {
+          already_evaluated_chapters: alreadyEvaluated.map((ev) => ({
+            chapter_id: ev.chapter_id,
+            result: ev.result,
+          })),
+          unlock_requirements: {
+            eb_evaluated: true,
+            publish_confirmed: false,
+            missing_step:
+              "EB must call POST /eb-evaluations/series/:seriesId/confirm-publish to unlock further chapter reviews.",
+          },
+        },
+      });
+      return next(new AppError(errPayload.message, 409, errPayload.data));
+    }
 
     // Giới hạn hội đồng chấm (áp dụng cho lần đầu): tối thiểu 3, tối đa 5 người
     const isFirstReview = series.status === "draft" || series.status === "submitted";
