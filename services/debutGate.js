@@ -189,16 +189,18 @@ async function canSubmitChapterToTE({ series, chapterNumber }) {
   }
 
   // Series đang locked — đếm số chapter đã từng được submit lên TE/EB
+  // Status đã submit = đã qua cổng Mangaka→TE (chỉ những status sau khi submit chứ không phải trước submit).
   const submittedCount = await Chapter.countDocuments({
     series_id: series._id,
     status: {
       $in: [
         CHAPTER_STATUS.PENDING_TE,
-        CHAPTER_STATUS.SUBMITTED_BY_ASSISTANT,
         CHAPTER_STATUS.PENDING_EB,
         CHAPTER_STATUS.EB_REVISION,
         CHAPTER_STATUS.APPROVED_BY_EB,
         CHAPTER_STATUS.PUBLISHED,
+        // TE_revision cũng tính (chapter đã từng được submit rồi)
+        CHAPTER_STATUS.TE_REVISION,
       ],
     },
   });
