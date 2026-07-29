@@ -49,6 +49,11 @@ const {
   countApprovedUnpublishedChapters,
   isFinalChapterOfSeries,
 } = require("../utils/publicationSchedule");
+const {
+  getApprovedEndRequestForSeries,
+  toPositiveInteger,
+  completeSeriesIfTargetChapterPublished,
+} = require("../services/seriesEndService");
 
 let intervalHandle = null;
 let isRunning = false;
