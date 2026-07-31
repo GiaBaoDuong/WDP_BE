@@ -28,6 +28,22 @@ const {
   SERIES_STATUS,
   CHAPTER_STATUS,
 } = require("../utils/constants");
+const {
+  checkAgeSafety,
+  validateContentLevels,
+  getRubricById,
+  getSuggestedRubricForSeries,
+  listAllRubrics,
+  listRubricsForFamily,
+  computeWeightedCouncilAverage,
+  computeMemberWeightedScore,
+  buildRubricEntry,
+  getAllFamilies,
+  CORE_CRITERIA_KEYS,
+  AGE_SAFETY_FIELDS,
+  AGE_SAFETY_LEVELS,
+  EXTENSION_CRITERIA,
+} = require("../utils/ebScoringRubric");
 
 // ─── Helper: phân loại kết quả theo phổ điểm ────────────────────────────────
 const classifyByScore = (councilAvg) => {
@@ -124,18 +140,15 @@ router.get("/pending", authMiddleware, requireEB, async (req, res, next) => {
         let classification = null;
         let classificationText = "";
         if (ev && ev.member_scores && ev.member_scores.length > 0) {
-          const totals = {};
-          EB_CRITERIA_KEYS.forEach((k) => {
-            totals[k] = ev.member_scores.reduce((acc, m) => acc + (m.scores?.[k] || 0), 0);
-          });
-          const avgTotals = {};
-          EB_CRITERIA_KEYS.forEach((k) => {
-            avgTotals[k] = Math.round((totals[k] / ev.member_scores.length) * 100) / 100;
-          });
-          councilAvg =
-            Math.round(
-              (EB_CRITERIA_KEYS.reduce((acc, k) => acc + avgTotals[k], 0) / EB_CRITERIA_KEYS.length) * 100
-            ) / 100;
+          // Dùng weighted nếu có rubric, không thì equal weights
+          let weights;
+          if (ev.applied_rubric_weights && ev.applied_rubric_weights.size > 0) {
+            weights = Object.fromEntries(ev.applied_rubric_weights);
+          } else {
+            weights = {};
+            CORE_CRITERIA_KEYS.forEach((k) => { weights[k] = 20; });
+          }
+          councilAvg = computeWeightedCouncilAverage(ev.member_scores, weights);
           classification = classifyByScore(councilAvg);
           classificationText = classifyText(councilAvg);
         }
@@ -297,26 +310,17 @@ router.get("/my-history", authMiddleware, requireEB, async (req, res, next) => {
           (m) => m.member_id && String(m.member_id) === String(userId)
         ) || null;
 
-      // Tính điểm trung bình hội đồng
+      // Tính điểm trung bình hội đồng (weighted)
       let councilAvg = 0;
       if (ev.member_scores && ev.member_scores.length > 0) {
-        const totals = {};
-        EB_CRITERIA_KEYS.forEach((k) => {
-          totals[k] = ev.member_scores.reduce(
-            (acc, m) => acc + (m.scores?.[k] || 0),
-            0
-          );
-        });
-        const avgTotals = {};
-        EB_CRITERIA_KEYS.forEach((k) => {
-          avgTotals[k] =
-            Math.round((totals[k] / ev.member_scores.length) * 100) / 100;
-        });
-        councilAvg =
-          Math.round(
-            (EB_CRITERIA_KEYS.reduce((acc, k) => acc + avgTotals[k], 0) /
-              EB_CRITERIA_KEYS.length) * 100
-          ) / 100;
+        let weights;
+        if (ev.applied_rubric_weights && ev.applied_rubric_weights.size > 0) {
+          weights = Object.fromEntries(ev.applied_rubric_weights);
+        } else {
+          weights = {};
+          CORE_CRITERIA_KEYS.forEach((k) => { weights[k] = 20; });
+        }
+        councilAvg = computeWeightedCouncilAverage(ev.member_scores, weights);
       }
 
       return {
@@ -490,25 +494,17 @@ router.get("/history", authMiddleware, requireEB, async (req, res, next) => {
     const items = evaluations.map((ev) => {
       const isSeriesReview = !ev.chapter_id;
 
-      // Tính điểm hội đồng
+      // Tính điểm hội đồng (weighted)
       let councilAvg = 0;
       if (ev.member_scores && ev.member_scores.length > 0) {
-        const totals = {};
-        EB_CRITERIA_KEYS.forEach((k) => {
-          totals[k] = ev.member_scores.reduce((acc, m) => acc + (m.scores?.[k] || 0), 0);
-        });
-        const avgTotals = {};
-        EB_CRITERIA_KEYS.forEach((k) => {
-          avgTotals[k] =
-            ev.member_scores.length > 0
-              ? Math.round((totals[k] / ev.member_scores.length) * 100) / 100
-              : 0;
-        });
-        councilAvg =
-          Math.round(
-            (EB_CRITERIA_KEYS.reduce((acc, k) => acc + avgTotals[k], 0) /
-              EB_CRITERIA_KEYS.length) * 100
-          ) / 100;
+        let weights;
+        if (ev.applied_rubric_weights && ev.applied_rubric_weights.size > 0) {
+          weights = Object.fromEntries(ev.applied_rubric_weights);
+        } else {
+          weights = {};
+          CORE_CRITERIA_KEYS.forEach((k) => { weights[k] = 20; });
+        }
+        councilAvg = computeWeightedCouncilAverage(ev.member_scores, weights);
       }
 
       return {
@@ -692,11 +688,11 @@ router.get("/:evaluationId/history-detail", authMiddleware, requireEB, async (re
             ? Math.round((totals[k] / ev.member_scores.length) * 100) / 100
             : 0;
       });
-      councilAvg =
-        Math.round(
-          (EB_CRITERIA_KEYS.reduce((acc, k) => acc + avgTotals[k], 0) /
-            EB_CRITERIA_KEYS.length) * 100
-        ) / 100;
+      // Weighted council average (dùng rubric weights nếu có)
+      const weights = ev.applied_rubric_weights && ev.applied_rubric_weights.size > 0
+        ? Object.fromEntries(ev.applied_rubric_weights)
+        : Object.fromEntries(CORE_CRITERIA_KEYS.map((k) => [k, 20]));
+      councilAvg = computeWeightedCouncilAverage(ev.member_scores, weights);
       councilBreakdown = avgTotals;
     }
 
@@ -955,34 +951,28 @@ router.get("/series/:seriesId/detail", authMiddleware, requireEB, async (req, re
       .sort({ createdAt: -1 })
       .lean();
 
-    // Tính council_average + gắn my_member_score cho EB hiện tại
+    // Tính council_average (weighted) + gắn my_member_score cho EB hiện tại
     let enrichedEvaluation = null;
     if (evaluation) {
-      let councilAvg = 0;
-      if (evaluation.member_scores && evaluation.member_scores.length > 0) {
-        const totals = {};
-        EB_CRITERIA_KEYS.forEach((k) => {
-          totals[k] = evaluation.member_scores.reduce(
-            (acc, m) => acc + (m.scores?.[k] || 0),
-            0
-          );
-        });
-        const avgTotals = {};
-        EB_CRITERIA_KEYS.forEach((k) => {
-          avgTotals[k] =
-            Math.round((totals[k] / evaluation.member_scores.length) * 100) / 100;
-        });
-        councilAvg =
-          Math.round(
-            (EB_CRITERIA_KEYS.reduce((acc, k) => acc + avgTotals[k], 0) /
-              EB_CRITERIA_KEYS.length) * 100
-          ) / 100;
-      }
+      const weights = evaluation.applied_rubric_weights && evaluation.applied_rubric_weights.size > 0
+        ? Object.fromEntries(evaluation.applied_rubric_weights)
+        : Object.fromEntries(CORE_CRITERIA_KEYS.map((k) => [k, 20]));
+      const councilAvg = evaluation.member_scores && evaluation.member_scores.length > 0
+        ? computeWeightedCouncilAverage(evaluation.member_scores, weights)
+        : 0;
 
       const userId = req.user.nameid;
       const myMemberScore = (evaluation.member_scores || []).find(
         (m) => m.member_id && String(m.member_id) === String(userId)
       ) || null;
+
+      // Compute weighted council average for this evaluation
+      const evalWeights = evaluation.applied_rubric_weights && evaluation.applied_rubric_weights.size > 0
+        ? Object.fromEntries(evaluation.applied_rubric_weights)
+        : Object.fromEntries(CORE_CRITERIA_KEYS.map((k) => [k, 20]));
+      const evalCouncilAvg = evaluation.member_scores && evaluation.member_scores.length > 0
+        ? computeWeightedCouncilAverage(evaluation.member_scores, evalWeights)
+        : 0;
 
       enrichedEvaluation = {
         _id: evaluation._id,
@@ -1006,9 +996,15 @@ router.get("/series/:seriesId/detail", authMiddleware, requireEB, async (req, re
         publication_schedule: evaluation.publication_schedule,
         scheduled_publish_at: evaluation.scheduled_publish_at,
         notes: evaluation.notes,
-        council_average: councilAvg,
-        classification: classifyByScore(councilAvg),
-        classification_text: classifyText(councilAvg),
+        // New rubric fields
+        applied_rubric_id:           evaluation.applied_rubric_id || null,
+        applied_rubric_total_weight: evaluation.applied_rubric_total_weight || 100,
+        age_safety:                 evaluation.age_safety || null,
+        content_levels:              evaluation.content_levels || null,
+        // Weighted council average
+        council_average: evalCouncilAvg,
+        classification: classifyByScore(evalCouncilAvg),
+        classification_text: classifyText(evalCouncilAvg),
         my_member_score: myMemberScore,
         can_edit: evaluation.status !== EB_EVALUATION_STATUS.LOCKED,
         created_at: evaluation.createdAt,
@@ -1138,11 +1134,28 @@ router.get("/series/:seriesId/detail", authMiddleware, requireEB, async (req, re
  */
 // ─── POST /eb-evaluations/series/:seriesId/evaluate ─────────────────────────
 // EB đánh giá series (lần đầu: chấm điểm chi tiết; lần sau: duyệt nhanh)
-// Body: { member_scores: [...], result, publication_schedule, notes }
-// Hoặc: { quick_decision, quick_notes, result }
+//
+// First review body:
+//   { member_scores, result, publication_schedule, notes, rubric_id,
+//     content_levels: { violence, fear, profanity, nudity, danger_simulation },
+//     extension_scores: [{ key, value, comment }] }
+//
+// Quick decision body (non-first):
+//   { quick_decision, quick_notes, result }
 router.post("/series/:seriesId/evaluate", authMiddleware, requireEB, async (req, res, next) => {
   try {
-    const { member_scores, result, publication_schedule, notes, quick_decision, quick_notes, scheduled_publish_at } = req.body;
+    const {
+      member_scores,
+      result,
+      publication_schedule,
+      notes,
+      quick_decision,
+      quick_notes,
+      scheduled_publish_at,
+      rubric_id,
+      content_levels,
+      extension_scores,
+    } = req.body;
 
     const series = await Series.findOne({ _id: req.params.seriesId });
     if (!series) return next(new AppError("Series not found", 404));
@@ -1152,20 +1165,17 @@ router.post("/series/:seriesId/evaluate", authMiddleware, requireEB, async (req,
 
     let evaluation;
     if (isFirstReview) {
-      // Lần đầu: bắt buộc có member_scores
+      // ─── FIRST REVIEW ──────────────────────────────────────────────────────────
+
+      // 1. Validate member_scores
       if (!member_scores || !Array.isArray(member_scores) || member_scores.length === 0) {
         return next(new AppError("member_scores is required for first review", 400));
       }
-      // Giới hạn hội đồng chấm: tối thiểu 3, tối đa 5 người
       if (member_scores.length < 3 || member_scores.length > 5) {
         return next(
-          new AppError(
-            "Hội đồng cần tối thiểu 3 và tối đa 5 thành viên",
-            400
-          )
+          new AppError("Hội đồng cần tối thiểu 3 và tối đa 5 thành viên", 400)
         );
       }
-      // member_name BẮT BUỘC cho từng thành viên — tránh fallback rác từ member_id dạng "member-..."
       for (let idx = 0; idx < member_scores.length; idx += 1) {
         const m = member_scores[idx];
         if (!m.member_name || !String(m.member_name).trim()) {
@@ -1179,7 +1189,6 @@ router.post("/series/:seriesId/evaluate", authMiddleware, requireEB, async (req,
       }
       if (!result) return next(new AppError("result is required", 400));
 
-      // Nếu approve → BẮT BUỘC chọn publication_schedule (weekly/monthly) trước
       if (result === "approved") {
         if (!publication_schedule || !["weekly", "monthly"].includes(publication_schedule)) {
           return next(
@@ -1191,25 +1200,34 @@ router.post("/series/:seriesId/evaluate", authMiddleware, requireEB, async (req,
         }
       }
 
-      // Tính council_average từ member_scores
-      const totals = {};
-      EB_CRITERIA_KEYS.forEach((k) => {
-        totals[k] = member_scores.reduce((acc, m) => acc + (m.scores?.[k] || 0), 0);
-      });
-      const avgTotals = {};
-      EB_CRITERIA_KEYS.forEach((k) => {
-        avgTotals[k] = member_scores.length > 0
-          ? Math.round((totals[k] / member_scores.length) * 100) / 100
-          : 0;
-      });
-      const councilAvg =
-        Math.round(
-          (EB_CRITERIA_KEYS.reduce((acc, k) => acc + avgTotals[k], 0) / EB_CRITERIA_KEYS.length) * 100
-        ) / 100;
+      // 2. Resolve rubric
+      const rubric = rubric_id ? getRubricById(rubric_id) : getSuggestedRubricForSeries(series);
+      if (!rubric) {
+        return next(new AppError(`Rubric "${rubric_id}" không hợp lệ. Vui lòng chọn rubric khác.`, 400));
+      }
+
+      // 3. Age Safety Gate — FAIL → reject immediately
+      const ageRating = series.age_rating || "All ages";
+      if (content_levels !== undefined) {
+        const safetyResult = checkAgeSafety(content_levels, ageRating);
+        if (!safetyResult.passed) {
+          return res.status(400).json({
+            success: false,
+            error: "AGE_SAFETY_FAIL",
+            message: "Nội dung không phù hợp với độ tuổi quy định. Vui lòng chỉnh sửa trước khi gửi lại.",
+            age_safety: safetyResult,
+            content_levels,
+            age_rating: ageRating,
+          });
+        }
+      }
+
+      // 4. Compute weighted council average
+      const weights = rubric.weights;
+      const councilAvg = computeWeightedCouncilAverage(member_scores, weights);
       const classification = classifyByScore(councilAvg);
 
-      // Transform member_scores: phân loại ObjectId vs external id,
-      // lưu external_member_id (string id local) thay vì copy sang member_name.
+      // 5. Transform member_scores
       const transformedMemberScores = member_scores.map((m) => {
         let normalizedMemberId = null;
         let externalMemberId = null;
@@ -1221,27 +1239,46 @@ router.post("/series/:seriesId/evaluate", authMiddleware, requireEB, async (req,
           }
         }
 
+        // Compute weighted total_score từ rubric weights
+        const weightedScore = computeMemberWeightedScore(m.scores || {}, weights);
+
         return {
-          member_name: String(m.member_name).trim(),
-          member_id: normalizedMemberId,
-          external_member_id: externalMemberId,
-          scores: m.scores || {},
-          comments: m.comments || {},
-          overall_comment: m.overall_comment || "",
-          total_score:
-            (m.content_script || 0) +
-            (m.art || 0) +
-            (m.characters || 0) +
-            (m.commercial_potential || 0) +
-            (m.publisher_fit || 0),
-          notes: m.notes || "",
+          member_name:        String(m.member_name).trim(),
+          member_id:          normalizedMemberId,
+          external_member_id:  externalMemberId,
+          scores:             m.scores || {},
+          extension_scores:   m.extension_scores || [],
+          comments:           m.comments || {},
+          overall_comment:    m.overall_comment || "",
+          total_score:        weightedScore,
+          notes:              m.notes || "",
         };
       });
 
+      // 6. Build age_safety data
+      const ageSafetyResult = checkAgeSafety(content_levels || {}, ageRating);
+      const appliedRubricWeightsMap = new Map(Object.entries(weights));
+
       evaluation = await EBEvaluation.create({
-        series_id: series._id,
-        evaluated_by: req.user.nameid,
-        first_review: true,
+        series_id:                   series._id,
+        evaluated_by:                req.user.nameid,
+        first_review:                true,
+        applied_rubric_id:           rubric.id,
+        applied_rubric_weights:      appliedRubricWeightsMap,
+        applied_rubric_total_weight: rubric.total_weight,
+        age_safety: {
+          passed:     ageSafetyResult.passed,
+          severity:  ageSafetyResult.severity,
+          rules_note: ageSafetyResult.rules_note,
+          violations: ageSafetyResult.violations,
+        },
+        content_levels: {
+          violence:           content_levels?.violence || 0,
+          fear:              content_levels?.fear || 0,
+          profanity:         content_levels?.profanity || 0,
+          nudity:            content_levels?.nudity || 0,
+          danger_simulation: content_levels?.danger_simulation || 0,
+        },
         member_scores: transformedMemberScores,
         result,
         publication_schedule: result === "approved" ? publication_schedule : null,
@@ -1257,6 +1294,18 @@ router.post("/series/:seriesId/evaluate", authMiddleware, requireEB, async (req,
         series.publication_schedule = publication_schedule;
       }
       await series.save();
+
+      return res.status(201).json({
+        success: true,
+        data: {
+          evaluation,
+          rubric,
+          classification,
+          classification_text: classifyText(councilAvg),
+          council_average: councilAvg,
+          age_safety: evaluation.age_safety,
+        },
+      });
     } else {
       // Lần sau: duyệt nhanh
       if (!quick_decision) return next(new AppError("quick_decision is required", 400));
@@ -1398,14 +1447,23 @@ router.post("/series/:seriesId/evaluate", authMiddleware, requireEB, async (req,
 // - 2.5 – < 3.5 → Duyệt, xuất bản theo tháng (30 ngày)
 // - 3.5 – < 4.25 → Duyệt, xuất bản theo tuần (7 ngày)
 // - 4.25 – 5     → Duyệt, xuất bản theo tuần (7 ngày)
-// Body: { result: "approved"|"rejected"|"revision", scheduled_publish_at?, notes? }
-//       hoặc { quick_decision, quick_notes?, scheduled_publish_at? }
+// Body: { result, notes, quick_decision, quick_notes, scheduled_publish_at,
+//          rubric_id?, content_levels?, extension_scores? }
 // ─── POST /eb-evaluations/chapter/:chapterId/evaluate ──────────────────────
 // EB chấm điểm Series (dùng chapter làm context để lấy series)
 // CHỈ lưu EBEvaluation, KHÔNG đổi chapter/series status
 router.post("/chapter/:chapterId/evaluate", authMiddleware, requireEB, async (req, res, next) => {
   try {
-    const { result, notes, quick_decision, quick_notes, scheduled_publish_at } = req.body;
+    const {
+      result,
+      notes,
+      quick_decision,
+      quick_notes,
+      scheduled_publish_at,
+      rubric_id,
+      content_levels,
+      extension_scores,
+    } = req.body;
 
     const chapter = await Chapter.findOne({ _id: req.params.chapterId, status: "pending_EB" });
     if (!chapter) return next(new AppError("Chapter not found or not pending EB", 404));
@@ -1414,9 +1472,6 @@ router.post("/chapter/:chapterId/evaluate", authMiddleware, requireEB, async (re
     if (!series) return next(new AppError("Series not found", 404));
 
     // ─── Debut Gate: chặn EB chấm chapter 2+ của series locked ───────────
-    // Sau khi EB đã chấm 1 chapter (result ∈ {approved, rejected, revision})
-    // của series này thì không cho chấm chapter nào khác nữa, trừ khi series
-    // đã được confirm-publish (gate mở).
     const gateCheck = await isSeriesLockedForEBChapterReview(chapter.series_id);
     if (gateCheck.locked) {
       const alreadyEvaluated = await EBEvaluation.find({
@@ -1447,33 +1502,21 @@ router.post("/chapter/:chapterId/evaluate", authMiddleware, requireEB, async (re
       return next(new AppError(errPayload.message, 409, errPayload.data));
     }
 
-    // Giới hạn hội đồng chấm (áp dụng cho lần đầu): tối thiểu 3, tối đa 5 người
     const isFirstReview = series.status === "draft" || series.status === "submitted";
+
+    // ─── FIRST REVIEW: full scoring with weighted average + age safety ────────
     if (isFirstReview) {
+      if (!result) return next(new AppError("result is required for first review", 400));
+
       const ms = req.body.member_scores;
       if (!ms || !Array.isArray(ms) || ms.length === 0) {
         return next(new AppError("member_scores is required for first review", 400));
       }
       if (ms.length < 3 || ms.length > 5) {
-        return next(
-          new AppError(
-            "Hội đồng cần tối thiểu 3 và tối đa 5 thành viên",
-            400
-          )
-        );
+        return next(new AppError("Hội đồng cần tối thiểu 3 và tối đa 5 thành viên", 400));
       }
-    }
-
-    // Tính điểm từ member_scores (nếu có) + validate member_name
-    let councilAvg = 0;
-    const isFirstReviewLocal = series.status === "draft" || series.status === "submitted";
-
-    if (isFirstReviewLocal && req.body.member_scores) {
-      // Validate từng thành viên hội đồng: member_name BẮT BUỘC.
-      // Không được phép fallback member_id (dạng "member-...") sang member_name —
-      // đây chính là bug FE đang gặp: hiển thị tên rác "member-1785044498035-dbj18".
-      for (let idx = 0; idx < req.body.member_scores.length; idx += 1) {
-        const m = req.body.member_scores[idx];
+      for (let idx = 0; idx < ms.length; idx += 1) {
+        const m = ms[idx];
         if (!m.member_name || !String(m.member_name).trim()) {
           return next(
             new AppError(
@@ -1484,59 +1527,36 @@ router.post("/chapter/:chapterId/evaluate", authMiddleware, requireEB, async (re
         }
       }
 
-      const totals = {};
-      EB_CRITERIA_KEYS.forEach((k) => {
-        totals[k] = req.body.member_scores.reduce((acc, m) => acc + (m.scores?.[k] || 0), 0);
-      });
-      const avgTotals = {};
-      EB_CRITERIA_KEYS.forEach((k) => {
-        avgTotals[k] = req.body.member_scores.length > 0
-          ? Math.round((totals[k] / req.body.member_scores.length) * 100) / 100
-          : 0;
-      });
-      councilAvg =
-        Math.round(
-          (EB_CRITERIA_KEYS.reduce((acc, k) => acc + avgTotals[k], 0) / EB_CRITERIA_KEYS.length) * 100
-        ) / 100;
-    } else {
-      // Lấy điểm từ evaluation gần nhất
-      const latestEval = await EBEvaluation.findOne({ series_id: series._id })
-        .sort({ createdAt: -1 })
-        .lean();
-      if (latestEval && latestEval.member_scores && latestEval.member_scores.length > 0) {
-        const totals = {};
-        EB_CRITERIA_KEYS.forEach((k) => {
-          totals[k] = latestEval.member_scores.reduce((acc, m) => acc + (m.scores?.[k] || 0), 0);
-        });
-        const avgTotals = {};
-        EB_CRITERIA_KEYS.forEach((k) => {
-          avgTotals[k] = Math.round((totals[k] / latestEval.member_scores.length) * 100) / 100;
-        });
-        councilAvg =
-          Math.round(
-            (EB_CRITERIA_KEYS.reduce((acc, k) => acc + avgTotals[k], 0) / EB_CRITERIA_KEYS.length) * 100
-          ) / 100;
+      // Resolve rubric
+      const rubric = rubric_id ? getRubricById(rubric_id) : getSuggestedRubricForSeries(series);
+      if (!rubric) {
+        return next(new AppError(`Rubric "${rubric_id}" không hợp lệ. Vui lòng chọn rubric khác.`, 400));
       }
-    }
 
-    const classification = classifyByScore(councilAvg);
-    const classificationText = classifyText(councilAvg);
-    const finalResult = result || quick_decision || null;
-
-    // Transform member_scores từ format FE sang format model.
-    // Hỗ trợ 2 dạng member_id từ FE:
-    //   - ObjectId user thật (24 hex) → lưu vào member_id
-    //   - String id local ("member-...") → lưu vào external_member_id (KHÔNG copy sang member_name)
-    // member_name lấy trực tiếp từ FE (đã validate required ở trên).
-    let transformedMemberScores = [];
-    if (req.body.member_scores && Array.isArray(req.body.member_scores)) {
-      transformedMemberScores = req.body.member_scores.map((m) => {
-        let totalScore = m.total_score || 0;
-        if (m.scores && Object.keys(m.scores).length > 0 && totalScore === 0) {
-          totalScore = EB_CRITERIA_KEYS.reduce((acc, k) => acc + (m.scores[k] || 0), 0);
+      // Age Safety Gate — FAIL → reject immediately
+      const ageRating = series.age_rating || "All ages";
+      if (content_levels !== undefined) {
+        const safetyResult = checkAgeSafety(content_levels, ageRating);
+        if (!safetyResult.passed) {
+          return res.status(400).json({
+            success: false,
+            error: "AGE_SAFETY_FAIL",
+            message: "Nội dung không phù hợp với độ tuổi quy định. Vui lòng chỉnh sửa trước khi gửi lại.",
+            age_safety: safetyResult,
+            content_levels,
+            age_rating: ageRating,
+          });
         }
+      }
 
-        // Phân loại member_id: ObjectId hợp lệ → member_id; ngược lại → external_member_id.
+      // Weighted scoring
+      const weights = rubric.weights;
+      const councilAvg = computeWeightedCouncilAverage(ms, weights);
+      const classification = classifyByScore(councilAvg);
+      const classificationText = classifyText(councilAvg);
+
+      // Transform member_scores
+      const transformedMemberScores = ms.map((m) => {
         let normalizedMemberId = null;
         let externalMemberId = null;
         if (m.member_id) {
@@ -1546,27 +1566,107 @@ router.post("/chapter/:chapterId/evaluate", authMiddleware, requireEB, async (re
             externalMemberId = String(m.member_id);
           }
         }
+        const weightedScore = computeMemberWeightedScore(m.scores || {}, weights);
 
         return {
-          member_name: String(m.member_name).trim(),
-          member_id: normalizedMemberId,
-          external_member_id: externalMemberId,
-          scores: m.scores || {},
-          comments: m.comments || {},
-          overall_comment: m.overall_comment || "",
-          total_score: totalScore,
-          notes: m.notes || "",
+          member_name:        String(m.member_name).trim(),
+          member_id:          normalizedMemberId,
+          external_member_id:  externalMemberId,
+          scores:             m.scores || {},
+          extension_scores:   m.extension_scores || [],
+          comments:           m.comments || {},
+          overall_comment:    m.overall_comment || "",
+          total_score:        weightedScore,
+          notes:              m.notes || "",
         };
+      });
+
+      // Age safety data
+      const ageSafetyResult = checkAgeSafety(content_levels || {}, ageRating);
+      const appliedRubricWeightsMap = new Map(Object.entries(weights));
+
+      const newEvaluation = await EBEvaluation.create({
+        series_id:                   chapter.series_id,
+        chapter_id:                  chapter._id,
+        evaluated_by:                req.user.nameid,
+        first_review:                true,
+        applied_rubric_id:           rubric.id,
+        applied_rubric_weights:      appliedRubricWeightsMap,
+        applied_rubric_total_weight: rubric.total_weight,
+        age_safety: {
+          passed:     ageSafetyResult.passed,
+          severity:  ageSafetyResult.severity,
+          rules_note: ageSafetyResult.rules_note,
+          violations: ageSafetyResult.violations,
+        },
+        content_levels: {
+          violence:           content_levels?.violence || 0,
+          fear:              content_levels?.fear || 0,
+          profanity:         content_levels?.profanity || 0,
+          nudity:            content_levels?.nudity || 0,
+          danger_simulation: content_levels?.danger_simulation || 0,
+        },
+        member_scores: transformedMemberScores,
+        result,
+        scheduled_publish_at: scheduled_publish_at || null,
+        notes: notes || "",
+        status: EB_EVALUATION_STATUS.LOCKED,
+      });
+
+      return res.status(201).json({
+        success: true,
+        data: {
+          evaluation: newEvaluation,
+          rubric,
+          classification,
+          classification_text: classificationText,
+          council_average: councilAvg,
+          age_safety: newEvaluation.age_safety,
+          message: councilAvg >= 2.5 || result === "approved"
+            ? "Điểm đã được lưu. Series đủ điều kiện xuất bản."
+            : "Điểm thấp hơn 2.5. Series chưa đủ điều kiện xuất bản.",
+        },
       });
     }
 
-    // Lưu evaluation mới - CHỈ lưu điểm, không đổi status
+    // ─── NON-FIRST REVIEW: duyệt nhanh (giữ nguyên logic cũ) ───────────────
+    if (!quick_decision) return next(new AppError("quick_decision is required", 400));
+
+    if (quick_decision === "approved") {
+      if (!result) return next(new AppError("result is required", 400));
+    }
+
+    // Lấy điểm từ evaluation gần nhất để tính council_average
+    let councilAvg = 0;
+    const latestEval = await EBEvaluation.findOne({ series_id: series._id })
+      .sort({ createdAt: -1 })
+      .lean();
+    if (latestEval && latestEval.member_scores && latestEval.member_scores.length > 0) {
+      // Dùng weighted nếu có rubric, không thì equal
+      let weights;
+      if (latestEval.applied_rubric_weights && latestEval.applied_rubric_weights.size > 0) {
+        weights = Object.fromEntries(latestEval.applied_rubric_weights);
+      } else {
+        weights = {};
+        CORE_CRITERIA_KEYS.forEach((k) => { weights[k] = 20; });
+      }
+      councilAvg = computeWeightedCouncilAverage(latestEval.member_scores, weights);
+    }
+
+    const classification = classifyByScore(councilAvg);
+    const classificationText = classifyText(councilAvg);
+    const finalResult = result || quick_decision || null;
+
     const newEvaluation = await EBEvaluation.create({
-      series_id: chapter.series_id,
-      chapter_id: chapter._id,
+      series_id:   chapter.series_id,
+      chapter_id:  chapter._id,
       evaluated_by: req.user.nameid,
       first_review: isFirstReview,
-      member_scores: transformedMemberScores,
+      // Giữ rubric từ evaluation gần nhất
+      applied_rubric_id:           latestEval?.applied_rubric_id || null,
+      applied_rubric_weights:      latestEval?.applied_rubric_weights || new Map(),
+      applied_rubric_total_weight: latestEval?.applied_rubric_total_weight || 100,
+      member_scores: [],
       quick_decision: quick_decision || null,
       quick_notes: quick_notes || "",
       result: finalResult,
@@ -1582,8 +1682,8 @@ router.post("/chapter/:chapterId/evaluate", authMiddleware, requireEB, async (re
         classification,
         classification_text: classificationText,
         council_average: councilAvg,
-        message: councilAvg >= 2.5 || finalResult === "approved" 
-          ? "Điểm đã được lưu. Series đủ điều kiện xuất bản." 
+        message: councilAvg >= 2.5 || finalResult === "approved"
+          ? "Điểm đã được lưu. Series đủ điều kiện xuất bản."
           : "Điểm thấp hơn 2.5. Series chưa đủ điều kiện xuất bản.",
       },
     });
@@ -1934,21 +2034,18 @@ router.post("/series/:seriesId/confirm-publish", authMiddleware, requireEB, asyn
       return next(new AppError("Chưa có đánh giá nào. Vui lòng chấm điểm trước.", 400));
     }
 
-    // Tính council_average từ member_scores
+    // Tính council_average: dùng weighted nếu có rubric, không thì equal
     let councilAvg = 0;
     if (latestEval.member_scores && latestEval.member_scores.length > 0) {
-      const totals = {};
-      EB_CRITERIA_KEYS.forEach((k) => {
-        totals[k] = latestEval.member_scores.reduce((acc, m) => acc + (m.scores?.[k] || 0), 0);
-      });
-      const avgTotals = {};
-      EB_CRITERIA_KEYS.forEach((k) => {
-        avgTotals[k] = Math.round((totals[k] / latestEval.member_scores.length) * 100) / 100;
-      });
-      councilAvg =
-        Math.round(
-          (EB_CRITERIA_KEYS.reduce((acc, k) => acc + avgTotals[k], 0) / EB_CRITERIA_KEYS.length) * 100
-        ) / 100;
+      let weights;
+      if (latestEval.applied_rubric_weights && latestEval.applied_rubric_weights.size > 0) {
+        weights = Object.fromEntries(latestEval.applied_rubric_weights);
+      } else {
+        // Fallback: equal weights cho data cũ không có rubric
+        weights = {};
+        CORE_CRITERIA_KEYS.forEach((k) => { weights[k] = 20; });
+      }
+      councilAvg = computeWeightedCouncilAverage(latestEval.member_scores, weights);
     }
 
     // Kiểm tra điểm >= 2.5 mới cho publish
@@ -2019,6 +2116,216 @@ router.post("/series/:seriesId/confirm-publish", authMiddleware, requireEB, asyn
         message: scheduled_publish_at
           ? `Series đã được duyệt. Series sẽ tự động chuyển sang "published" vào ${new Date(scheduled_publish_at).toLocaleString("vi-VN")}. Chapter đầu tiên sẽ được trả về cho Mangaka để giao task cho Assistant sửa, sau đó gửi TE review và TE sẽ publish.`
           : `Series đã được duyệt. Chapter đầu tiên sẽ được trả về cho Mangaka để giao task cho Assistant sửa, sau đó gửi TE review và TE sẽ publish.`,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ─── GET /eb-evaluations/rubrics ──────────────────────────────────────────────
+/**
+ * Trả về danh sách tất cả rubric có sẵn để EB chọn.
+ *
+ * Response:
+ *   {
+ *     success: true,
+ *     data: {
+ *       rubrics: [
+ *         { id, family, age_rating, weights, criteria, total_weight, has_extension, extension }
+ *       ],
+ *       families: [...],
+ *       age_ratings: [...]
+ *     }
+ *   }
+ */
+router.get("/rubrics", authMiddleware, requireEB, async (req, res, next) => {
+  try {
+    const { family } = req.query;
+
+    let rubrics;
+    if (family && family !== "all") {
+      rubrics = listRubricsForFamily(family);
+    } else {
+      rubrics = listAllRubrics();
+    }
+
+    return res.json({
+      success: true,
+      data: {
+        rubrics,
+        families: getAllFamilies(),
+        age_ratings: ["All ages", "Teens 13+", "Mature 17+", "Adults Only 18+"],
+        extension_criteria: Object.values(EXTENSION_CRITERIA).map((e) => ({
+          key:         e.key,
+          label:       e.label,
+          description: e.description,
+        })),
+        age_safety_fields: AGE_SAFETY_FIELDS,
+        age_safety_levels: AGE_SAFETY_LEVELS,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ─── GET /eb-evaluations/suggest-rubric/:seriesId ─────────────────────────────
+/**
+ * Gợi ý rubric cho một series cụ thể dựa trên genre[0] + age_rating.
+ *
+ * Response:
+ *   {
+ *     success: true,
+ *     data: {
+ *       suggested_rubric: { id, family, age_rating, weights, criteria, total_weight, ... },
+ *       series_info: { genre, age_rating, name },
+ *       alternatives: [...]  // các rubric khác cùng family
+ *     }
+ *   }
+ */
+router.get("/suggest-rubric/:seriesId", authMiddleware, requireEB, async (req, res, next) => {
+  try {
+    const series = await Series.findOne({ _id: req.params.seriesId }).lean();
+    if (!series) return next(new AppError("Series not found", 404));
+
+    const suggested = getSuggestedRubricForSeries(series);
+    const family = suggested.family !== "__default__" ? suggested.family : null;
+    const alternatives = family ? listRubricsForFamily(family) : [];
+
+    return res.json({
+      success: true,
+      data: {
+        suggested_rubric: suggested,
+        series_info: {
+          _id:          series._id,
+          name:         series.name,
+          genre:        series.genre,
+          age_rating:   series.age_rating,
+        },
+        alternatives: alternatives.filter((r) => r.id !== suggested.id),
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ─── GET /eb-evaluations/age-safety-check ─────────────────────────────────────
+/**
+ * Kiểm tra nhanh age safety mà không cần lưu evaluation.
+ *
+ * Query params:
+ *   age_rating   — độ tuổi mục tiêu (All ages | Teens 13+ | Mature 17+ | Adults Only 18+)
+ *   violence     — 0–3
+ *   fear         — 0–3
+ *   profanity    — 0–3
+ *   nudity       — 0–3
+ *   danger_simulation — 0–3
+ *
+ * Response:
+ *   { success: true, data: { passed, violations, severity, highest_level, rules_note } }
+ */
+router.get("/age-safety-check", authMiddleware, requireEB, async (req, res, next) => {
+  try {
+    const { age_rating, violence, fear, profanity, nudity, danger_simulation } = req.query;
+
+    if (!age_rating) {
+      return next(new AppError("age_rating là bắt buộc", 400));
+    }
+
+    const contentLevels = {
+      violence:           violence ? parseInt(violence, 10) : 0,
+      fear:              fear ? parseInt(fear, 10) : 0,
+      profanity:         profanity ? parseInt(profanity, 10) : 0,
+      nudity:            nudity ? parseInt(nudity, 10) : 0,
+      danger_simulation: danger_simulation ? parseInt(danger_simulation, 10) : 0,
+    };
+
+    const result = checkAgeSafety(contentLevels, age_rating);
+
+    return res.json({
+      success: true,
+      data: {
+        ...result,
+        content_levels: contentLevels,
+        age_rating,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ─── POST /eb-evaluations/preview-council-average ──────────────────────────────
+/**
+ * Preview weighted council average trước khi lưu (dùng trong FE form trước khi submit).
+ *
+ * Body:
+ *   {
+ *     rubric_id: "action-adventure|teens_13+",
+ *     member_scores: [
+ *       { member_name: "A", scores: { story_dialogue: 4, art_design: 4, ... } },
+ *       { member_name: "B", scores: { story_dialogue: 3.5, art_design: 4, ... } },
+ *       ...
+ *     ]
+ *   }
+ *
+ * Response:
+ *   {
+ *     success: true,
+ *     data: {
+ *       rubric: { id, weights, criteria },
+ *       weighted_council_average: 3.85,
+ *       per_criteria_averages: { story_dialogue: 3.83, art_design: 4.0, ... },
+ *       classification: "GOOD",
+ *       classification_text: "Tốt"
+ *     }
+ *   }
+ */
+router.post("/preview-council-average", authMiddleware, requireEB, async (req, res, next) => {
+  try {
+    const { rubric_id, member_scores } = req.body;
+
+    if (!member_scores || !Array.isArray(member_scores)) {
+      return next(new AppError("member_scores là bắt buộc", 400));
+    }
+
+    const rubric = rubric_id ? getRubricById(rubric_id) : null;
+    if (rubric_id && !rubric) {
+      return next(new AppError(`Rubric "${rubric_id}" không hợp lệ.`, 400));
+    }
+
+    // Default: equal weights nếu không có rubric
+    const weights = rubric ? rubric.weights : null;
+    const councilAvg = weights
+      ? computeWeightedCouncilAverage(member_scores, weights)
+      : 0;
+
+    // Per-criteria averages
+    const allKeys = rubric
+      ? Object.keys(weights)
+      : CORE_CRITERIA_KEYS;
+    const perCriteriaAvg = {};
+    for (const key of allKeys) {
+      const avg = member_scores.reduce((acc, m) => acc + (m.scores?.[key] || 0), 0)
+               / member_scores.length;
+      perCriteriaAvg[key] = Math.round(avg * 100) / 100;
+    }
+
+    const classification = classifyByScore(councilAvg);
+    const classificationText = classifyText(councilAvg);
+
+    return res.json({
+      success: true,
+      data: {
+        rubric: rubric || null,
+        weighted_council_average: councilAvg,
+        per_criteria_averages: perCriteriaAvg,
+        classification,
+        classification_text: classificationText,
+        pass_threshold: 2.5,
+        is_pass: councilAvg >= 2.5,
       },
     });
   } catch (error) {
