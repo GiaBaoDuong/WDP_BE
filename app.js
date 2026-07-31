@@ -54,9 +54,30 @@ mongoose
       "ebevaluations", "votes", "notifications", "pagenotes", "otps",
       "comments", "readinghistories",
       "notificationsubscriptions", "followauthors",
+      "wallets", "wallettransactions", "coinpackages",
+      "payments", "purchasedchapters", "revenues", "withdrawals",
     ];
     await Promise.all(collections.map((c) => mongoose.connection.db.createCollection(c).catch(() => {})));
     console.log("Collections initialized");
+
+    // Seed default CoinPackages nếu collection rỗng
+    const CoinPackage = require("./models/CoinPackage");
+    const existingCount = await CoinPackage.countDocuments();
+    if (existingCount === 0) {
+      const defaults = [
+        { name: "Gói 200 Coin", price_vnd: 20000, coin_amount: 200, bonus_coin: 0, sort_order: 1, is_active: true },
+        { name: "Gói 520 Coin", price_vnd: 50000, coin_amount: 500, bonus_coin: 20, sort_order: 2, is_active: true },
+        { name: "Gói 1.100 Coin", price_vnd: 100000, coin_amount: 1000, bonus_coin: 100, sort_order: 3, is_active: true },
+      ];
+      // Tính total_coin trước khi insert (insertMany không chạy pre-save)
+      const docs = defaults.map((d) => ({
+        ...d,
+        description: d.description || "",
+        total_coin: d.coin_amount + (d.bonus_coin || 0),
+      }));
+      await CoinPackage.insertMany(docs);
+      console.log("[Seed] Inserted " + docs.length + " default CoinPackages");
+    }
   })
   .catch((err) => {
     console.error("MongoDB connection error:", err.message);
@@ -90,6 +111,13 @@ app.use("/authors", require("./routes/authors"));
 app.use("/comments", require("./routes/comments"));
 app.use("/votes", require("./routes/votes"));
 app.use("/admin", require("./routes/admin"));
+
+// ─── Monetization / Payment routes ───────────────────────────────────────────
+app.use("/payments", require("./routes/payments"));
+app.use("/wallet", require("./routes/wallets"));
+app.use("/withdrawals", require("./routes/withdrawals"));
+app.use("/profile", require("./routes/profile"));
+app.use("/dashboard", require("./routes/dashboard"));
 
 // Health check
 app.get("/health", (req, res) => {

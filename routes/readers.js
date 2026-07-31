@@ -371,6 +371,14 @@ router.get("/series/:id/chapters", authMiddleware, requireReader, async (req, re
       .sort({ chapter_number: 1 })
       .lean();
 
+    // Lấy set các chapter đã mua của reader hiện tại
+    const chapterIds = chapters.map((c) => c._id);
+    const chapterPurchaseService = require("../services/chapterPurchaseService");
+    const purchasedSet = await chapterPurchaseService.getPurchasedChapterIdSet(
+      req.user.nameid,
+      chapterIds
+    );
+
     return res.status(200).json({
       success: true,
       data: chapters.map((c) => ({
@@ -381,6 +389,9 @@ router.get("/series/:id/chapters", authMiddleware, requireReader, async (req, re
         published_at: c.published_at,
         views_count: c.views_count || 0,
         submitted_by: c.submitted_by,
+        access_type: c.access_type || "FREE",
+        coin_price: c.coin_price || 0,
+        is_purchased: purchasedSet.has(String(c._id)),
       })),
       seriesName: series.name,
     });
@@ -433,9 +444,47 @@ router.get("/chapters/:id", authMiddleware, requireReader, async (req, res, next
       .lean();
     if (!chapter) return next(new AppError("Chapter not found", 404));
 
+    // Check purchased nếu chapter PAID
+    let isPurchased = false;
+    if (chapter.access_type === "PAID") {
+      const PurchasedChapter = require("../models/PurchasedChapter");
+      isPurchased = !!(await PurchasedChapter.exists({
+        reader_id: req.user.nameid,
+        chapter_id: req.params.id,
+      }));
+    }
+
+    // Load pages - nếu chapter PAID chưa mua thì ẩn URL ảnh
+    const Page = require("../models/Page");
+    const pages = await Page.find({ chapter_id: chapter._id })
+      .sort({ page_number: 1 })
+      .select("_id chapter_id page_number original_image_url final_image_url result_image_url width height status")
+      .lean();
+
+    const isLocked = chapter.access_type === "PAID" && !isPurchased;
+    const lockedPages = pages.map((p) =>
+      isLocked
+        ? {
+            _id: p._id,
+            chapter_id: p.chapter_id,
+            page_number: p.page_number,
+            width: p.width,
+            height: p.height,
+            locked: true,
+          }
+        : p
+    );
+
     return res.status(200).json({
       success: true,
-      data: chapter,
+      data: {
+        ...chapter,
+        pages: lockedPages,
+        access_type: chapter.access_type || "FREE",
+        coin_price: chapter.coin_price || 0,
+        is_purchased: isPurchased,
+        is_locked: isLocked,
+      },
       seriesName: chapter.series_id ? chapter.series_id.name : "",
     });
   } catch (error) {
@@ -672,6 +721,24 @@ router.get("/chapters/:id/pages", authMiddleware, requireReader, async (req, res
       return next(new AppError("Chapter not found or not published", 404));
     }
 
+    // Check purchased nếu chapter PAID
+    let isPurchased = false;
+    if (chapter.access_type === "PAID") {
+      const PurchasedChapter = require("../models/PurchasedChapter");
+      isPurchased = !!(await PurchasedChapter.exists({
+        reader_id: req.user.nameid,
+        chapter_id: req.params.id,
+      }));
+      if (!isPurchased) {
+        return next(
+          new AppError(
+            `Chapter này cần ${chapter.coin_price || 0} Coin để mở khóa`,
+            402
+          )
+        );
+      }
+    }
+
     const pages = await Page.find({ chapter_id: req.params.id })
       .select("page_number final_image_url result_image_url original_image_url width height")
       .sort({ page_number: 1 })
@@ -693,6 +760,9 @@ router.get("/chapters/:id/pages", authMiddleware, requireReader, async (req, res
         _id: chapter._id,
         chapter_number: chapter.chapter_number,
         title: chapter.title,
+        access_type: chapter.access_type || "FREE",
+        coin_price: chapter.coin_price || 0,
+        is_purchased: isPurchased,
       },
       series: {
         _id: chapter.series_id._id,

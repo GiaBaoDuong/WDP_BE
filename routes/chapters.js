@@ -3,7 +3,7 @@ const router = express.Router();
 const mongoose = require("mongoose");
 const multer = require("multer");
 const { authMiddleware } = require("../middleware/auth");
-const { requireMangaka, requireMangakaOrAssistant, requireAssistant, requireMangakaOrTEOrEB } = require("../middleware/roles");
+const { requireMangaka, requireMangakaOrAssistant, requireAssistant, requireMangakaOrTEOrEB, requireReader } = require("../middleware/roles");
 const { AppError } = require("../middleware/errorHandler");
 const Chapter = require("../models/Chapter");
 const Page = require("../models/Page");
@@ -19,6 +19,7 @@ const PageNote = require("../models/PageNote");
 const Notification = require("../models/Notification");
 const upload = require("../middleware/upload");
 const { ROLES } = require("../utils/constants");
+const { FREE_CHAPTER_AUTO_LIMIT } = require("../utils/constants");
 const { notifyChapterAssigned } = require("../services/notificationService");
 const {
   notifyChapterAssistantWorkComplete,
@@ -150,6 +151,13 @@ function deriveRevisionAnnotations(task) {
  *               assistant_id:
  *                 type: string
  *                 description: User ID của assistant (optional, nhưng bắt buộc khi series đã publish). Sẽ set chapter.assistant_id ngay khi tạo.
+ *               access_type:
+ *                 type: string
+ *                 enum: [FREE, PAID]
+ *                 description: "Chỉ chapter 1 mặc định FREE (luôn FREE). Từ chapter 2 trở đi MẶC ĐỊNH PAID và BẮT BUỘC nhập coin_price. Nếu muốn FREE thì truyền rõ access_type=FREE."
+ *               coin_price:
+ *                 type: number
+ *                 description: "Số Coin mua chapter. Bắt buộc khi access_type=PAID (mặc định cho chapter 2+). Mặc định 0 cho chapter FREE."
  *     responses:
  *       201:
  *         description: Chapter được tạo thành công
@@ -184,6 +192,48 @@ router.post("/", authMiddleware, requireMangaka, uploadPages.array("pages", 50),
 
     const series = await Series.findOne({ _id: seriesId, author_id: req.user.nameid });
     if (!series) return next(new AppError("Series not found or unauthorized", 404));
+
+    // ─── Determine access_type & coin_price ───────────────────────────────
+    // Quy tắc:
+    //   - Chapter 1                → luôn FREE (không thể đổi sang PAID, coin_price = 0).
+    //   - Chapter >= 2 (mặc định)  → PAID, BẮT BUỘC nhập coin_price > 0.
+    //   - Chapter >= 2 (override)   → nếu Mangaka muốn FREE thì truyền rõ access_type=FREE.
+    const rawAccessType = req.body.access_type;
+    let accessType = rawAccessType ? String(rawAccessType).toUpperCase() : null;
+    let coinPrice = Number(req.body.coin_price || 0);
+    const num = Number(chapterNumber);
+    if (!Number.isFinite(num) || num < 1) {
+      return next(new AppError("chapter_number không hợp lệ", 400));
+    }
+
+    if (num <= FREE_CHAPTER_AUTO_LIMIT) {
+      // Chapter 1: ép FREE, bỏ qua mọi input của user
+      accessType = "FREE";
+      coinPrice = 0;
+    } else {
+      // Chapter 2+: mặc định PAID nếu không truyền access_type
+      if (!accessType) {
+        accessType = "PAID";
+      }
+      if (!["FREE", "PAID"].includes(accessType)) {
+        return next(
+          new AppError("access_type phải là FREE hoặc PAID", 400)
+        );
+      }
+      if (accessType === "PAID") {
+        if (!Number.isFinite(coinPrice) || coinPrice <= 0) {
+          return next(
+            new AppError(
+              `Chapter #${num} mặc định là PAID, bắt buộc phải nhập coin_price > 0. Nếu muốn FREE thì truyền rõ access_type=FREE.`,
+              400
+            )
+          );
+        }
+      } else {
+        // FREE override
+        coinPrice = 0;
+      }
+    }
 
     // Lưu ý: Debut Gate KHÔNG chặn ở POST /chapters — Mangaka được tạo nhiều chapter.
     // Gate chuyển sang chặn ở POST /chapters/:chapterId/submit-to-te (chỉ cho submit chapter 1 khi series locked).
@@ -235,6 +285,8 @@ router.post("/", authMiddleware, requireMangaka, uploadPages.array("pages", 50),
         title,
         submitted_by: req.user.nameid,
         assistant_id: validatedAssistantId,
+        access_type: accessType,
+        coin_price: coinPrice,
         status: validatedAssistantId ? "pending_assistant" : "draft",
       });
       return res.status(201).json({ success: true, data: chapter, pages: [], tasks: [] });
@@ -252,6 +304,8 @@ router.post("/", authMiddleware, requireMangaka, uploadPages.array("pages", 50),
       title,
       submitted_by: req.user.nameid,
       assistant_id: validatedAssistantId,
+      access_type: accessType,
+      coin_price: coinPrice,
       status: "pending_assistant",
     });
 
@@ -2783,6 +2837,125 @@ router.post(
         chapter: updatedChapter,
       });
     } catch (err) { next(err); }
+  }
+);
+
+// ─── POST /chapters/:chapterId/purchase ─────────────────────────────────────
+// Reader mua chapter trả phí bằng Coin (trừ trong ví).
+/**
+ * @swagger
+ * /chapters/{chapterId}/purchase:
+ *   post:
+ *     summary: (Reader) Mở khóa chapter trả phí bằng Coin
+ *     tags: [Chapters]
+ *     security: [{ BearerAuth: [] }]
+ *     parameters:
+ *       - in: path
+ *         name: chapterId
+ *         required: true
+ *         schema: { type: string }
+ *     responses:
+ *       200: { description: Mua thành công }
+ *       400: { description: Chapter free / không đủ coin / chưa published }
+ *       403: { description: Không phải Reader }
+ */
+router.post(
+  "/:chapterId/purchase",
+  authMiddleware,
+  requireReader,
+  async (req, res, next) => {
+    try {
+      const chapterPurchaseService = require("../services/chapterPurchaseService");
+      const result = await chapterPurchaseService.purchaseChapter(
+        req.user.nameid,
+        req.params.chapterId
+      );
+      return res.status(200).json({
+        success: true,
+        message: result.alreadyOwned
+          ? "Bạn đã sở hữu chapter này"
+          : "Mua chapter thành công",
+        data: {
+          purchased_chapter: result.purchased,
+          already_owned: result.alreadyOwned,
+          revenue_count: result.revenue.length,
+        },
+      });
+    } catch (error) {
+      if (error instanceof require("../services/chapterPurchaseService").PurchaseError) {
+        return next(new AppError(error.message, error.statusCode));
+      }
+      next(error);
+    }
+  }
+);
+
+// ─── GET /chapters/:chapterId/access ──────────────────────────────────────────
+// Reader kiểm tra trạng thái truy cập chapter (đã mua / cần mua / free)
+/**
+ * @swagger
+ * /chapters/{chapterId}/access:
+ *   get:
+ *     summary: (Reader) Kiểm tra quyền truy cập chapter
+ *     tags: [Chapters]
+ *     security: [{ BearerAuth: [] }]
+ *     parameters:
+ *       - in: path
+ *         name: chapterId
+ *         required: true
+ *         schema: { type: string }
+ *     responses:
+ *       200: { description: Trạng thái truy cập }
+ */
+router.get(
+  "/:chapterId/access",
+  authMiddleware,
+  requireReader,
+  async (req, res, next) => {
+    try {
+      const chapter = await Chapter.findById(req.params.chapterId)
+        .select("access_type coin_price is_published series_id chapter_number title")
+        .lean();
+      if (!chapter) return next(new AppError("Chapter not found", 404));
+
+      if (chapter.access_type === "FREE") {
+        return res.json({
+          success: true,
+          data: {
+            access_type: "FREE",
+            is_unlocked: true,
+            needs_purchase: false,
+            coin_price: 0,
+          },
+        });
+      }
+
+      // Chapter PAID: kiểm tra đã mua chưa
+      const PurchasedChapter = require("../models/PurchasedChapter");
+      const purchased = await PurchasedChapter.findOne({
+        reader_id: req.user.nameid,
+        chapter_id: req.params.chapterId,
+      }).lean();
+
+      return res.json({
+        success: true,
+        data: {
+          access_type: "PAID",
+          is_unlocked: !!purchased,
+          needs_purchase: !purchased,
+          coin_price: chapter.coin_price,
+          purchased_at: purchased ? purchased.purchased_at : null,
+          chapter: {
+            _id: chapter._id,
+            chapter_number: chapter.chapter_number,
+            title: chapter.title,
+            series_id: chapter.series_id,
+          },
+        },
+      });
+    } catch (error) {
+      next(error);
+    }
   }
 );
 

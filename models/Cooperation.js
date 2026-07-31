@@ -23,6 +23,20 @@ const cooperationSchema = new mongoose.Schema(
     // Stats cho Assistant
     total_approved_tasks: { type: Number, default: 0 },
     total_earnings: { type: Number, default: 0 },
+    // ─── Tỷ lệ chia doanh thu cho Reader purchases ────────────────────
+    // shares = [{ user_id, role: "Mangaka" | "Assistant", percentage }]
+    // Tổng percentage trong mảng phải bằng 100.
+    // Nếu chưa set → mặc định dùng fallback: Mangaka 100% (assistant 0%).
+    revenue_shares: {
+      type: [
+        {
+          user_id: { type: mongoose.Schema.Types.ObjectId, ref: "User", required: true },
+          role: { type: String, enum: ["Mangaka", "Assistant"], required: true },
+          percentage: { type: Number, required: true, min: 0, max: 100 },
+        },
+      ],
+      default: [],
+    },
   },
   { timestamps: true }
 );

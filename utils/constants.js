@@ -194,6 +194,16 @@ const EB_EVALUATION_STATUS = {
 // Thời gian cho phép chỉnh sửa sau khi lưu (giờ)
 const EB_EDIT_WINDOW_HOURS = 24;
 
+// ─── Monetization ─────────────────────────────────────────────────────────────
+const CHAPTER_ACCESS_TYPE = {
+  FREE: "FREE",
+  PAID: "PAID",
+};
+
+// Chỉ chapter 1 mặc định FREE (luôn luôn FREE, không thể set PAID).
+// Từ chapter 2 trở đi Mangaka tự quyết định, mặc định PAID (phải nhập coin_price).
+const FREE_CHAPTER_AUTO_LIMIT = 1;
+
 module.exports = {
   ROLES,
   SERIES_STATUS,
@@ -216,4 +226,6 @@ module.exports = {
   EB_RESULT_LABEL_TEXT,
   EB_EVALUATION_STATUS,
   EB_EDIT_WINDOW_HOURS,
+  CHAPTER_ACCESS_TYPE,
+  FREE_CHAPTER_AUTO_LIMIT,
 };

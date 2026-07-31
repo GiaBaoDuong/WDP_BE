@@ -54,6 +54,9 @@ const buildUserResponse = (user) => ({
  *               email: { type: string }
  *               phoneNumber: { type: string }
  *               role: { type: string, enum: [Admin, Mangaka, Assistant, Editor, EB, Reader] }
+ *               bank_name: { type: string, description: "Bắt buộc nếu role là Mangaka hoặc Assistant" }
+ *               account_holder: { type: string, description: "Bắt buộc nếu role là Mangaka hoặc Assistant" }
+ *               bank_account_number: { type: string, description: "Bắt buộc nếu role là Mangaka hoặc Assistant" }
  *     responses:
  *       201:
  *         description: Đăng ký thành công
@@ -66,7 +69,17 @@ const buildUserResponse = (user) => ({
  */
 router.post("/register", async (req, res) => {
   try {
-    const { username, password, full_name, email, phoneNumber, role } = req.body;
+    const {
+      username,
+      password,
+      full_name,
+      email,
+      phoneNumber,
+      role,
+      bank_name,
+      account_holder,
+      bank_account_number,
+    } = req.body;
 
     if (!username || !password || !full_name || !email || !phoneNumber || !role) {
       return res.status(400).json({
@@ -98,6 +111,17 @@ router.post("/register", async (req, res) => {
       });
     }
 
+    // Mangaka/Assistant bắt buộc phải có thông tin ngân hàng
+    if (["Mangaka", "Assistant"].includes(role)) {
+      if (!bank_name || !account_holder || !bank_account_number) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Mangaka/Assistant phải nhập đầy đủ thông tin ngân hàng: bank_name, account_holder, bank_account_number",
+        });
+      }
+    }
+
     const existingUser = await User.findOne({
       $or: [{ username }, { email }],
     });
@@ -109,7 +133,21 @@ router.post("/register", async (req, res) => {
       });
     }
 
-    await User.create({ username, password, full_name, email, phoneNumber, role });
+    const userData = {
+      username,
+      password,
+      full_name,
+      email,
+      phoneNumber,
+      role,
+    };
+    if (["Mangaka", "Assistant"].includes(role)) {
+      userData.bank_name = bank_name;
+      userData.account_holder = account_holder;
+      userData.bank_account_number = bank_account_number;
+    }
+
+    await User.create(userData);
 
     return res.status(201).json({
       success: true,
@@ -145,6 +183,9 @@ router.post("/register", async (req, res) => {
  *               email: { type: string }
  *               phoneNumber: { type: string }
  *               role: { type: string, enum: [Admin, Mangaka, Assistant, Editor, EB, Reader] }
+ *               bank_name: { type: string }
+ *               account_holder: { type: string }
+ *               bank_account_number: { type: string }
  *     responses:
  *       200:
  *         description: OTP đã được gửi đến email
@@ -157,7 +198,17 @@ router.post("/register", async (req, res) => {
  */
 router.post("/register/send-otp", async (req, res) => {
   try {
-    const { username, password, full_name, email, phoneNumber, role } = req.body;
+    const {
+      username,
+      password,
+      full_name,
+      email,
+      phoneNumber,
+      role,
+      bank_name,
+      account_holder,
+      bank_account_number,
+    } = req.body;
 
     if (!username || !password || !full_name || !email || !phoneNumber || !role) {
       return res.status(400).json({
@@ -187,6 +238,17 @@ router.post("/register/send-otp", async (req, res) => {
         success: false,
         message: "Password must be at least 6 characters",
       });
+    }
+
+    // Mangaka/Assistant bắt buộc phải có thông tin ngân hàng
+    if (["Mangaka", "Assistant"].includes(role)) {
+      if (!bank_name || !account_holder || !bank_account_number) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Mangaka/Assistant phải nhập đầy đủ thông tin ngân hàng: bank_name, account_holder, bank_account_number",
+        });
+      }
     }
 
     const existingUser = await User.findOne({
@@ -236,6 +298,9 @@ router.post("/register/send-otp", async (req, res) => {
  *               email: { type: string }
  *               phoneNumber: { type: string }
  *               role: { type: string, enum: [Admin, Mangaka, Assistant, Editor, EB, Reader] }
+ *               bank_name: { type: string }
+ *               account_holder: { type: string }
+ *               bank_account_number: { type: string }
  *               otp: { type: string, description: 6-digit OTP code sent to email }
  *     responses:
  *       201:
@@ -249,13 +314,35 @@ router.post("/register/send-otp", async (req, res) => {
  */
 router.post("/register/verify-otp", async (req, res) => {
   try {
-    const { username, password, full_name, email, phoneNumber, role, otp } = req.body;
+    const {
+      username,
+      password,
+      full_name,
+      email,
+      phoneNumber,
+      role,
+      bank_name,
+      account_holder,
+      bank_account_number,
+      otp,
+    } = req.body;
 
     if (!username || !password || !full_name || !email || !phoneNumber || !role || !otp) {
       return res.status(400).json({
         success: false,
         message: "All fields including otp are required",
       });
+    }
+
+    // Mangaka/Assistant bắt buộc phải có thông tin ngân hàng
+    if (["Mangaka", "Assistant"].includes(role)) {
+      if (!bank_name || !account_holder || !bank_account_number) {
+        return res.status(400).json({
+          success: false,
+          message:
+            "Mangaka/Assistant phải nhập đầy đủ thông tin ngân hàng: bank_name, account_holder, bank_account_number",
+        });
+      }
     }
 
     const { valid, reason } = await verifyOtp({ email, code: otp.trim(), purpose: "register" });
@@ -278,7 +365,21 @@ router.post("/register/verify-otp", async (req, res) => {
       });
     }
 
-    await User.create({ username, password, full_name, email, phoneNumber, role });
+    const userData = {
+      username,
+      password,
+      full_name,
+      email,
+      phoneNumber,
+      role,
+    };
+    if (["Mangaka", "Assistant"].includes(role)) {
+      userData.bank_name = bank_name;
+      userData.account_holder = account_holder;
+      userData.bank_account_number = bank_account_number;
+    }
+
+    await User.create(userData);
 
     return res.status(201).json({
       success: true,

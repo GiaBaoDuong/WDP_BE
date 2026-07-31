@@ -84,6 +84,16 @@ const chapterSchema = new mongoose.Schema(
     published_at: { type: Date, default: null },
     views_count: { type: Number, default: 0 },
     cover_image_url: { type: String, default: "" },
+    // ─── Monetization: chapter miễn phí / trả phí ────────────────────────
+    // FREE: ai cũng đọc được khi published
+    // PAID: reader phải mua bằng Coin mới đọc được nội dung page
+    access_type: {
+      type: String,
+      enum: ["FREE", "PAID"],
+      default: "FREE",
+      index: true,
+    },
+    coin_price: { type: Number, default: 0, min: 0 },
     // Scheduling fields
     scheduled_publish_at: { type: Date, default: null },
     publication_duration_days: {
@@ -115,6 +125,7 @@ chapterSchema.index({ status: 1 });
 chapterSchema.index({ submitted_by: 1, status: 1 });
 chapterSchema.index({ is_scheduled: 1, scheduled_publish_at: 1 });
 chapterSchema.index({ series_id: 1, deleted_at: 1 });
+chapterSchema.index({ series_id: 1, access_type: 1 });
 
 const Chapter = mongoose.model("Chapter", chapterSchema);
 module.exports = Chapter;

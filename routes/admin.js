@@ -3434,4 +3434,304 @@ router.patch("/end-requests/:id", async (req, res, next) => {
   }
 });
 
+// ════════════════════════════════════════════════════════════════════════════
+// 7. COIN PACKAGES (Admin quản lý các gói Coin)
+// ════════════════════════════════════════════════════════════════════════════
+
+const CoinPackage = require("../models/CoinPackage");
+const Payment = require("../models/Payment");
+const Revenue = require("../models/Revenue");
+const Withdrawal = require("../models/Withdrawal");
+const Wallet = require("../models/Wallet");
+
+/**
+ * @swagger
+ * /admin/coin-packages:
+ *   get:
+ *     summary: (Admin) Danh sách tất cả gói Coin
+ *     tags: [Admin - Monetization]
+ *     security: [{ BearerAuth: [] }]
+ *     responses:
+ *       200: { description: OK }
+ */
+router.get("/coin-packages", async (req, res, next) => {
+  try {
+    const packages = await CoinPackage.find().sort({ sort_order: 1, price_vnd: 1 }).lean();
+    res.json({ success: true, data: packages });
+  } catch (error) { next(error); }
+});
+
+/**
+ * @swagger
+ * /admin/coin-packages:
+ *   post:
+ *     summary: (Admin) Tạo gói Coin mới
+ *     tags: [Admin - Monetization]
+ *     security: [{ BearerAuth: [] }]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [name, price_vnd, coin_amount]
+ *             properties:
+ *               name: { type: string }
+ *               description: { type: string }
+ *               price_vnd: { type: number }
+ *               coin_amount: { type: number }
+ *               bonus_coin: { type: number }
+ *               sort_order: { type: number }
+ *               is_active: { type: boolean }
+ *     responses:
+ *       201: { description: Created }
+ */
+router.post("/coin-packages", async (req, res, next) => {
+  try {
+    const { name, description, price_vnd, coin_amount, bonus_coin, sort_order, is_active } = req.body;
+    if (!name || !price_vnd || !coin_amount) {
+      return next(new AppError("name, price_vnd, coin_amount là bắt buộc", 400));
+    }
+    const pkg = await CoinPackage.create({
+      name,
+      description: description || "",
+      price_vnd,
+      coin_amount,
+      bonus_coin: bonus_coin || 0,
+      sort_order: sort_order || 0,
+      is_active: is_active !== false,
+    });
+    res.status(201).json({ success: true, data: pkg });
+  } catch (error) { next(error); }
+});
+
+/**
+ * @swagger
+ * /admin/coin-packages/{id}:
+ *   patch:
+ *     summary: (Admin) Cập nhật gói Coin
+ *     tags: [Admin - Monetization]
+ *     security: [{ BearerAuth: [] }]
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema: { type: string }
+ *     responses:
+ *       200: { description: OK }
+ */
+router.patch("/coin-packages/:id", async (req, res, next) => {
+  try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+      return next(new AppError("Invalid id", 400));
+    }
+    const updates = {};
+    ["name", "description", "price_vnd", "coin_amount", "bonus_coin", "sort_order", "is_active"].forEach((k) => {
+      if (req.body[k] !== undefined) updates[k] = req.body[k];
+    });
+    const pkg = await CoinPackage.findByIdAndUpdate(
+      req.params.id,
+      { $set: updates },
+      { new: true, runValidators: true }
+    ).lean();
+    if (!pkg) return next(new AppError("CoinPackage not found", 404));
+    res.json({ success: true, data: pkg });
+  } catch (error) { next(error); }
+});
+
+/**
+ * @swagger
+ * /admin/coin-packages/{id}:
+ *   delete:
+ *     summary: (Admin) Xoá gói Coin - soft delete set is_active false
+ *     tags: [Admin - Monetization]
+ *     security: [{ BearerAuth: [] }]
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema: { type: string }
+ *     responses:
+ *       200: { description: OK }
+ */
+router.delete("/coin-packages/:id", async (req, res, next) => {
+  try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+      return next(new AppError("Invalid id", 400));
+    }
+    const pkg = await CoinPackage.findByIdAndUpdate(
+      req.params.id,
+      { $set: { is_active: false } },
+      { new: true }
+    ).lean();
+    if (!pkg) return next(new AppError("CoinPackage not found", 404));
+    res.json({ success: true, message: "Đã vô hiệu hoá gói Coin", data: pkg });
+  } catch (error) { next(error); }
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// 8. PAYMENTS (Admin xem giao dịch PayOS)
+// ════════════════════════════════════════════════════════════════════════════
+
+/**
+ * @swagger
+ * /admin/payments:
+ *   get:
+ *     summary: (Admin) Danh sách giao dịch PayOS
+ *     tags: [Admin - Monetization]
+ *     security: [{ BearerAuth: [] }]
+ *     parameters:
+ *       - in: query
+ *         name: status
+ *         schema: { type: string, enum: [pending, paid, cancelled, expired, failed] }
+ *       - in: query
+ *         name: page
+ *         schema: { type: integer, default: 1 }
+ *       - in: query
+ *         name: limit
+ *         schema: { type: integer, default: 20 }
+ *     responses:
+ *       200: { description: OK }
+ */
+router.get("/payments", async (req, res, next) => {
+  try {
+    const page = Math.max(1, parseInt(req.query.page) || 1);
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit) || 20));
+    const skip = (page - 1) * limit;
+    const filter = {};
+    if (req.query.status) filter.status = req.query.status;
+
+    const [items, total] = await Promise.all([
+      Payment.find(filter)
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(limit)
+        .populate("user_id", "username full_name email role")
+        .populate("coin_package_id", "name price_vnd")
+        .lean(),
+      Payment.countDocuments(filter),
+    ]);
+
+    // Tổng tiền đã nạp (status = paid)
+    const paidAgg = await Payment.aggregate([
+      { $match: { status: "paid" } },
+      {
+        $group: {
+          _id: null,
+          total_vnd: { $sum: "$amount_vnd" },
+          total_coin: { $sum: "$coin_amount" },
+          count: { $sum: 1 },
+        },
+      },
+    ]);
+
+    res.json({
+      success: true,
+      data: items,
+      pagination: {
+        total,
+        page,
+        limit,
+        pages: Math.ceil(total / limit),
+      },
+      summary: paidAgg[0] || { total_vnd: 0, total_coin: 0, count: 0 },
+    });
+  } catch (error) { next(error); }
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// 9. REVENUE STATS (Admin xem doanh thu toàn hệ thống)
+// ════════════════════════════════════════════════════════════════════════════
+
+/**
+ * @swagger
+ * /admin/revenue/stats:
+ *   get:
+ *     summary: (Admin) Thống kê doanh thu toàn hệ thống
+ *     tags: [Admin - Monetization]
+ *     security: [{ BearerAuth: [] }]
+ *     responses:
+ *       200: { description: OK }
+ */
+router.get("/revenue/stats", async (req, res, next) => {
+  try {
+    const [revenueAgg, walletAgg, withdrawalAgg] = await Promise.all([
+      Revenue.aggregate([
+        {
+          $group: {
+            _id: "$status",
+            total_coin: { $sum: "$coin_amount" },
+            total_vnd: { $sum: "$vnd_amount" },
+            count: { $sum: 1 },
+          },
+        },
+      ]),
+      Wallet.aggregate([
+        {
+          $group: {
+            _id: null,
+            total_coin_in_wallets: { $sum: "$balance" },
+            total_pending_revenue: { $sum: "$pending_balance" },
+            total_available_revenue: { $sum: "$available_balance" },
+            total_revenue: { $sum: "$total_revenue" },
+            total_withdrawn: { $sum: "$total_withdrawn" },
+            readers: { $sum: { $cond: [{ $gt: ["$balance", 0] }, 1, 0] } },
+          },
+        },
+      ]),
+      Withdrawal.aggregate([
+        {
+          $group: {
+            _id: "$status",
+            count: { $sum: 1 },
+            total_vnd: { $sum: "$vnd_amount" },
+          },
+        },
+      ]),
+    ]);
+
+    // Doanh thu theo Series (top 10)
+    const bySeries = await Revenue.aggregate([
+      {
+        $group: {
+          _id: "$series_id",
+          total_coin: { $sum: "$coin_amount" },
+          total_vnd: { $sum: "$vnd_amount" },
+          purchases: { $sum: 1 },
+        },
+      },
+      { $sort: { total_coin: -1 } },
+      { $limit: 10 },
+      {
+        $lookup: {
+          from: "series",
+          localField: "_id",
+          foreignField: "_id",
+          as: "series",
+        },
+      },
+      { $unwind: "$series" },
+      {
+        $project: {
+          series_id: "$_id",
+          series_name: "$series.name",
+          total_coin: 1,
+          total_vnd: 1,
+          purchases: 1,
+        },
+      },
+    ]);
+
+    res.json({
+      success: true,
+      data: {
+        revenue_by_status: revenueAgg,
+        wallet_totals: walletAgg[0] || null,
+        withdrawals_by_status: withdrawalAgg,
+        top_series: bySeries,
+      },
+    });
+  } catch (error) { next(error); }
+});
+
 module.exports = router;

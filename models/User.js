@@ -74,6 +74,10 @@ const userSchema = new mongoose.Schema(
       },
       default: () => ({ facebook: "", twitter: "", website: "" }),
     },
+    // ─── Bank info (chỉ áp dụng cho Mangaka / Assistant) ─────────────────
+    bank_name: { type: String, default: "", trim: true, maxlength: 100 },
+    account_holder: { type: String, default: "", trim: true, maxlength: 100 },
+    bank_account_number: { type: String, default: "", trim: true, maxlength: 30 },
   },
   {
     timestamps: {
@@ -101,6 +105,15 @@ userSchema.pre("save", async function () {
 userSchema.methods.comparePassword = async function (candidatePassword) {
   return await bcrypt.compare(candidatePassword, this.password);
 };
+
+// Trả về số tài khoản dạng che (vd: ********1234). Hữu ích cho các màn hình
+// hiển thị profile công khai / dashboard, nơi chỉ chủ tài khoản + admin mới thấy đầy đủ.
+userSchema.virtual("bank_account_number_masked").get(function () {
+  const acc = this.bank_account_number || "";
+  if (!acc) return "";
+  if (acc.length <= 4) return "********";
+  return "********" + acc.slice(-4);
+});
 
 const User = mongoose.model("User", userSchema);
 

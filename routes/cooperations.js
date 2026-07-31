@@ -1,5 +1,6 @@
 const express = require("express");
 const router = express.Router();
+const mongoose = require("mongoose");
 const { authMiddleware } = require("../middleware/auth");
 const { requireMangaka, requireAssistant } = require("../middleware/roles");
 const { AppError } = require("../middleware/errorHandler");
@@ -608,5 +609,92 @@ router.get("/assistant/mine", authMiddleware, requireAssistant, async (req, res,
     next(error);
   }
 });
+
+// ─── PATCH /cooperation-requests/cooperations/:id/revenue-shares ─────────────
+// Mangaka cập nhật tỷ lệ chia doanh thu cho Cooperation
+// Body: { shares: [{ user_id, role, percentage }] } - tổng phải = 100
+/**
+ * @swagger
+ * /cooperation-requests/cooperations/{id}/revenue-shares:
+ *   patch:
+ *     summary: (Mangaka) Cập nhật tỷ lệ chia doanh thu cho Cooperation
+ *     tags: [Cooperations]
+ *     security: [{ BearerAuth: [] }]
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema: { type: string }
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required: [shares]
+ *             properties:
+ *               shares:
+ *                 type: array
+ *                 items:
+ *                   type: object
+ *                   properties:
+ *                     user_id: { type: string }
+ *                     role: { type: string, enum: [Mangaka, Assistant] }
+ *                     percentage: { type: number }
+ *     responses:
+ *       200: { description: OK }
+ */
+router.patch(
+  "/cooperations/:id/revenue-shares",
+  authMiddleware,
+  requireMangaka,
+  async (req, res, next) => {
+    try {
+      const { id } = req.params;
+      const { shares } = req.body;
+      if (!Array.isArray(shares)) {
+        return next(new AppError("shares phải là array", 400));
+      }
+      const total = shares.reduce((sum, s) => sum + (Number(s.percentage) || 0), 0);
+      if (Math.abs(total - 100) > 0.01) {
+        return next(
+          new AppError(
+            `Tổng tỷ lệ chia doanh thu phải bằng 100% (hiện ${total}%)`,
+            400
+          )
+        );
+      }
+      // Validate role & user_id
+      for (const s of shares) {
+        if (!s.user_id || !mongoose.Types.ObjectId.isValid(s.user_id)) {
+          return next(new AppError("user_id không hợp lệ", 400));
+        }
+        if (!["Mangaka", "Assistant"].includes(s.role)) {
+          return next(new AppError("role phải là Mangaka hoặc Assistant", 400));
+        }
+        if (!Number.isFinite(s.percentage) || s.percentage < 0 || s.percentage > 100) {
+          return next(new AppError("percentage phải trong khoảng 0-100", 400));
+        }
+      }
+
+      const coop = await Cooperation.findOne({
+        _id: id,
+        mangaka_id: req.user.nameid,
+      });
+      if (!coop) return next(new AppError("Cooperation not found", 404));
+
+      coop.revenue_shares = shares.map((s) => ({
+        user_id: s.user_id,
+        role: s.role,
+        percentage: Number(s.percentage),
+      }));
+      await coop.save();
+
+      return res.json({ success: true, data: coop });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
 
 module.exports = router;
