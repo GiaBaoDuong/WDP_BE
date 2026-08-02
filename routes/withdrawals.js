@@ -76,22 +76,23 @@ const shapeForPublic = (w) => {
  * @swagger
  * /withdrawals:
  *   post:
- *     summary: (Mangaka/Assistant) Tạo yêu cầu rút tiền
+ *     summary: (Mangaka/Assistant) Tạo yêu cầu rút TOÀN BỘ số dư khả dụng
+ *     description: |
+ *       User chỉ được rút **toàn bộ `available_balance`**, không rút một phần.
+ *       Số coin và VND sẽ tự động lấy từ ví của user tại thời điểm tạo yêu cầu.
+ *       Body không cần truyền coin_amount/vnd_amount (sẽ bị bỏ qua nếu truyền).
  *     tags: [Withdrawals]
  *     security: [{ BearerAuth: [] }]
  *     requestBody:
- *       required: true
  *       content:
  *         application/json:
  *           schema:
  *             type: object
- *             required: [coin_amount]
  *             properties:
- *               coin_amount: { type: number }
- *               vnd_amount: { type: number, description: "Optional - auto tính theo tỷ giá nếu không truyền" }
- *               note: { type: string }
+ *               note: { type: string, description: "Ghi chú kèm yêu cầu" }
  *     responses:
  *       201: { description: Tạo thành công }
+ *       400: { description: Số dư = 0 hoặc dưới mức rút tối thiểu, hoặc đã có yêu cầu đang xử lý }
  */
 router.post("/", authMiddleware, async (req, res, next) => {
   try {
@@ -231,6 +232,15 @@ router.get("/admin/:id", authMiddleware, requireAdmin, async (req, res, next) =>
  * /withdrawals/admin/{id}/approve:
  *   patch:
  *     summary: (Admin) Duyệt yêu cầu rút tiền
+ *     description: |
+ *       Chuyển trạng thái withdrawal từ `pending` → `approved`.
+ *
+ *       **Tác động số dư:** KHÔNG động vào ví. Khi user tạo yêu cầu
+ *       (POST /withdrawals), hệ thống đã `debitWithdrawal` trừ coin khỏi
+ *       `available_balance` để giữ chỗ. Approve chỉ là xác nhận "đồng ý
+ *       chuyển khoản", tiền đã được khoá từ trước.
+ *
+ *       State transition: `pending → approved`. Chỉ approve được khi đang `pending`.
  *     tags: [Withdrawals - Admin]
  *     security: [{ BearerAuth: [] }]
  *     parameters:
@@ -246,7 +256,9 @@ router.get("/admin/:id", authMiddleware, requireAdmin, async (req, res, next) =>
  *             properties:
  *               admin_note: { type: string }
  *     responses:
- *       200: { description: OK }
+ *       200: { description: Duyệt thành công, status → approved }
+ *       400: { description: Invalid state (không phải pending) }
+ *       404: { description: Withdrawal not found }
  */
 router.patch(
   "/admin/:id/approve",
@@ -274,6 +286,40 @@ router.patch(
 );
 
 // ─── Admin: PATCH /withdrawals/admin/:id/reject ───────────────────────────────
+/**
+ * @swagger
+ * /withdrawals/admin/{id}/reject:
+ *   patch:
+ *     summary: (Admin) Từ chối yêu cầu rút tiền
+ *     description: |
+ *       Chuyển trạng thái withdrawal sang `rejected` và **hoàn tiền về ví user**.
+ *
+ *       **Tác động số dư: CÓ** — refund coin vào `available_balance` qua
+ *       `walletService.refundWithdrawal`. Đây là business logic rollback
+ *       khi admin từ chối, KHÔNG phải admin tự ý sửa ví thủ công.
+ *
+ *       State transition: `pending → rejected` HOẶC `approved → rejected`.
+ *       Có thể reject ở cả 2 trạng thái pending và approved. Sau khi rejected,
+ *       user được tạo yêu cầu rút mới.
+ *     tags: [Withdrawals - Admin]
+ *     security: [{ BearerAuth: [] }]
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema: { type: string }
+ *     requestBody:
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               admin_note: { type: string }
+ *     responses:
+ *       200: { description: Từ chối thành công, đã hoàn tiền về ví user }
+ *       400: { description: Invalid state }
+ *       404: { description: Withdrawal not found }
+ */
 router.patch(
   "/admin/:id/reject",
   authMiddleware,
@@ -300,6 +346,40 @@ router.patch(
 );
 
 // ─── Admin: PATCH /withdrawals/admin/:id/complete ─────────────────────────────
+/**
+ * @swagger
+ * /withdrawals/admin/{id}/complete:
+ *   patch:
+ *     summary: (Admin) Hoàn tất chuyển khoản
+ *     description: |
+ *       Chuyển trạng thái withdrawal từ `approved` → `completed`.
+ *
+ *       **Tác động số dư:** KHÔNG động vào ví. Việc "trừ tiền thật" đã xảy
+ *       ra từ lúc user tạo yêu cầu (`createWithdrawalRequest` đã gọi
+ *       `debitWithdrawal`). Complete chỉ là xác nhận "tiền đã chuyển khoản
+ *       ra ngoài thành công".
+ *
+ *       State transition: `approved → completed`. Chỉ complete được khi
+ *       đang `approved`. Sau khi completed, user có thể tạo yêu cầu rút mới.
+ *     tags: [Withdrawals - Admin]
+ *     security: [{ BearerAuth: [] }]
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema: { type: string }
+ *     requestBody:
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               admin_note: { type: string }
+ *     responses:
+ *       200: { description: Hoàn tất thành công, status → completed }
+ *       400: { description: Invalid state (chưa approved) }
+ *       404: { description: Withdrawal not found }
+ */
 router.patch(
   "/admin/:id/complete",
   authMiddleware,

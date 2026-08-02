@@ -1,17 +1,33 @@
 /**
  * revenueService - Chia doanh thu khi Reader mua chapter trả phí.
  *
- * Flow:
- *   Reader pays N Coin → mua chapter
- *     → Platform giữ PLATFORM_FEE_PERCENT * N Coin
- *     → Phần còn lại (1 - fee) * N = net → chia theo Cooperation.revenue_shares
- *     → Mỗi share tạo 1 Revenue record (status = pending, available_at = now + pending_hours)
- *     → creditRevenue() cho từng user
+ * Nghiệp vụ hiện tại (từ nâng cấp mới):
+ *   Tỷ lệ chia doanh thu được xác định TRỰC TIẾP từ `chapter.assistant_id`
+ *   chứ không còn lấy từ `Cooperation.revenue_shares`.
  *
- * Nếu không tìm thấy Cooperation cho chapter.series_id → mặc định 100% cho Mangaka.
+ *   Quy tắc:
+ *     - Chapter KHÔNG có assistant_id:
+ *         Mangaka nhận 100% phần doanh thu sau khi trừ phí nền tảng.
+ *     - Chapter CÓ assistant_id (khác Mangaka):
+ *         Mangaka 60% / Assistant 40% (chia trên phần net).
+ *     - Mangaka = Assistant (chapter tự gán cho mình): fallback 100% cho Mangaka.
  *
- * Tổng `revenue_shares` luôn phải bằng 100 (validator bên ngoài). Nếu vi phạm,
- * hàm sẽ throw error.
+ *   Flow:
+ *     Reader pays N Coin → mua chapter
+ *       → Platform giữ PLATFORM_FEE_PERCENT * N Coin
+ *       → Phần còn lại (1 - fee) * N = net → chia theo resolveChapterRevenueShares
+ *       → Mỗi share tạo 1 Revenue record (status = pending, available_at = now + pending_hours)
+ *       → creditRevenue() cho từng user
+ *
+ * Lưu ý tương thích ngược:
+ *   - `resolveSharesForSeries` (đọc `Cooperation.revenue_shares`) vẫn được export
+ *     để các luồng khác (vd: dashboard, admin) còn dùng. Tuy nhiên luồng mua
+ *     chapter KHÔNG còn gọi hàm này nữa.
+ *   - `cooperation_snapshot` trong Revenue được mở rộng thêm:
+ *       source: "CHAPTER_ASSISTANT"  (mới)
+ *       assistant_id: <id> | null      (mới)
+ *     Giá trị cũ (mangaka_id, shares, platform_fee_percentage) vẫn có để
+ *     đảm bảo đọc được các record cũ.
  */
 const mongoose = require("mongoose");
 const Cooperation = require("../models/Cooperation");
@@ -25,6 +41,9 @@ const DEFAULT_SHARES = (mangakaId) => [
 ];
 
 /**
+ * DEPRECATED — chỉ còn được export cho tương thích ngược.
+ * Không dùng để tính doanh thu chapter mới.
+ *
  * Lấy tỷ lệ chia cho 1 series từ các Cooperation (accepted) của series đó.
  *
  * Quy tắc:
@@ -116,13 +135,65 @@ async function resolveSharesForSeries(seriesId, mangakaId) {
 }
 
 /**
+ * Xác định tỷ lệ chia doanh thu cho 1 lần mua chapter, dựa trực tiếp vào
+ * `chapter.assistant_id` (KHÔNG phụ thuộc `Cooperation.revenue_shares`).
+ *
+ * Quy tắc:
+ *   - assistantId null/undefined/rỗng:
+ *       Mangaka 100%.
+ *   - assistantId trùng Mangaka (chapter tự gán cho mình):
+ *       Mangaka 100% (fallback an toàn, validation đã chặn ở route).
+ *   - Có assistant hợp lệ (khác Mangaka):
+ *       Mangaka 60% / Assistant 40%.
+ *
+ * @param {String|ObjectId|null} mangakaId
+ * @param {String|ObjectId|null} assistantId
+ * @returns {Array<{user_id, role, percentage}>}
+ */
+function resolveChapterRevenueShares(mangakaId, assistantId = null) {
+  if (!mangakaId) {
+    throw new Error("mangakaId is required");
+  }
+
+  const aid = assistantId ? String(assistantId) : null;
+  const mid = String(mangakaId);
+
+  if (!aid || aid === mid) {
+    return [
+      {
+        user_id: mangakaId,
+        role: "Mangaka",
+        percentage: 100,
+      },
+    ];
+  }
+
+  return [
+    {
+      user_id: mangakaId,
+      role: "Mangaka",
+      percentage: 60,
+    },
+    {
+      user_id: assistantId,
+      role: "Assistant",
+      percentage: 40,
+    },
+  ];
+}
+
+/**
  * Tính toán và tạo Revenue cho 1 purchase.
+ *
+ * Lưu ý: tỷ lệ chia lấy từ `assistantId` (chapter.assistant_id),
+ * không còn dùng Cooperation.revenue_shares.
  *
  * @param {Object} ctx
  * @param {mongoose.Types.ObjectId} ctx.purchasedChapterId
  * @param {mongoose.Types.ObjectId} ctx.chapterId
  * @param {mongoose.Types.ObjectId} ctx.seriesId
  * @param {mongoose.Types.ObjectId} ctx.mangakaId
+ * @param {mongoose.Types.ObjectId|null} [ctx.assistantId]  ID Assistant gắn trên chapter (snapshot)
  * @param {mongoose.Types.ObjectId} ctx.readerId
  * @param {number} ctx.grossCoinAmount  Số Coin chapter (giá bán)
  *
@@ -134,6 +205,7 @@ async function createRevenueForPurchase(ctx) {
     chapterId,
     seriesId,
     mangakaId,
+    assistantId = null,
     readerId,
     grossCoinAmount,
   } = ctx;
@@ -142,10 +214,16 @@ async function createRevenueForPurchase(ctx) {
     throw new Error("grossCoinAmount phải > 0");
   }
 
-  const shares = await resolveSharesForSeries(seriesId, mangakaId);
+  // Tỷ lệ chia doanh thu xác định từ chapter.assistant_id (không qua Cooperation).
+  const shares = resolveChapterRevenueShares(mangakaId, assistantId);
 
   const platformFeePercent = config.monetization.platformFeePercent;
-  const platformFeeCoin = Math.round((grossCoinAmount * platformFeePercent) / 100);
+  // platformFeeCoin & netCoin là số nguyên Coin.
+  // Nếu grossCoinAmount * platformFeePercent / 100 bị lẻ → làm tròn platformFeeCoin
+  // rồi suy ra netCoin = gross - platformFeeCoin để đảm bảo platform + share = gross.
+  const platformFeeCoin = Math.round(
+    (grossCoinAmount * platformFeePercent) / 100
+  );
   const netCoinAmount = grossCoinAmount - platformFeeCoin;
 
   const vndRate = config.monetization.coinToVndRate;
@@ -155,16 +233,135 @@ async function createRevenueForPurchase(ctx) {
     Date.now() + pendingHours * 60 * 60 * 1000
   );
 
+  // ====================================================================
+  // Phân bổ Coin cho từng share bằng largest-remainder method.
+  // ====================================================================
+  // Mục tiêu: tổng coin_amount trên MỌI record của cùng 1 purchase = netCoin
+  // (không được mất Coin do làm tròn xuống nhiều lần).
+  //
+  // Ví dụ: gross=5, fee=20% → netCoin=4.
+  //   Mangaka 60% * 4 = 2.4 → floor=2 (remainder=0.4)
+  //   Assistant 40% * 4 = 1.6 → floor=1 (remainder=0.6)
+  //   leftover = 4 - (2+1) = 1 → Assistant (remainder lớn hơn) nhận +1 → 2.
+  //   Tổng = 2 + 2 = 4 = netCoin ✓
+  //
+  // Tie-break khi remainder bằng nhau: ưu tiên Mangaka (giữ idx/index hợp lý).
+  //
+  // QUAN TRỌNG — pointer chứ không copy:
+  //   `indexed` chỉ chứa { allocation, idx, isMangaka }, KHÔNG spread
+  //   các field của allocation. Mọi `.floor += 1` được thực hiện trên chính
+  //   `allocation` gốc trong `allocations` để vòng lặp tạo Revenue đọc đúng.
+  // ====================================================================
+  const allocations = shares.map((s) => {
+    const exact = (netCoinAmount * Number(s.percentage)) / 100;
+    const floor = Math.floor(exact);
+    return {
+      share: s,
+      floor,
+      remainder: exact - floor,
+    };
+  });
+
+  // Phân bổ leftover (nếu có) cho user có remainder lớn nhất.
+  // Tie-break: ưu tiên Mangaka, sau đó theo idx gốc.
+  const leftover = netCoinAmount - allocations.reduce((sum, a) => sum + a.floor, 0);
+  if (leftover > 0) {
+    const indexed = allocations.map((allocation, idx) => ({
+      allocation,
+      idx,
+      isMangaka: allocation.share.role === "Mangaka",
+    }));
+    indexed.sort((a, b) => {
+      if (b.allocation.remainder !== a.allocation.remainder) {
+        return b.allocation.remainder - a.allocation.remainder;
+      }
+      // Tie-break: ưu tiên Mangaka (sort ascending → Mangaka đứng trước).
+      if (a.isMangaka !== b.isMangaka) {
+        return a.isMangaka ? -1 : 1;
+      }
+      return a.idx - b.idx;
+    });
+    for (let i = 0; i < leftover; i++) {
+      indexed[i % indexed.length].allocation.floor += 1;
+    }
+  }
+
+  // ====================================================================
+  // Phân bổ phí platform theo tỷ lệ (audit per-record).
+  // ====================================================================
+  // `platform_fee_coin` lưu trên mỗi Revenue record là phần phí TƯƠNG ỨNG
+  // với share này (không phải phí gốc của cả purchase). Dùng
+  // largest-remainder để đảm bảo:
+  //     sum(platform_fee_coin across records) == platformFeeCoin
+  // Nếu sau này cần tổng phí platform của 1 purchase, group theo
+  // `purchased_chapter_id` rồi sum — KHÔNG cộng tất cả record rồi nhân tỷ lệ.
+  // ====================================================================
+  const platformAllocations = shares.map((s) => {
+    const exact = (platformFeeCoin * Number(s.percentage)) / 100;
+    const floor = Math.floor(exact);
+    return {
+      share: s,
+      floor,
+      remainder: exact - floor,
+    };
+  });
+  const platformLeftover =
+    platformFeeCoin - platformAllocations.reduce((sum, a) => sum + a.floor, 0);
+  if (platformLeftover > 0) {
+    const indexed = platformAllocations.map((allocation, idx) => ({
+      allocation,
+      idx,
+      isMangaka: allocation.share.role === "Mangaka",
+    }));
+    indexed.sort((a, b) => {
+      if (b.allocation.remainder !== a.allocation.remainder) {
+        return b.allocation.remainder - a.allocation.remainder;
+      }
+      if (a.isMangaka !== b.isMangaka) {
+        return a.isMangaka ? -1 : 1;
+      }
+      return a.idx - b.idx;
+    });
+    for (let i = 0; i < platformLeftover; i++) {
+      indexed[i % indexed.length].allocation.floor += 1;
+    }
+  }
+  // Map share_user_id → phần phí platform đã phân bổ.
+  const platformAllocByUser = new Map(
+    platformAllocations.map((a) => [String(a.share.user_id), a.floor])
+  );
+
+  // ====================================================================
+  // Tạo Revenue record cho từng share.
+  // ====================================================================
+  // Semantics field (đồng bộ với comment trong models/Revenue.js):
+  //   gross_coin_amount   = giá chapter trước phí (giống nhau trên mọi record)
+  //   platform_fee_coin   = phần phí platform ứng với share này (≠ nhau)
+  //   net_coin_amount     = TỔNG phần còn lại của purchase sau phí
+  //                         (giống nhau trên mọi record cùng purchased_chapter_id)
+  //   share_percentage    = tỷ lệ user này (vd: 60 / 40 / 100)
+  //   coin_amount         = phần user này THỰC NHẬN = floor(net * pct/100) + dư
+  //   vnd_amount          = coin_amount * coinToVndRate
+  //
+  // Lưu ý cho các luồng aggregate (dashboard, thống kê, Revenue Hub):
+  //   - Tổng Gross của 1 purchase: SUM(gross_coin_amount) lấy DISTINCT theo
+  //     purchased_chapter_id (mỗi purchase chỉ tính 1 lần).
+  //   - Tổng Platform Fee của 1 purchase: GROUP BY purchased_chapter_id SUM(...)
+  //     hoặc lấy trong 1 bất kỳ record vì gross/net/platform đều giống nhau
+  //     trên mọi record cùng purchase.
+  //   - Tổng Coin chia cho sáng tác: SUM(coin_amount) — không trùng lặp.
+  //   - Tổng Net = Tổng Coin chia + Tổng Platform Fee (per purchase).
+  // ====================================================================
   const created = [];
 
-  for (const share of shares) {
-    // Tính số Coin user này nhận = netCoinAmount * share.percentage / 100
-    const coinAmount = Math.round(
-      (netCoinAmount * share.percentage) / 100
-    );
+  for (let i = 0; i < allocations.length; i++) {
+    const coinAmount = allocations[i].floor;
     if (coinAmount <= 0) continue;
 
+    const share = allocations[i].share;
     const vndAmount = coinAmount * vndRate;
+    const allocatedPlatformFee =
+      platformAllocByUser.get(String(share.user_id)) || 0;
 
     const revenue = await Revenue.create({
       user_id: share.user_id,
@@ -174,19 +371,17 @@ async function createRevenueForPurchase(ctx) {
       purchased_chapter_id: purchasedChapterId,
       reader_id: readerId,
       gross_coin_amount: grossCoinAmount,
-      platform_fee_coin: Math.round(
-        (grossCoinAmount * platformFeePercent * share.percentage) / 10000
-      ),
-      net_coin_amount: Math.round(
-        (netCoinAmount * share.percentage) / 100
-      ),
+      platform_fee_coin: allocatedPlatformFee,
+      net_coin_amount: netCoinAmount,
       share_percentage: share.percentage,
       coin_amount: coinAmount,
       vnd_amount: vndAmount,
       status: "pending",
       available_at: availableAt,
       cooperation_snapshot: {
+        source: "CHAPTER_ASSISTANT",
         mangaka_id: mangakaId,
+        assistant_id: assistantId || null,
         shares,
         platform_fee_percentage: platformFeePercent,
       },
@@ -207,6 +402,7 @@ async function createRevenueForPurchase(ctx) {
 }
 
 module.exports = {
+  resolveChapterRevenueShares,
   resolveSharesForSeries,
   createRevenueForPurchase,
 };

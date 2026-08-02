@@ -1,13 +1,18 @@
 /**
  * chapterPurchaseService - Logic mua chapter trả phí.
  *
- * Idempotent: nếu reader đã mua rồi → trả về record cũ, không trừ coin.
- * Đảm bảo atomic bằng cách:
- *   1. Tìm PurchasedChapter đã tồn tại (unique index).
- *   2. Nếu có → trả về luôn.
- *   3. Nếu chưa có → trừ Coin (atomic $inc + $gte guard).
- *   4. Tạo PurchasedChapter.
- *   5. Tạo Revenue cho Mangaka + Assistants.
+ * Idempotent + race-safe:
+ *   - Bước 1: Tạo PurchasedChapter trước (dựa vào unique index (reader_id, chapter_id))
+ *     để đảm bảo chỉ 1 request tạo được. Các request cùng lúc sẽ ném duplicate key.
+ *   - Bước 2: Sau khi tạo thành công, mới debit Coin.
+ *   - Nếu debit fail (không đủ Coin): xóa PurchasedChapter vừa tạo để user có thể mua lại.
+ *   - Nếu debit thành công nhưng request bị duplicate sau đó (race hiếm):
+ *     refund coin cho request thua.
+ *
+ * Trước đây flow là debit trước rồi mới tạo PurchasedChapter. Nhưng khi 2 request
+ * đồng thời vượt qua bước check "đã mua chưa", cả 2 sẽ debit coin → 1 request tạo
+ * PurchasedChapter thành công, request còn lại gặp duplicate key và KHÔNG refund
+ * (chỉ return record cũ), dẫn đến mất Coin oan. Đảo thứ tự là cách fix race-safe.
  */
 const PurchasedChapter = require("../models/PurchasedChapter");
 const Chapter = require("../models/Chapter");
@@ -32,7 +37,7 @@ class PurchaseError extends Error {
  * @returns {Promise<{purchased: object, alreadyOwned: boolean, revenue: Array}>}
  */
 async function purchaseChapter(readerId, chapterId) {
-  // 1. Tìm chapter
+  // 1. Validate chapter
   const chapter = await Chapter.findById(chapterId).lean();
   if (!chapter) throw new PurchaseError("Chapter not found", "not_found", 404);
   if (!chapter.is_published) {
@@ -53,13 +58,14 @@ async function purchaseChapter(readerId, chapterId) {
     );
   }
 
-  // 2. Tìm series để lấy mangaka_id
+  // 2. Lấy series để lấy mangaka_id
   const series = await Series.findById(chapter.series_id)
     .select("author_id")
     .lean();
   if (!series) throw new PurchaseError("Series not found", "not_found", 404);
 
-  // 3. Kiểm tra đã mua chưa
+  // 3. Check nhanh (tăng UX, không phải race guard).
+  // Race guard thật sự là unique index trên PurchasedChapter.
   const existing = await PurchasedChapter.findOne({
     reader_id: readerId,
     chapter_id: chapterId,
@@ -72,20 +78,8 @@ async function purchaseChapter(readerId, chapterId) {
     };
   }
 
-  // 4. Trừ Coin (atomic)
-  const debit = await debitCoin(readerId, chapter.coin_price, {
-    chapter_id: chapterId,
-    description: `Mua chapter #${chapter.chapter_number}`,
-  });
-  if (!debit.ok) {
-    throw new PurchaseError(
-      "Số dư Coin không đủ để mua chapter này",
-      "insufficient_coin",
-      400
-    );
-  }
-
-  // 5. Tạo PurchasedChapter (catch duplicate key để idempotent)
+  // 4. Tạo PurchasedChapter trước (race-safe nhờ unique index).
+  // Nếu 2 request đồng thời cùng tạo, chỉ 1 thành công, request còn lại ném 11000.
   let purchased;
   try {
     purchased = await PurchasedChapter.create({
@@ -96,11 +90,8 @@ async function purchaseChapter(readerId, chapterId) {
       purchased_at: new Date(),
     });
   } catch (err) {
-    // Duplicate key → đã mua rồi (race condition với request khác)
     if (err.code === 11000) {
-      // Hoàn Coin vì request khác đã mua trước
-      // (Trong thực tế hiếm xảy ra vì check ở step 3, nhưng để an toàn)
-      // Lưu ý: nếu muốn đơn giản, có thể skip hoàn coin vì amount đã trừ = 0 effect.
+      // Request khác đã mua trước → trả record cũ, không debit, không refund.
       const existing2 = await PurchasedChapter.findOne({
         reader_id: readerId,
         chapter_id: chapterId,
@@ -114,6 +105,22 @@ async function purchaseChapter(readerId, chapterId) {
     throw err;
   }
 
+  // 5. Sau khi đã có PurchasedChapter, mới debit Coin.
+  const debit = await debitCoin(readerId, chapter.coin_price, {
+    chapter_id: chapterId,
+    description: `Mua chapter #${chapter.chapter_number}`,
+    purchased_chapter_id: purchased._id,
+  });
+  if (!debit.ok) {
+    // Không đủ coin → rollback PurchasedChapter vừa tạo để user có thể nạp rồi mua lại.
+    await PurchasedChapter.deleteOne({ _id: purchased._id });
+    throw new PurchaseError(
+      "Số dư Coin không đủ để mua chapter này",
+      "insufficient_coin",
+      400
+    );
+  }
+
   // 6. Tạo Revenue
   let revenue = [];
   try {
@@ -122,13 +129,11 @@ async function purchaseChapter(readerId, chapterId) {
       chapterId: chapter._id,
       seriesId: chapter.series_id,
       mangakaId: series.author_id,
+      assistantId: chapter.assistant_id || null,
       readerId,
       grossCoinAmount: chapter.coin_price,
     });
   } catch (revErr) {
-    // Revenue tạo fail → KHÔNG roll back Coin (đã trừ rồi).
-    // Log lỗi để admin xử lý sau. Việc này rất hiếm, chỉ xảy ra khi
-    // Cooperation bị xoá giữa lúc mua.
     console.error(
       "[chapterPurchase] createRevenue failed:",
       revErr.message

@@ -3443,6 +3443,9 @@ const Payment = require("../models/Payment");
 const Revenue = require("../models/Revenue");
 const Withdrawal = require("../models/Withdrawal");
 const Wallet = require("../models/Wallet");
+const WalletTransaction = require("../models/WalletTransaction");
+const PurchasedChapter = require("../models/PurchasedChapter");
+// Cooperation đã được require ở phần imports phía trên file admin.js (dùng cho các route khác).
 
 /**
  * @swagger
@@ -3731,7 +3734,1109 @@ router.get("/revenue/stats", async (req, res, next) => {
         top_series: bySeries,
       },
     });
-  } catch (error) { next(error); }
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// 10. PLATFORM REVENUE HUB — Phí nền tảng 20% thu từ bán chapter
+//     Admin xem tổng doanh thu platform (phần platform_fee_coin từ các Revenue)
+//     Không có quyền sửa — chỉ đọc.
+// ════════════════════════════════════════════════════════════════════════════
+
+/**
+ * @swagger
+ * /admin/revenue/hub:
+ *   get:
+ *     summary: (Admin) Doanh thu platform hub — phí 20% từ bán chapter
+ *     description: |
+ *       Tổng phí nền tảng thu được từ mỗi lượt mua chapter (20% của gross_coin_amount).
+ *       Bao gồm: tổng phí theo thời gian, breakdown theo series, breakdown theo tháng,
+ *       và top series đóng góp nhiều nhất.
+ *       Admin chỉ có quyền xem — không có endpoint sửa số liệu revenue.
+ *     tags: [Admin - Monetization]
+ *     security: [{ BearerAuth: [] }]
+ *     parameters:
+ *       - in: query
+ *         name: days
+ *         schema: { type: integer, default: 30 }
+ *         description: Khoảng thời gian thống kê (ngày)
+ *     responses:
+ *       200: { description: OK }
+ */
+router.get("/revenue/hub", async (req, res, next) => {
+  try {
+    const days = Math.min(365, Math.max(1, parseInt(req.query.days) || 30));
+    const since = new Date(Date.now() - days * 24 * 60 * 60 * 1000);
+
+    // Per-purchase helper: aggregate gross/net/chapters ở cấp "1 lần mua"
+    // rồi mới cộng tổng. Vì 1 purchase tạo N Revenue record (Mangaka + Assistant)
+    // và gross/net_coin_amount lưu cùng giá trị trên MỌI record, nên nếu sum
+    // thẳng sẽ bị nhân N lần. Group theo purchased_chapter_id trước, $first
+    // lấy 1 bản đại diện rồi mới cộng tổng. Count chapters_sold = số purchase.
+    const purchaseLevel = [
+      {
+        $group: {
+          _id: "$purchased_chapter_id",
+          gross_coin: { $first: "$gross_coin_amount" },
+          net_coin: { $first: "$net_coin_amount" },
+        },
+      },
+    ];
+
+    // Tổng platform fee toàn hệ thống + trong khoảng
+    const [overallAgg, periodAgg, todayAgg, thisMonthAgg, lastMonthAgg] =
+      await Promise.all([
+        Revenue.aggregate([
+          ...purchaseLevel,
+          {
+            $group: {
+              _id: null,
+              total_platform_fee_coin: { $sum: "$platform_fee_coin" },
+              total_gross_coin: { $sum: "$gross_coin" },
+              total_net_coin: { $sum: "$net_coin" },
+              total_chapters_sold: { $sum: 1 },
+            },
+          },
+        ]),
+        Revenue.aggregate([
+          { $match: { createdAt: { $gte: since } } },
+          ...purchaseLevel,
+          {
+            $group: {
+              _id: null,
+              period_platform_fee_coin: { $sum: "$platform_fee_coin" },
+              period_gross_coin: { $sum: "$gross_coin" },
+              period_chapters_sold: { $sum: 1 },
+            },
+          },
+        ]),
+        // Today: từ 00:00 hôm nay
+        (() => {
+          const startOfToday = new Date();
+          startOfToday.setHours(0, 0, 0, 0);
+          return Revenue.aggregate([
+            { $match: { createdAt: { $gte: startOfToday } } },
+            ...purchaseLevel,
+            {
+              $group: {
+                _id: null,
+                platform_fee_coin: { $sum: "$platform_fee_coin" },
+                gross_coin: { $sum: "$gross_coin" },
+                net_coin: { $sum: "$net_coin" },
+                chapters_sold: { $sum: 1 },
+              },
+            },
+          ]);
+        })(),
+        // This month: từ ngày 1 tháng này
+        (() => {
+          const startOfMonth = new Date();
+          startOfMonth.setDate(1);
+          startOfMonth.setHours(0, 0, 0, 0);
+          return Revenue.aggregate([
+            { $match: { createdAt: { $gte: startOfMonth } } },
+            ...purchaseLevel,
+            {
+              $group: {
+                _id: null,
+                platform_fee_coin: { $sum: "$platform_fee_coin" },
+                gross_coin: { $sum: "$gross_coin" },
+                net_coin: { $sum: "$net_coin" },
+                chapters_sold: { $sum: 1 },
+              },
+            },
+          ]);
+        })(),
+        // Last month: từ ngày 1 tháng trước → ngày 1 tháng này
+        (() => {
+          const now = new Date();
+          const startOfLastMonth = new Date(
+            now.getFullYear(),
+            now.getMonth() - 1,
+            1
+          );
+          const startOfThisMonth = new Date(
+            now.getFullYear(),
+            now.getMonth(),
+            1
+          );
+          return Revenue.aggregate([
+            {
+              $match: {
+                createdAt: { $gte: startOfLastMonth, $lt: startOfThisMonth },
+              },
+            },
+            ...purchaseLevel,
+            {
+              $group: {
+                _id: null,
+                platform_fee_coin: { $sum: "$platform_fee_coin" },
+                gross_coin: { $sum: "$gross_coin" },
+                net_coin: { $sum: "$net_coin" },
+                chapters_sold: { $sum: 1 },
+              },
+            },
+          ]);
+        })(),
+      ]);
+
+    // Withdrawal: pending amount + total withdrawn amount
+    const [pendingWithdrawalAgg, totalWithdrawnAgg] = await Promise.all([
+      Withdrawal.aggregate([
+        { $match: { status: "pending" } },
+        {
+          $group: {
+            _id: null,
+            pending_coin: { $sum: "$coin_amount" },
+            pending_vnd: { $sum: "$vnd_amount" },
+            count: { $sum: 1 },
+          },
+        },
+      ]),
+      Withdrawal.aggregate([
+        { $match: { status: "completed" } },
+        {
+          $group: {
+            _id: null,
+            total_coin: { $sum: "$coin_amount" },
+            total_vnd: { $sum: "$vnd_amount" },
+            count: { $sum: 1 },
+          },
+        },
+      ]),
+    ]);
+
+    // Breakdown theo tháng (12 tháng gần nhất).
+    // Group theo purchase trước để gross/net không bị nhân N lần do mỗi purchase
+    // tạo nhiều Revenue record (Mangaka + Assistant).
+    const monthlyAgg = await Revenue.aggregate([
+      {
+        $group: {
+          _id: {
+            purchased_chapter_id: "$purchased_chapter_id",
+            year: { $year: "$createdAt" },
+            month: { $month: "$createdAt" },
+          },
+          platform_fee_coin: { $sum: "$platform_fee_coin" },
+          gross_coin: { $first: "$gross_coin_amount" },
+          net_coin: { $first: "$net_coin_amount" },
+        },
+      },
+      {
+        $group: {
+          _id: { year: "$_id.year", month: "$_id.month" },
+          platform_fee_coin: { $sum: "$platform_fee_coin" },
+          gross_coin: { $sum: "$gross_coin" },
+          net_coin: { $sum: "$net_coin" },
+          chapters_sold: { $sum: 1 },
+        },
+      },
+      { $sort: { "_id.year": -1, "_id.month": -1 } },
+      { $limit: 12 },
+    ]);
+
+    // Top 20 series đóng góp phí nhiều nhất.
+    // platform_fee_coin sum per-record đã đúng (= platformFeeCoin / purchase),
+    // nhưng gross_coin phải group purchase trước vì mỗi record lưu full price.
+    const topSeriesAgg = await Revenue.aggregate([
+      {
+        $group: {
+          _id: {
+            series_id: "$series_id",
+            purchased_chapter_id: "$purchased_chapter_id",
+          },
+          platform_fee_coin: { $sum: "$platform_fee_coin" },
+          gross_coin: { $first: "$gross_coin_amount" },
+        },
+      },
+      {
+        $group: {
+          _id: "$_id.series_id",
+          platform_fee_coin: { $sum: "$platform_fee_coin" },
+          gross_coin: { $sum: "$gross_coin" },
+          chapters_sold: { $sum: 1 },
+        },
+      },
+      { $sort: { platform_fee_coin: -1 } },
+      { $limit: 20 },
+      {
+        $lookup: {
+          from: "series",
+          localField: "_id",
+          foreignField: "_id",
+          as: "series",
+        },
+      },
+      { $unwind: { path: "$series", preserveNullAndEmptyArrays: true } },
+      {
+        $project: {
+          series_id: "$_id",
+          series_name: { $ifNull: ["$series.name", "(đã xoá)"] },
+          platform_fee_coin: 1,
+          gross_coin: 1,
+          chapters_sold: 1,
+          net_coin: {
+            $subtract: ["$gross_coin", "$platform_fee_coin"],
+          },
+        },
+      },
+    ]);
+
+    const config = require("../config/payment");
+    const coinToVnd = config.monetization.coinToVndRate;
+    const overall = overallAgg[0] || {};
+    const period = periodAgg[0] || {};
+
+    res.json({
+      success: true,
+      data: {
+        period_days: days,
+        config: {
+          platform_fee_percent: config.monetization.platformFeePercent,
+          coin_to_vnd_rate: coinToVnd,
+        },
+        overall: {
+          total_platform_fee_coin: overall.total_platform_fee_coin || 0,
+          total_platform_fee_vnd:
+            (overall.total_platform_fee_coin || 0) * coinToVnd,
+          total_gross_coin: overall.total_gross_coin || 0,
+          total_net_coin: overall.total_net_coin || 0,
+          total_chapters_sold: overall.total_chapters_sold || 0,
+        },
+        today: {
+          platform_fee_coin: todayAgg[0]?.platform_fee_coin || 0,
+          platform_fee_vnd:
+            (todayAgg[0]?.platform_fee_coin || 0) * coinToVnd,
+          gross_coin: todayAgg[0]?.gross_coin || 0,
+          net_coin: todayAgg[0]?.net_coin || 0,
+          chapters_sold: todayAgg[0]?.chapters_sold || 0,
+        },
+        this_month: {
+          platform_fee_coin: thisMonthAgg[0]?.platform_fee_coin || 0,
+          platform_fee_vnd:
+            (thisMonthAgg[0]?.platform_fee_coin || 0) * coinToVnd,
+          gross_coin: thisMonthAgg[0]?.gross_coin || 0,
+          net_coin: thisMonthAgg[0]?.net_coin || 0,
+          chapters_sold: thisMonthAgg[0]?.chapters_sold || 0,
+        },
+        last_month: {
+          platform_fee_coin: lastMonthAgg[0]?.platform_fee_coin || 0,
+          platform_fee_vnd:
+            (lastMonthAgg[0]?.platform_fee_coin || 0) * coinToVnd,
+          gross_coin: lastMonthAgg[0]?.gross_coin || 0,
+          net_coin: lastMonthAgg[0]?.net_coin || 0,
+          chapters_sold: lastMonthAgg[0]?.chapters_sold || 0,
+        },
+        period: {
+          since: since,
+          platform_fee_coin: period.period_platform_fee_coin || 0,
+          platform_fee_vnd:
+            (period.period_platform_fee_coin || 0) * coinToVnd,
+          gross_coin: period.period_gross_coin || 0,
+          chapters_sold: period.period_chapters_sold || 0,
+        },
+        pending_withdrawal: {
+          coin: pendingWithdrawalAgg[0]?.pending_coin || 0,
+          vnd: pendingWithdrawalAgg[0]?.pending_vnd || 0,
+          count: pendingWithdrawalAgg[0]?.count || 0,
+        },
+        total_withdrawn: {
+          coin: totalWithdrawnAgg[0]?.total_coin || 0,
+          vnd: totalWithdrawnAgg[0]?.total_vnd || 0,
+          count: totalWithdrawnAgg[0]?.count || 0,
+        },
+        monthly: monthlyAgg.map((m) => ({
+          year: m._id.year,
+          month: m._id.month,
+          platform_fee_coin: m.platform_fee_coin,
+          platform_fee_vnd: m.platform_fee_coin * coinToVnd,
+          gross_coin: m.gross_coin,
+          net_coin: m.net_coin,
+          chapters_sold: m.chapters_sold,
+        })),
+        top_series: topSeriesAgg,
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// 11. ADMIN VIEW READER/MANGAKA/ASSISTANT WALLET (chỉ xem — không sửa được)
+// ════════════════════════════════════════════════════════════════════════════
+
+/**
+ * @swagger
+ * /admin/users/{id}/financials:
+ *   get:
+ *     summary: (Admin) Xem thông tin tài chính của 1 user
+ *     description: |
+ *       **Reader**: balance, total_deposited, total_spent, lịch sử nạp (Payment), lịch sử mua chapter (PurchasedChapter).
+ *       **Mangaka/Assistant**: pending_balance, available_balance, total_revenue, total_withdrawn, lịch sử Revenue, lịch sử Withdrawal.
+ *       **Khác**: trả về ví rỗng (không có wallet).
+ *       Admin CHỈ ĐỌC — không có endpoint sửa balance/revenue. Endpoint duy nhất
+ *       tác động tới tiền là withdraw approval (chuyển available → withdrawn).
+ *     tags: [Admin - Monetization]
+ *     security: [{ BearerAuth: [] }]
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema: { type: string }
+ *     responses:
+ *       200: { description: OK }
+ *       404: { description: User not found }
+ */
+router.get("/users/:id/financials", async (req, res, next) => {
+  try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+      return next(new AppError("Invalid id", 400));
+    }
+    const user = await User.findById(req.params.id).lean();
+    if (!user) return next(new AppError("User not found", 404));
+
+    const role = user.role;
+    const isReader = role === "Reader";
+    const isMangakaOrAssistant =
+      role === "Mangaka" || role === "Assistant";
+
+    const wallet = await Wallet.findOne({ user_id: req.params.id }).lean();
+
+    const result = {
+      user: {
+        _id: user._id,
+        username: user.username,
+        full_name: user.full_name,
+        email: user.email,
+        role: user.role,
+        status: user.status,
+      },
+      wallet: wallet || null,
+    };
+
+    if (isReader) {
+      const [payments, purchases, txSummary] = await Promise.all([
+        Payment.find({ user_id: req.params.id })
+          .sort({ createdAt: -1 })
+          .limit(50)
+          .populate("coin_package_id", "name price_vnd")
+          .lean(),
+        PurchasedChapter.find({ reader_id: req.params.id })
+          .sort({ purchased_at: -1 })
+          .limit(50)
+          .populate({
+            path: "chapter_id",
+            select: "chapter_number title series_id coin_price",
+            populate: {
+              path: "series_id",
+              select: "name cover_image_url",
+            },
+          })
+          .lean(),
+        WalletTransaction.aggregate([
+          { $match: { user_id: user._id } },
+          { $group: { _id: "$type", total: { $sum: "$coin_amount" } } },
+        ]),
+      ]);
+
+      result.role_view = "reader";
+      result.deposits = {
+        history: payments,
+        total_paid: payments
+          .filter((p) => p.status === "paid")
+          .reduce((s, p) => s + (p.amount_vnd || 0), 0),
+        total_coin_received: payments
+          .filter((p) => p.status === "paid")
+          .reduce((s, p) => s + (p.coin_amount || 0), 0),
+        count: payments.length,
+      };
+      result.purchases = {
+        history: purchases,
+        total_chapters_bought: purchases.length,
+        total_coin_spent: purchases.reduce(
+          (s, p) => s + (p.price || 0),
+          0
+        ),
+      };
+      result.transaction_summary = txSummary;
+
+      // ─── Financial Summary (Reader) ─────────────────────────────────
+      // Tổng hợp nhanh toàn bộ số liệu tài chính của Reader.
+      const depositTx = (txSummary || []).find((t) => t._id === "Deposit");
+      const purchaseTx = (txSummary || []).find((t) => t._id === "Purchase");
+      const refundTx = (txSummary || []).find((t) => t._id === "Refund");
+      result.financial_summary = {
+        current_coin: wallet ? wallet.balance || 0 : 0,
+        current_balance: wallet ? wallet.balance || 0 : 0,
+        pending_revenue: 0, // Reader không có pending revenue
+        available_balance: 0, // Reader không có available balance
+        total_deposit: depositTx ? depositTx.total : wallet?.total_deposited || 0,
+        total_purchase: purchaseTx
+          ? purchaseTx.total
+          : wallet?.total_spent || 0,
+        total_revenue: 0,
+        total_withdrawal: 0,
+        total_refund: refundTx ? refundTx.total : 0,
+      };
+    } else if (isMangakaOrAssistant) {
+      // Tìm tất cả series liên quan: nếu là Mangaka → author; nếu Assistant → cooperation.
+      const revenueFilter = { user_id: req.params.id };
+      let relatedSeriesIds = [];
+
+      if (role === "Mangaka") {
+        const Series = require("../models/Series");
+        const userSeries = await Series.find({ author_id: req.params.id })
+          .select("_id name")
+          .lean();
+        relatedSeriesIds = userSeries.map((s) => s._id);
+      } else {
+        // Assistant: lấy series qua Cooperation đã ký
+        const coops = await Cooperation.find({
+          assistant_id: req.params.id,
+          agreed_at: { $ne: null },
+        })
+          .select("series_id")
+          .lean();
+        relatedSeriesIds = coops
+          .map((c) => c.series_id)
+          .filter(Boolean);
+      }
+
+      const [revenues, withdrawals, txSummary, revenueBySeriesAgg] =
+        await Promise.all([
+          Revenue.find(revenueFilter)
+            .sort({ createdAt: -1 })
+            .limit(100)
+            .populate("series_id", "name")
+            .populate("chapter_id", "chapter_number title")
+            .populate("purchased_chapter_id", "price purchased_at")
+            .populate("reader_id", "username full_name")
+            .lean(),
+          Withdrawal.find({ user_id: req.params.id })
+            .sort({ createdAt: -1 })
+            .limit(100)
+            .populate("processed_by", "username full_name")
+            .lean(),
+          WalletTransaction.aggregate([
+            { $match: { user_id: user._id } },
+            { $group: { _id: "$type", total: { $sum: "$coin_amount" } } },
+          ]),
+          // Aggregate revenue theo series (cho user cụ thể).
+          // gross_coin_amount lưu full price trên MỌI record cùng purchase
+          // (Mangaka + Assistant), nên group theo purchased_chapter_id trước
+          // rồi $first lấy 1 bản, tránh nhân đôi khi 1 chapter có assistant.
+          Revenue.aggregate([
+            { $match: revenueFilter },
+            {
+              $group: {
+                _id: {
+                  series_id: "$series_id",
+                  purchased_chapter_id: "$purchased_chapter_id",
+                },
+                total_coin: { $sum: "$coin_amount" },
+                total_vnd: { $sum: "$vnd_amount" },
+                total_gross: { $first: "$gross_coin_amount" },
+                total_platform_fee: { $sum: "$platform_fee_coin" },
+                pending_coin: {
+                  $sum: {
+                    $cond: [
+                      { $eq: ["$status", "pending"] },
+                      "$coin_amount",
+                      0,
+                    ],
+                  },
+                },
+                available_coin: {
+                  $sum: {
+                    $cond: [
+                      { $eq: ["$status", "available"] },
+                      "$coin_amount",
+                      0,
+                    ],
+                  },
+                },
+                withdrawn_coin: {
+                  $sum: {
+                    $cond: [
+                      { $eq: ["$status", "withdrawn"] },
+                      "$coin_amount",
+                      0,
+                    ],
+                  },
+                },
+              },
+            },
+            {
+              $group: {
+                _id: "$_id.series_id",
+                total_coin: { $sum: "$total_coin" },
+                total_vnd: { $sum: "$total_vnd" },
+                total_gross: { $sum: "$total_gross" },
+                total_platform_fee: { $sum: "$total_platform_fee" },
+                pending_coin: { $sum: "$pending_coin" },
+                available_coin: { $sum: "$available_coin" },
+                withdrawn_coin: { $sum: "$withdrawn_coin" },
+              },
+            },
+            { $sort: { total_coin: -1 } },
+          ]),
+        ]);
+
+      // Lấy thông tin series cho revenueBySeries
+      const Series = require("../models/Series");
+      const seriesList =
+        relatedSeriesIds.length > 0
+          ? await Series.find({ _id: { $in: relatedSeriesIds } })
+              .select("_id name cover_image_url")
+              .lean()
+          : [];
+      const seriesMap = new Map(seriesList.map((s) => [String(s._id), s]));
+
+      // Merge revenue aggregate với thông tin series
+      const revenueBySeries = revenueBySeriesAgg.map((r) => {
+        const sId = String(r._id);
+        const info = seriesMap.get(sId);
+        return {
+          series_id: r._id,
+          series_name: info ? info.name : "(đã xoá)",
+          cover_image_url: info ? info.cover_image_url : "",
+          total_coin: r.total_coin || 0,
+          total_vnd: r.total_vnd || 0,
+          total_gross_coin: r.total_gross || 0,
+          total_platform_fee_coin: r.total_platform_fee || 0,
+          chapters_sold: r.chapters_sold || 0,
+          by_status: {
+            pending_coin: r.pending_coin || 0,
+            available_coin: r.available_coin || 0,
+            withdrawn_coin: r.withdrawn_coin || 0,
+          },
+        };
+      });
+
+      result.role_view = "mangaka_assistant";
+      result.bank_info = {
+        bank_name: user.bank_name || "",
+        account_holder: user.account_holder || "",
+        bank_account_number: user.bank_account_number || "",
+        has_bank_info: !!(
+          user.bank_name && user.account_holder && user.bank_account_number
+        ),
+      };
+      result.revenues = {
+        history: revenues,
+        by_status: {
+          pending: revenues
+            .filter((r) => r.status === "pending")
+            .reduce((s, r) => s + (r.coin_amount || 0), 0),
+          available: revenues
+            .filter((r) => r.status === "available")
+            .reduce((s, r) => s + (r.coin_amount || 0), 0),
+          withdrawn: revenues
+            .filter((r) => r.status === "withdrawn")
+            .reduce((s, r) => s + (r.coin_amount || 0), 0),
+        },
+        total: revenues.length,
+      };
+      result.withdrawals = {
+        history: withdrawals,
+        by_status: {
+          pending: withdrawals.filter((w) => w.status === "pending").length,
+          approved: withdrawals.filter((w) => w.status === "approved").length,
+          completed: withdrawals.filter((w) => w.status === "completed").length,
+          rejected: withdrawals.filter((w) => w.status === "rejected").length,
+          cancelled: withdrawals.filter((w) => w.status === "cancelled").length,
+        },
+        total_vnd_withdrawn: withdrawals
+          .filter((w) => w.status === "completed")
+          .reduce((s, w) => s + (w.vnd_amount || 0), 0),
+      };
+      result.transaction_summary = txSummary;
+
+      // ─── Cooperation Revenue Share ──────────────────────────────────
+      // Lấy tất cả Cooperation đã ký liên quan đến user này.
+      const cooperationFilter =
+        role === "Mangaka"
+          ? { mangaka_id: req.params.id, agreed_at: { $ne: null } }
+          : { assistant_id: req.params.id, agreed_at: { $ne: null } };
+      const cooperations = await Cooperation.find(cooperationFilter)
+        .populate("mangaka_id", "username full_name email")
+        .populate("assistant_id", "username full_name email")
+        .populate("series_id", "name")
+        .lean();
+      result.cooperation_revenue_share = cooperations.map((c) => ({
+        cooperation_id: c._id,
+        mangaka: c.mangaka_id
+          ? {
+              _id: c.mangaka_id._id,
+              username: c.mangaka_id.username,
+              full_name: c.mangaka_id.full_name,
+            }
+          : null,
+        assistant: c.assistant_id
+          ? {
+              _id: c.assistant_id._id,
+              username: c.assistant_id.username,
+              full_name: c.assistant_id.full_name,
+            }
+          : null,
+        series:
+          c.series_id && typeof c.series_id === "object"
+            ? {
+                _id: c.series_id._id,
+                name: c.series_id.name,
+              }
+            : null, // null = áp dụng cho tất cả series
+        revenue_shares: c.revenue_shares || [],
+        agreed_at: c.agreed_at,
+      }));
+
+      // ─── Financial Summary (Mangaka/Assistant) ───────────────────────
+      const revenueTx = (txSummary || []).find((t) => t._id === "Revenue");
+      const withdrawalTx = (txSummary || []).find(
+        (t) => t._id === "Withdrawal"
+      );
+      const refundTx = (txSummary || []).find((t) => t._id === "Refund");
+      result.financial_summary = {
+        current_coin: wallet ? wallet.balance || 0 : 0,
+        current_balance: wallet ? wallet.balance || 0 : 0,
+        pending_revenue: wallet ? wallet.pending_balance || 0 : 0,
+        available_balance: wallet ? wallet.available_balance || 0 : 0,
+        total_deposit: wallet?.total_deposited || 0,
+        total_purchase: wallet?.total_spent || 0,
+        total_revenue: revenueTx
+          ? revenueTx.total
+          : wallet?.total_revenue || 0,
+        total_withdrawal: withdrawalTx
+          ? withdrawalTx.total
+          : wallet?.total_withdrawn || 0,
+        total_refund: refundTx ? refundTx.total : 0,
+      };
+
+      result.revenue_by_series = revenueBySeries;
+    } else {
+      result.role_view = "other";
+      result.note =
+        "User role không có wallet/revenue — chỉ hiển thị thông tin cơ bản.";
+      result.financial_summary = {
+        current_coin: 0,
+        current_balance: 0,
+        pending_revenue: 0,
+        available_balance: 0,
+        total_deposit: 0,
+        total_purchase: 0,
+        total_revenue: 0,
+        total_withdrawal: 0,
+        total_refund: 0,
+      };
+    }
+
+    res.json({ success: true, data: result });
+  } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * @swagger
+ * /admin/users/{id}/financials/transactions:
+ *   get:
+ *     summary: (Admin) Lịch sử biến động ví của 1 user (đầy đủ, có phân trang)
+ *     description: Admin xem toàn bộ WalletTransaction của 1 user để đối chiếu.
+ *     tags: [Admin - Monetization]
+ *     security: [{ BearerAuth: [] }]
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema: { type: string }
+ *       - in: query
+ *         name: type
+ *         schema: { type: string, enum: [Deposit, Purchase, Revenue, Withdrawal, Refund] }
+ *       - in: query
+ *         name: from_date
+ *         schema: { type: string, format: date }
+ *         description: Lọc từ ngày (YYYY-MM-DD hoặc ISO). Mặc định 00:00:00 của ngày đó.
+ *       - in: query
+ *         name: to_date
+ *         schema: { type: string, format: date }
+ *         description: Lọc đến ngày (YYYY-MM-DD hoặc ISO). Mặc định 23:59:59.999 của ngày đó.
+ *       - in: query
+ *         name: sort
+ *         schema: { type: string, enum: [createdAt_desc, createdAt_asc], default: createdAt_desc }
+ *         description: Sắp xếp theo createdAt
+ *       - in: query
+ *         name: page
+ *         schema: { type: integer, default: 1 }
+ *       - in: query
+ *         name: limit
+ *         schema: { type: integer, default: 50 }
+ *     responses:
+ *       200: { description: OK }
+ */
+router.get(
+  "/users/:id/financials/transactions",
+  async (req, res, next) => {
+    try {
+      if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+        return next(new AppError("Invalid id", 400));
+      }
+      const user = await User.findById(req.params.id)
+        .select("_id role username")
+        .lean();
+      if (!user) return next(new AppError("User not found", 404));
+
+      const page = Math.max(1, parseInt(req.query.page) || 1);
+      const limit = Math.min(200, Math.max(1, parseInt(req.query.limit) || 50));
+      const skip = (page - 1) * limit;
+      const filter = { user_id: req.params.id };
+      if (req.query.type) filter.type = req.query.type;
+
+      // Filter theo khoảng ngày (from_date, to_date)
+      // from_date: ISO date string hoặc YYYY-MM-DD
+      // to_date:   ISO date string hoặc YYYY-MM-DD
+      // Mặc định lọc inclusive từ 00:00:00 của from_date đến 23:59:59.999 của to_date
+      if (req.query.from_date || req.query.to_date) {
+        filter.createdAt = {};
+        if (req.query.from_date) {
+          const from = new Date(req.query.from_date);
+          if (!isNaN(from.getTime())) {
+            from.setHours(0, 0, 0, 0);
+            filter.createdAt.$gte = from;
+          }
+        }
+        if (req.query.to_date) {
+          const to = new Date(req.query.to_date);
+          if (!isNaN(to.getTime())) {
+            to.setHours(23, 59, 59, 999);
+            filter.createdAt.$lte = to;
+          }
+        }
+        // Nếu cả 2 đều invalid → xoá filter rỗng
+        if (Object.keys(filter.createdAt).length === 0) {
+          delete filter.createdAt;
+        }
+      }
+
+      const sortField = req.query.sort === "createdAt_asc" ? 1 : -1;
+      const [items, total] = await Promise.all([
+        WalletTransaction.find(filter)
+          .sort({ createdAt: sortField })
+          .skip(skip)
+          .limit(limit)
+          .populate("chapter_id", "chapter_number title")
+          .populate("payment_id", "order_code amount_vnd status")
+          .populate("revenue_id")
+          .populate("withdrawal_id", "status coin_amount vnd_amount")
+          .lean(),
+        WalletTransaction.countDocuments(filter),
+      ]);
+
+      res.json({
+        success: true,
+        data: {
+          user: {
+            _id: user._id,
+            username: user.username,
+            role: user.role,
+          },
+          filter: {
+            type: req.query.type || null,
+            from_date: req.query.from_date || null,
+            to_date: req.query.to_date || null,
+            sort: req.query.sort || "createdAt_desc",
+          },
+          transactions: items,
+          pagination: {
+            total,
+            page,
+            limit,
+            pages: Math.ceil(total / limit),
+          },
+        },
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
+
+// ════════════════════════════════════════════════════════════════════════════
+// 12. ADMIN DASHBOARD FINANCE — Top earners / Top series / Top readers
+//     Tách biệt với /admin/dashboard (chỉ là financial analytics).
+//     Admin chỉ đọc.
+// ════════════════════════════════════════════════════════════════════════════
+
+/**
+ * @swagger
+ * /admin/dashboard/finance:
+ *   get:
+ *     summary: (Admin) Dashboard tài chính — Top Mangaka/Assistant/Reader/Series
+ *     description: |
+ *       Trả về top earners theo doanh thu (Mangaka, Assistant), top reader theo
+ *       tổng Coin đã dùng mua chapter, top series theo số chapter đã bán và
+ *       theo platform fee đóng góp.
+ *     tags: [Admin - Dashboard]
+ *     security: [{ BearerAuth: [] }]
+ *     parameters:
+ *       - in: query
+ *         name: limit
+ *         schema: { type: integer, default: 10 }
+ *         description: Số lượng top trả về cho mỗi danh sách (tối đa 50)
+ *     responses:
+ *       200: { description: OK }
+ */
+router.get("/dashboard/finance", async (req, res, next) => {
+  try {
+    const limit = Math.min(50, Math.max(1, parseInt(req.query.limit) || 10));
+    const config = require("../config/payment");
+    const coinToVnd = config.monetization.coinToVndRate;
+
+    // 1. Top Mangaka theo doanh thu (chỉ role Mangaka).
+    // gross_coin_amount lưu full price trên MỌI record cùng purchase (Mangaka +
+    // Assistant), nên group theo purchased_chapter_id trước để lấy 1 bản đại
+    // diện. Sau đó nhóm theo user_id mới tính tổng.
+    const topMangakaAgg = await Revenue.aggregate([
+      { $match: { user_role: "Mangaka" } },
+      {
+        $group: {
+          _id: {
+            user_id: "$user_id",
+            purchased_chapter_id: "$purchased_chapter_id",
+          },
+          total_coin: { $sum: "$coin_amount" },
+          total_vnd: { $sum: "$vnd_amount" },
+          total_gross: { $first: "$gross_coin_amount" },
+          total_platform_fee: { $sum: "$platform_fee_coin" },
+          withdrawn_coin: {
+            $sum: {
+              $cond: [
+                { $eq: ["$status", "withdrawn"] },
+                "$coin_amount",
+                0,
+              ],
+            },
+          },
+        },
+      },
+      {
+        $group: {
+          _id: "$_id.user_id",
+          total_coin: { $sum: "$total_coin" },
+          total_vnd: { $sum: "$total_vnd" },
+          total_gross: { $sum: "$total_gross" },
+          total_platform_fee: { $sum: "$total_platform_fee" },
+          chapters_sold: { $sum: 1 },
+          withdrawn_coin: { $sum: "$withdrawn_coin" },
+        },
+      },
+      { $sort: { total_coin: -1 } },
+      { $limit: limit },
+    ]);
+
+    // 2. Top Assistant theo doanh thu (chỉ role Assistant).
+    const topAssistantAgg = await Revenue.aggregate([
+      { $match: { user_role: "Assistant" } },
+      {
+        $group: {
+          _id: {
+            user_id: "$user_id",
+            purchased_chapter_id: "$purchased_chapter_id",
+          },
+          total_coin: { $sum: "$coin_amount" },
+          total_vnd: { $sum: "$vnd_amount" },
+          total_gross: { $first: "$gross_coin_amount" },
+          total_platform_fee: { $sum: "$platform_fee_coin" },
+          withdrawn_coin: {
+            $sum: {
+              $cond: [
+                { $eq: ["$status", "withdrawn"] },
+                "$coin_amount",
+                0,
+              ],
+            },
+          },
+        },
+      },
+      {
+        $group: {
+          _id: "$_id.user_id",
+          total_coin: { $sum: "$total_coin" },
+          total_vnd: { $sum: "$total_vnd" },
+          total_gross: { $sum: "$total_gross" },
+          total_platform_fee: { $sum: "$total_platform_fee" },
+          chapters_sold: { $sum: 1 },
+          withdrawn_coin: { $sum: "$withdrawn_coin" },
+        },
+      },
+      { $sort: { total_coin: -1 } },
+      { $limit: limit },
+    ]);
+
+    // 3. Top Reader theo tổng Coin đã sử dụng (từ PurchasedChapter.price)
+    const topReaderAgg = await PurchasedChapter.aggregate([
+      {
+        $group: {
+          _id: "$reader_id",
+          total_coin_spent: { $sum: "$price" },
+          chapters_bought: { $sum: 1 },
+        },
+      },
+      { $sort: { total_coin_spent: -1 } },
+      { $limit: limit },
+    ]);
+
+    // 4. Top Series theo số Chapter bán (đếm PurchasedChapter theo series_id)
+    const topSeriesByChaptersSold = await PurchasedChapter.aggregate([
+      {
+        $group: {
+          _id: "$series_id",
+          chapters_sold: { $sum: 1 },
+          total_coin: { $sum: "$price" },
+        },
+      },
+      { $sort: { chapters_sold: -1 } },
+      { $limit: limit },
+    ]);
+
+    // 5. Top Series theo Platform Fee (từ Revenue.platform_fee_coin).
+    // Group theo purchased_chapter_id trước để gross không bị nhân N lần,
+    // platform_fee_coin cộng per-record vẫn đúng (= platformFeeCoin / purchase).
+    const topSeriesByPlatformFee = await Revenue.aggregate([
+      {
+        $group: {
+          _id: {
+            series_id: "$series_id",
+            purchased_chapter_id: "$purchased_chapter_id",
+          },
+          total_platform_fee_coin: { $sum: "$platform_fee_coin" },
+          total_gross_coin: { $first: "$gross_coin_amount" },
+        },
+      },
+      {
+        $group: {
+          _id: "$_id.series_id",
+          total_platform_fee_coin: { $sum: "$total_platform_fee_coin" },
+          total_gross_coin: { $sum: "$total_gross_coin" },
+          chapters_sold: { $sum: 1 },
+        },
+      },
+      { $sort: { total_platform_fee_coin: -1 } },
+      { $limit: limit },
+    ]);
+
+    // Populate thông tin User / Series cho từng nhóm
+    const userIds = new Set();
+    const seriesIds = new Set();
+    topMangakaAgg.forEach((r) => userIds.add(String(r._id)));
+    topAssistantAgg.forEach((r) => userIds.add(String(r._id)));
+    topReaderAgg.forEach((r) => userIds.add(String(r._id)));
+    topSeriesByChaptersSold.forEach((s) => seriesIds.add(String(s._id)));
+    topSeriesByPlatformFee.forEach((s) => seriesIds.add(String(s._id)));
+
+    const [users, series] = await Promise.all([
+      userIds.size > 0
+        ? User.find({ _id: { $in: Array.from(userIds) } })
+            .select("_id username full_name email role avatar_url")
+            .lean()
+        : [],
+      seriesIds.size > 0
+        ? Series.find({ _id: { $in: Array.from(seriesIds) } })
+            .select("_id name cover_image_url author_id")
+            .populate("author_id", "username full_name")
+            .lean()
+        : [],
+    ]);
+
+    const userMap = new Map(users.map((u) => [String(u._id), u]));
+    const seriesMap = new Map(series.map((s) => [String(s._id), s]));
+
+    const enrichUser = (userId, data, extra = {}) => {
+      const u = userMap.get(String(userId));
+      return {
+        user_id: userId,
+        username: u ? u.username : null,
+        full_name: u ? u.full_name : null,
+        avatar_url: u ? u.avatar_url : "",
+        ...extra,
+        ...data,
+      };
+    };
+
+    const enrichSeries = (seriesId, data) => {
+      const s = seriesMap.get(String(seriesId));
+      return {
+        series_id: seriesId,
+        series_name: s ? s.name : "(đã xoá)",
+        cover_image_url: s ? s.cover_image_url : "",
+        author: s && s.author_id
+          ? {
+              _id: s.author_id._id,
+              username: s.author_id.username,
+              full_name: s.author_id.full_name,
+            }
+          : null,
+        ...data,
+      };
+    };
+
+    res.json({
+      success: true,
+      data: {
+        config: {
+          coin_to_vnd_rate: coinToVnd,
+        },
+        top_mangaka: topMangakaAgg.map((r) =>
+          enrichUser(r._id, {
+            role: "Mangaka",
+            total_coin: r.total_coin || 0,
+            total_vnd: r.total_vnd || 0,
+            total_gross_coin: r.total_gross || 0,
+            total_platform_fee_coin: r.total_platform_fee || 0,
+            chapters_sold: r.chapters_sold || 0,
+            withdrawn_coin: r.withdrawn_coin || 0,
+          })
+        ),
+        top_assistant: topAssistantAgg.map((r) =>
+          enrichUser(r._id, {
+            role: "Assistant",
+            total_coin: r.total_coin || 0,
+            total_vnd: r.total_vnd || 0,
+            total_gross_coin: r.total_gross || 0,
+            total_platform_fee_coin: r.total_platform_fee || 0,
+            chapters_sold: r.chapters_sold || 0,
+            withdrawn_coin: r.withdrawn_coin || 0,
+          })
+        ),
+        top_reader: topReaderAgg.map((r) =>
+          enrichUser(r._id, {
+            role: "Reader",
+            total_coin_spent: r.total_coin_spent || 0,
+            chapters_bought: r.chapters_bought || 0,
+          })
+        ),
+        top_series_by_chapters_sold: topSeriesByChaptersSold.map((r) =>
+          enrichSeries(r._id, {
+            chapters_sold: r.chapters_sold || 0,
+            total_coin: r.total_coin || 0,
+          })
+        ),
+        top_series_by_platform_fee: topSeriesByPlatformFee.map((r) =>
+          enrichSeries(r._id, {
+            total_platform_fee_coin: r.total_platform_fee_coin || 0,
+            total_platform_fee_vnd:
+              (r.total_platform_fee_coin || 0) * coinToVnd,
+            total_gross_coin: r.total_gross_coin || 0,
+            chapters_sold: r.chapters_sold || 0,
+          })
+        ),
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
 });
 
 module.exports = router;

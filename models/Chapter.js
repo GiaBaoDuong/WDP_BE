@@ -87,13 +87,22 @@ const chapterSchema = new mongoose.Schema(
     // ─── Monetization: chapter miễn phí / trả phí ────────────────────────
     // FREE: ai cũng đọc được khi published
     // PAID: reader phải mua bằng Coin mới đọc được nội dung page
+    //
+    // Quy tắc cố định giá:
+    //   - Chapter 1            → FREE cứng (coin_price = 0)
+    //   - Chapter 2 trở đi      → PAID với giá CỐ ĐỊNH 5 Coin
+    //                             (muốn FREE thì truyền rõ access_type = "FREE")
     access_type: {
       type: String,
       enum: ["FREE", "PAID"],
-      default: "FREE",
+      default: "PAID",
       index: true,
     },
-    coin_price: { type: Number, default: 0, min: 0 },
+    coin_price: {
+      type: Number,
+      default: 5,
+      min: 0,
+    },
     // Scheduling fields
     scheduled_publish_at: { type: Date, default: null },
     publication_duration_days: {

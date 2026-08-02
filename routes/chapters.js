@@ -9,6 +9,7 @@ const Chapter = require("../models/Chapter");
 const Page = require("../models/Page");
 const PageLayer = require("../models/PageLayer");
 const Series = require("../models/Series");
+const PurchasedChapter = require("../models/PurchasedChapter");
 const { uploadLayer, cloudinary } = require("../middleware/uploadCloudinary");
 const { uploadChapterPage } = require("../middleware/uploadChapterPage");
 const { uploadToCloudinary: uploadSingleToCloudinary, uploadCover } = require("../middleware/uploadCoverCloudinary");
@@ -18,8 +19,7 @@ const Cooperation = require("../models/Cooperation");
 const PageNote = require("../models/PageNote");
 const Notification = require("../models/Notification");
 const upload = require("../middleware/upload");
-const { ROLES } = require("../utils/constants");
-const { FREE_CHAPTER_AUTO_LIMIT } = require("../utils/constants");
+const { ROLES, FREE_CHAPTER_AUTO_LIMIT, FIXED_CHAPTER_COIN_PRICE } = require("../utils/constants");
 const { notifyChapterAssigned } = require("../services/notificationService");
 const {
   notifyChapterAssistantWorkComplete,
@@ -119,6 +119,93 @@ function deriveRevisionAnnotations(task) {
     .map((n) => toApiRevisionAnnotation(n, task._id));
 }
 
+// ─── Helpers: validate assistant + lock after sale ───────────────────────────
+// Quy tắc (xem yêu cầu #5):
+//   1. assistant_id phải là ObjectId hợp lệ
+//   2. User tồn tại và role = "Assistant"
+//   3. Assistant không trùng Mangaka
+//   4. Có Cooperation accepted với Mangaka
+//   5. Cooperation.series_id = null (chung) HOẶC = seriesId của chapter
+//
+// Khóa (yêu cầu #8):
+//   - Nếu chapter đã có ít nhất 1 PurchasedChapter → không cho phép
+//     thay đổi hoặc xóa assistant_id (code: assistant_locked_after_sale).
+
+/**
+ * Validate assistant_id trước khi gán vào chapter.
+ *
+ * @returns {Promise<[Error|null, string|null]>}
+ *   [error, validatedAssistantId]
+ */
+async function validateAssistantForChapter(assistantId, mangakaId, seriesId) {
+  if (!assistantId) {
+    return [null, null];
+  }
+  if (!mongoose.Types.ObjectId.isValid(assistantId)) {
+    return [
+      new AppError("assistant_id không hợp lệ", 400, {
+        code: "assistant_invalid_id",
+      }),
+      null,
+    ];
+  }
+  if (String(assistantId) === String(mangakaId)) {
+    return [
+      new AppError(
+        "assistant_id không được trùng với Mangaka sở hữu series",
+        400,
+        { code: "assistant_is_mangaka" }
+      ),
+      null,
+    ];
+  }
+  const assistant = await User.findById(assistantId);
+  if (!assistant) {
+    return [
+      new AppError("Assistant không tồn tại", 404, {
+        code: "assistant_not_found",
+      }),
+      null,
+    ];
+  }
+  if (assistant.role !== "Assistant") {
+    return [
+      new AppError(
+        "User được gán làm assistant phải có role = Assistant",
+        400,
+        { code: "invalid_assistant_role" }
+      ),
+      null,
+    ];
+  }
+  const cooperation = await Cooperation.findOne({
+    mangaka_id: mangakaId,
+    assistant_id: assistantId,
+    agreed_at: { $ne: null },
+    $or: [{ series_id: seriesId }, { series_id: null }],
+  });
+  if (!cooperation) {
+    return [
+      new AppError(
+        "Assistant chưa ký hợp đồng hợp tác hợp lệ với Mangaka cho series này",
+        403,
+        { code: "assistant_not_in_cooperation" }
+      ),
+      null,
+    ];
+  }
+  return [null, assistantId];
+}
+
+/**
+ * Kiểm tra chapter đã phát sinh giao dịch mua nào chưa.
+ * @returns {Promise<boolean>}
+ */
+async function chapterHasPurchases(chapterId) {
+  const cnt = await PurchasedChapter.countDocuments({ chapter_id: chapterId });
+  return cnt > 0;
+}
+
 // ─── POST /chapters ──────────────────────────────────────────────────────────
 // Mangaka tạo chapter thuộc series
 /**
@@ -150,7 +237,7 @@ function deriveRevisionAnnotations(task) {
  *                 description: Tiêu đề chapter (optional)
  *               assistant_id:
  *                 type: string
- *                 description: User ID của assistant (optional, nhưng bắt buộc khi series đã publish). Sẽ set chapter.assistant_id ngay khi tạo.
+ *                 description: User ID của assistant (optional, nhưng bắt buộc khi series đã publish). Sẽ set chapter.assistant_id ngay khi tạo. Phải có Cooperation đã accepted với Mangaka (cùng series hoặc chung). Logic chia doanh thu: Mangaka 60% / Assistant 40% (sau khi trừ 20% phí nền tảng).
  *               access_type:
  *                 type: string
  *                 enum: [FREE, PAID]
@@ -162,9 +249,11 @@ function deriveRevisionAnnotations(task) {
  *       201:
  *         description: Chapter được tạo thành công
  *       400:
- *         description: Thiếu series_id hoặc chapter_number
+ *         description: Thiếu series_id hoặc chapter_number. Lỗi validation assistant_id: assistant_invalid_id, assistant_is_mangaka, invalid_assistant_role, assistant_not_in_cooperation.
+ *       403:
+ *         description: Assistant có id hợp lệ nhưng chưa có Cooperation hợp lệ với Mangaka.
  *       404:
- *         description: Series not found hoặc unauthorized
+ *         description: Series not found, unauthorized, hoặc assistant_not_found.
  *       409:
  *         description: Chapter number đã tồn tại trong series
  */
@@ -194,44 +283,39 @@ router.post("/", authMiddleware, requireMangaka, uploadPages.array("pages", 50),
     if (!series) return next(new AppError("Series not found or unauthorized", 404));
 
     // ─── Determine access_type & coin_price ───────────────────────────────
-    // Quy tắc:
-    //   - Chapter 1                → luôn FREE (không thể đổi sang PAID, coin_price = 0).
-    //   - Chapter >= 2 (mặc định)  → PAID, BẮT BUỘC nhập coin_price > 0.
-    //   - Chapter >= 2 (override)   → nếu Mangaka muốn FREE thì truyền rõ access_type=FREE.
-    const rawAccessType = req.body.access_type;
-    let accessType = rawAccessType ? String(rawAccessType).toUpperCase() : null;
-    let coinPrice = Number(req.body.coin_price || 0);
+    // Quy tắc mới (cố định giá):
+    //   - Chapter 1                → luôn FREE, coin_price = 0
+    //                                 (kể cả user truyền access_type=PAID cũng bị ép về FREE).
+    //   - Chapter >= 2              → mặc định PAID, coin_price CỐ ĐỊNH = 5 Coin
+    //                                 (Mangaka không cần truyền coin_price; nếu truyền cũng bị bỏ).
+    //                                 Muốn FREE thì truyền rõ access_type=FREE.
     const num = Number(chapterNumber);
     if (!Number.isFinite(num) || num < 1) {
       return next(new AppError("chapter_number không hợp lệ", 400));
     }
 
+    let accessType;
+    let coinPrice;
+
     if (num <= FREE_CHAPTER_AUTO_LIMIT) {
-      // Chapter 1: ép FREE, bỏ qua mọi input của user
+      // Chapter 1: ép FREE cứng, bỏ qua mọi input của user
       accessType = "FREE";
       coinPrice = 0;
     } else {
-      // Chapter 2+: mặc định PAID nếu không truyền access_type
-      if (!accessType) {
+      // Chapter 2+: cho phép user override access_type = FREE.
+      // Nếu không truyền / truyền PAID → mặc định PAID, giá cố định 5 Coin.
+      const rawAccessType = req.body.access_type;
+      const upper = rawAccessType ? String(rawAccessType).toUpperCase() : null;
+      if (upper === "FREE") {
+        accessType = "FREE";
+        coinPrice = 0;
+      } else if (upper === "PAID" || upper === null || upper === undefined) {
         accessType = "PAID";
-      }
-      if (!["FREE", "PAID"].includes(accessType)) {
+        coinPrice = FIXED_CHAPTER_COIN_PRICE;
+      } else {
         return next(
           new AppError("access_type phải là FREE hoặc PAID", 400)
         );
-      }
-      if (accessType === "PAID") {
-        if (!Number.isFinite(coinPrice) || coinPrice <= 0) {
-          return next(
-            new AppError(
-              `Chapter #${num} mặc định là PAID, bắt buộc phải nhập coin_price > 0. Nếu muốn FREE thì truyền rõ access_type=FREE.`,
-              400
-            )
-          );
-        }
-      } else {
-        // FREE override
-        coinPrice = 0;
       }
     }
 
@@ -240,25 +324,20 @@ router.post("/", authMiddleware, requireMangaka, uploadPages.array("pages", 50),
 
     // Nếu FE gửi assistant_id ở top-level → validate User + Cooperation ngay tại đây
     // để set chapter.assistant_id ngay khi tạo (FE đã gửi sẵn theo contract mới).
+    // Validate đầy đủ theo quy tắc mới (yêu cầu #5):
+    //   - ObjectId hợp lệ
+    //   - User tồn tại + role Assistant
+    //   - Không trùng Mangaka
+    //   - Có Cooperation accepted (cùng series hoặc chung)
     let validatedAssistantId = null;
     if (assistantIdTopLevel) {
-      if (!mongoose.Types.ObjectId.isValid(assistantIdTopLevel)) {
-        return next(new AppError("assistant_id không hợp lệ", 400));
-      }
-      const assistant = await User.findById(assistantIdTopLevel);
-      if (!assistant || assistant.role !== "Assistant") {
-        return next(new AppError("User không phải là Assistant", 400));
-      }
-      const cooperation = await Cooperation.findOne({
-        mangaka_id: req.user.nameid,
-        assistant_id: assistantIdTopLevel,
-        agreed_at: { $ne: null },
-        $or: [{ series_id: seriesId }, { series_id: null }],
-      });
-      if (!cooperation) {
-        return next(new AppError("Assistant chưa ký hợp đồng hợp tác với bạn", 403));
-      }
-      validatedAssistantId = assistantIdTopLevel;
+      const [asstErr, asstId] = await validateAssistantForChapter(
+        assistantIdTopLevel,
+        req.user.nameid,
+        seriesId
+      );
+      if (asstErr) return next(asstErr);
+      validatedAssistantId = asstId;
     }
 
     // Series đã publish → bắt buộc phải có assistant.
@@ -1546,16 +1625,16 @@ router.get("/pages/:id/final", authMiddleware, requireMangakaOrAssistant, async 
  *             properties:
  *               assistant_id:
  *                 type: string
- *                 description: Assistant user ID
+ *                 description: Assistant user ID. Phải có Cooperation đã accepted với Mangaka cho series của chapter (cùng series hoặc cooperation chung).
  *     responses:
  *       200:
  *         description: Gán thành công
  *       400:
- *         description: Thiếu assistant_id / Chapter đã có assistant
+ *         description: Thiếu assistant_id / Chapter đã có assistant / assistant_locked_after_sale (chapter đã phát sinh giao dịch mua).
  *       403:
- *         description: Assistant chưa ký hợp đồng hợp tác
+ *         description: Assistant chưa ký hợp đồng hợp tác (assistant_not_in_cooperation)
  *       404:
- *         description: Chapter not found
+ *         description: Chapter not found hoặc assistant_not_found
  */
 router.post("/:id/assign", authMiddleware, requireMangaka, async (req, res, next) => {
   try {
@@ -1576,28 +1655,29 @@ router.post("/:id/assign", authMiddleware, requireMangaka, async (req, res, next
       return next(new AppError("Chapter đã có assistant, hãy gỡ trước khi gán mới", 400));
     }
 
-    const assistant = await User.findById(assistant_id);
-    if (!assistant || assistant.role !== "Assistant") {
-      return next(new AppError("User không phải là Assistant", 400));
+    // Quy tắc #8: nếu chapter đã phát sinh giao dịch mua → không cho gán.
+    if (await chapterHasPurchases(chapter._id)) {
+      return next(
+        new AppError(
+          "Không thể thay đổi Assistant vì chapter đã phát sinh giao dịch mua",
+          400,
+          { code: "assistant_locked_after_sale" }
+        )
+      );
     }
 
-    const cooperation = await Cooperation.findOne({
-      mangaka_id: req.user.nameid,
+    // Validate đầy đủ theo quy tắc mới (yêu cầu #5 + #6).
+    const [asstErr, validatedAssistantId] = await validateAssistantForChapter(
       assistant_id,
-      agreed_at: { $ne: null },
-      $or: [
-        { series_id: chapter.series_id },
-        { series_id: null },
-      ],
-    });
-    if (!cooperation) {
-      return next(new AppError("Assistant chưa ký hợp đồng hợp tác với bạn", 403));
-    }
+      req.user.nameid,
+      chapter.series_id
+    );
+    if (asstErr) return next(asstErr);
 
     const series = await Series.findById(chapter.series_id).lean();
     const seriesName = series ? series.name : "";
 
-    chapter.assistant_id = assistant_id;
+    chapter.assistant_id = validatedAssistantId;
     chapter.status = "pending_assistant";
     await chapter.save();
 
@@ -1723,7 +1803,7 @@ router.post("/:id/assign", authMiddleware, requireMangaka, async (req, res, next
  *       200:
  *         description: Gỡ thành công
  *       400:
- *         description: Chapter chưa có assistant
+ *         description: Chapter chưa có assistant / assistant_locked_after_sale (chapter đã phát sinh giao dịch mua, không thể gỡ Assistant).
  *       404:
  *         description: Chapter not found
  */
@@ -1739,6 +1819,17 @@ router.delete("/:id/assign", authMiddleware, requireMangaka, async (req, res, ne
 
     if (!chapter.assistant_id) {
       return next(new AppError("Chapter chưa có assistant", 400));
+    }
+
+    // Quy tắc #8: chapter đã phát sinh giao dịch mua → không cho xóa assistant_id.
+    if (await chapterHasPurchases(chapter._id)) {
+      return next(
+        new AppError(
+          "Không thể thay đổi Assistant vì chapter đã phát sinh giao dịch mua",
+          400,
+          { code: "assistant_locked_after_sale" }
+        )
+      );
     }
 
     // Xóa các task đang pending của assistant trong chapter này

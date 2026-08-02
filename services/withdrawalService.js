@@ -49,9 +49,11 @@ const ensureHasBankInfo = (user) => {
 /**
  * Tạo yêu cầu withdrawal.
  *
+ * User chỉ được rút TOÀN BỘ `available_balance`, không rút một phần.
+ *
  * @param {String} userId
- * @param {Object} body  { coin_amount, vnd_amount, note }
- *                      Nếu chỉ truyền coin_amount, vnd_amount sẽ tự tính theo tỷ giá.
+ * @param {Object} body  { note }
+ *                      Số coin và vnd sẽ tự lấy từ available_balance của user.
  */
 async function createWithdrawalRequest(userId, body) {
   const user = await User.findById(userId).lean();
@@ -59,33 +61,44 @@ async function createWithdrawalRequest(userId, body) {
   ensureMangakaOrAssistant(user);
   ensureHasBankInfo(user);
 
-  const coinAmount = Number(body.coin_amount);
+  // Lấy số dư available_balance hiện tại
+  const wallet = await getOrCreateWallet(userId);
+  const coinAmount = wallet.available_balance;
+
   if (!Number.isFinite(coinAmount) || coinAmount <= 0) {
-    throw new WithdrawalError("coin_amount phải > 0", "invalid_amount", 400);
+    throw new WithdrawalError(
+      "Số dư khả dụng phải > 0 để tạo yêu cầu rút tiền",
+      "zero_balance",
+      400
+    );
   }
 
-  const vndAmount =
-    body.vnd_amount != null
-      ? Number(body.vnd_amount)
-      : coinAmount * config.monetization.coinToVndRate;
+  const vndAmount = coinAmount * config.monetization.coinToVndRate;
 
   if (vndAmount < config.monetization.minWithdrawalVnd) {
     throw new WithdrawalError(
-      `Số tiền rút tối thiểu là ${config.monetization.minWithdrawalVnd} VNĐ`,
+      `Số tiền rút tối thiểu là ${config.monetization.minWithdrawalVnd} VNĐ (hiện có ${vndAmount} VNĐ)`,
       "below_minimum",
       400
     );
   }
 
-  // Không cho tạo 2 yêu cầu pending cùng lúc
-  const existingPending = await Withdrawal.findOne({
+  // Không cho tạo yêu cầu mới khi đang có yêu cầu ở trạng thái pending HOẶC approved.
+  // - pending  : chờ admin duyệt
+  // - approved : admin đã duyệt, đang chờ admin xác nhận chuyển khoản
+  // Sau khi withdraw chuyển sang completed / rejected / cancelled mới được tạo yêu cầu mới.
+  const existingActive = await Withdrawal.findOne({
     user_id: userId,
-    status: "pending",
+    status: { $in: ["pending", "approved"] },
   });
-  if (existingPending) {
+  if (existingActive) {
+    const reason =
+      existingActive.status === "approved"
+        ? "Yêu cầu rút tiền hiện tại đã được admin duyệt, đang chờ chuyển khoản. Vui lòng chờ hoàn tất trước khi tạo yêu cầu mới."
+        : "Bạn đã có yêu cầu rút tiền đang chờ xử lý. Vui lòng chờ admin xử lý trước khi tạo yêu cầu mới.";
     throw new WithdrawalError(
-      "Bạn đã có yêu cầu rút tiền đang chờ xử lý",
-      "pending_exists",
+      reason,
+      "active_withdrawal_exists",
       400
     );
   }
