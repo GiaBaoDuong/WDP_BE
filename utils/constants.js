@@ -203,7 +203,9 @@ const CHAPTER_ACCESS_TYPE = {
 // Chỉ chapter 1 mặc định FREE (luôn luôn FREE, không thể set PAID).
 // Từ chapter 2 trở đi MẶC ĐỊNH PAID với giá CỐ ĐỊNH 5 Coin (không cho tuỳ chỉnh).
 const FREE_CHAPTER_AUTO_LIMIT = 1;
-const FIXED_CHAPTER_COIN_PRICE = 5;
+const FIXED_CHAPTER_PRICE_COIN = 5;
+const FIXED_CHAPTER_PRICE_UNITS = FIXED_CHAPTER_PRICE_COIN * 100;
+const FIXED_CHAPTER_COIN_PRICE = FIXED_CHAPTER_PRICE_UNITS;
 
 module.exports = {
   ROLES,
@@ -229,5 +231,7 @@ module.exports = {
   EB_EDIT_WINDOW_HOURS,
   CHAPTER_ACCESS_TYPE,
   FREE_CHAPTER_AUTO_LIMIT,
+  FIXED_CHAPTER_PRICE_COIN,
+  FIXED_CHAPTER_PRICE_UNITS,
   FIXED_CHAPTER_COIN_PRICE,
 };

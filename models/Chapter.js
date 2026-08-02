@@ -1,5 +1,7 @@
 const mongoose = require("mongoose");
 
+// `coin_price` is stored as integer CoinUnit (500 = 5.00 Coin).
+
 const chapterSchema = new mongoose.Schema(
   {
     series_id: {
@@ -100,8 +102,9 @@ const chapterSchema = new mongoose.Schema(
     },
     coin_price: {
       type: Number,
-      default: 5,
+      default: 500,
       min: 0,
+      validate: { validator: Number.isSafeInteger, message: "coin_price must be integer CoinUnit" },
     },
     // Scheduling fields
     scheduled_publish_at: { type: Date, default: null },

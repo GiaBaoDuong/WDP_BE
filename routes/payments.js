@@ -21,6 +21,7 @@ const { PAYMENT_STATUS } = require("../models/Payment");
 const { creditCoin } = require("../services/walletService");
 const payos = require("../services/payosService");
 const config = require("../config/payment");
+const { unitsToCoinString } = require("../utils/coinUnit");
 
 // ─── GET /payments/packages ───────────────────────────────────────────────────
 /**
@@ -75,7 +76,7 @@ router.post("/create", authMiddleware, requireReader, async (req, res, next) => 
     }
 
     const orderCode = payos.generateOrderCode();
-    const description = `WDPManga nap ${pkg.total_coin} Coin`;
+    const description = `WDPManga nap ${unitsToCoinString(pkg.total_coin)} Coin`;
 
     // Tạo payment record pending
     const payment = await Payment.create({
@@ -141,13 +142,16 @@ router.post("/create", authMiddleware, requireReader, async (req, res, next) => 
 router.post("/payos/webhook", async (req, res) => {
   try {
     const body = req.body || {};
-    const ok = payos.verifyWebhookData(body);
-    if (!ok) {
-      console.warn("[PayOS Webhook] Invalid signature");
+    let data;
+    try {
+      data = payos.verifyWebhookData(body);
+    } catch (error) {
+      console.warn("[PayOS Webhook] Invalid signature:", error.message);
       return res.status(400).json({ success: false, message: "Invalid signature" });
     }
-
-    const data = body.data || {};
+    if (!data) {
+      return res.status(400).json({ success: false, message: "Invalid webhook data" });
+    }
     const orderCode = Number(data.orderCode);
     const code = String(data.code || "").toUpperCase();
 
@@ -163,6 +167,12 @@ router.post("/payos/webhook", async (req, res) => {
     }
 
     if (code === "00" || code === "SUCCESS" || code === "PAID") {
+      if (Number(data.amount) !== payment.amount_vnd) {
+        console.warn(
+          `[PayOS Webhook] Amount mismatch orderCode=${orderCode}: expected=${payment.amount_vnd}, received=${data.amount}`
+        );
+        return res.status(400).json({ success: false, message: "Amount mismatch" });
+      }
       payment.status = PAYMENT_STATUS.PAID;
       payment.paid_at = new Date();
       payment.payos_raw_payload = body;
@@ -170,12 +180,12 @@ router.post("/payos/webhook", async (req, res) => {
 
       // Cộng Coin vào wallet
       await creditCoin(payment.user_id, payment.coin_amount, payment.amount_vnd, {
-        description: `Nạp ${payment.coin_amount} Coin qua PayOS`,
+        description: `Nạp ${unitsToCoinString(payment.coin_amount)} Coin qua PayOS`,
         payment_id: payment._id,
       });
 
       console.log(
-        `[PayOS Webhook] Paid orderCode=${orderCode}, +${payment.coin_amount} Coin for user ${payment.user_id}`
+        `[PayOS Webhook] Paid orderCode=${orderCode}, +${unitsToCoinString(payment.coin_amount)} Coin for user ${payment.user_id}`
       );
     } else if (code === "CANCELLED" || code === "CANCEL") {
       payment.status = PAYMENT_STATUS.CANCELLED;

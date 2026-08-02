@@ -32,15 +32,21 @@ const initSocket = (server) => {
     console.log("[Socket] Client connected:", socket.id);
 
     // Client join phòng user riêng để nhận notification
-    socket.on("join_user_room", (payload) => {
+    socket.on("join_user_room", (payload, acknowledge) => {
       const userId = normalizeUserId(payload);
       console.log(`[Socket] join_user_room received: ${userId || "invalid"}`);
       if (!userId) {
         console.warn("[Socket] join_user_room ignored: missing userId", payload);
+        if (typeof acknowledge === "function") {
+          acknowledge({ success: false, message: "Missing userId" });
+        }
         return;
       }
       socket.join(`user_${userId}`);
       console.log(`[Socket] ${socket.id} joined user_${userId}`);
+      if (typeof acknowledge === "function") {
+        acknowledge({ success: true, userId });
+      }
     });
 
     // Realtime progress cho studio

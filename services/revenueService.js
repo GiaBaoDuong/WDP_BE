@@ -35,6 +35,55 @@ const Revenue = require("../models/Revenue");
 const Chapter = require("../models/Chapter");
 const config = require("../config/payment");
 const { creditRevenue } = require("./walletService");
+const { assertCoinUnits, unitsToVnd } = require("../utils/coinUnit");
+
+const PERCENT_BASIS = 10000n;
+
+function percentToBasisPoints(value) {
+  const normalized = String(value).trim();
+  if (!/^\d+(\.\d{1,2})?$/.test(normalized)) {
+    throw new Error("Percentage must have at most two decimal places");
+  }
+  const [whole, fraction = ""] = normalized.split(".");
+  const basisPoints = BigInt(whole) * 100n + BigInt(fraction.padEnd(2, "0"));
+  if (basisPoints > PERCENT_BASIS) throw new Error("Percentage must be between 0 and 100");
+  return basisPoints;
+}
+
+function roundPercentageOfUnits(units, percentage) {
+  assertCoinUnits(units);
+  const numerator = BigInt(units) * percentToBasisPoints(percentage);
+  return Number((numerator + PERCENT_BASIS / 2n) / PERCENT_BASIS);
+}
+
+function allocateUnits(totalUnits, shares) {
+  assertCoinUnits(totalUnits);
+  if (!Array.isArray(shares) || shares.length === 0) throw new Error("Revenue shares are required");
+  const totalBasisPoints = shares.reduce(
+    (sum, share) => sum + percentToBasisPoints(share.percentage),
+    0n
+  );
+  if (totalBasisPoints !== PERCENT_BASIS) throw new Error("Revenue shares must total 100%");
+  const allocations = shares.map((share, idx) => {
+    const numerator = BigInt(totalUnits) * percentToBasisPoints(share.percentage);
+    return {
+      share,
+      idx,
+      floor: Number(numerator / PERCENT_BASIS),
+      remainder: numerator % PERCENT_BASIS,
+    };
+  });
+  const ordered = [...allocations].sort((a, b) => {
+    if (a.remainder !== b.remainder) return a.remainder > b.remainder ? -1 : 1;
+    const aMangaka = a.share.role === "Mangaka";
+    const bMangaka = b.share.role === "Mangaka";
+    if (aMangaka !== bMangaka) return aMangaka ? -1 : 1;
+    return a.idx - b.idx;
+  });
+  const leftover = totalUnits - allocations.reduce((sum, item) => sum + item.floor, 0);
+  for (let i = 0; i < leftover; i++) ordered[i % ordered.length].floor += 1;
+  return allocations;
+}
 
 const DEFAULT_SHARES = (mangakaId) => [
   { user_id: mangakaId, role: "Mangaka", percentage: 100 },
@@ -210,7 +259,7 @@ async function createRevenueForPurchase(ctx) {
     grossCoinAmount,
   } = ctx;
 
-  if (!grossCoinAmount || grossCoinAmount <= 0) {
+  if (!Number.isSafeInteger(grossCoinAmount) || grossCoinAmount <= 0) {
     throw new Error("grossCoinAmount phải > 0");
   }
 
@@ -221,9 +270,7 @@ async function createRevenueForPurchase(ctx) {
   // platformFeeCoin & netCoin là số nguyên Coin.
   // Nếu grossCoinAmount * platformFeePercent / 100 bị lẻ → làm tròn platformFeeCoin
   // rồi suy ra netCoin = gross - platformFeeCoin để đảm bảo platform + share = gross.
-  const platformFeeCoin = Math.round(
-    (grossCoinAmount * platformFeePercent) / 100
-  );
+  const platformFeeCoin = roundPercentageOfUnits(grossCoinAmount, platformFeePercent);
   const netCoinAmount = grossCoinAmount - platformFeeCoin;
 
   const vndRate = config.monetization.coinToVndRate;
@@ -252,15 +299,7 @@ async function createRevenueForPurchase(ctx) {
   //   các field của allocation. Mọi `.floor += 1` được thực hiện trên chính
   //   `allocation` gốc trong `allocations` để vòng lặp tạo Revenue đọc đúng.
   // ====================================================================
-  const allocations = shares.map((s) => {
-    const exact = (netCoinAmount * Number(s.percentage)) / 100;
-    const floor = Math.floor(exact);
-    return {
-      share: s,
-      floor,
-      remainder: exact - floor,
-    };
-  });
+  const allocations = allocateUnits(netCoinAmount, shares);
 
   // Phân bổ leftover (nếu có) cho user có remainder lớn nhất.
   // Tie-break: ưu tiên Mangaka, sau đó theo idx gốc.
@@ -296,15 +335,7 @@ async function createRevenueForPurchase(ctx) {
   // Nếu sau này cần tổng phí platform của 1 purchase, group theo
   // `purchased_chapter_id` rồi sum — KHÔNG cộng tất cả record rồi nhân tỷ lệ.
   // ====================================================================
-  const platformAllocations = shares.map((s) => {
-    const exact = (platformFeeCoin * Number(s.percentage)) / 100;
-    const floor = Math.floor(exact);
-    return {
-      share: s,
-      floor,
-      remainder: exact - floor,
-    };
-  });
+  const platformAllocations = allocateUnits(platformFeeCoin, shares);
   const platformLeftover =
     platformFeeCoin - platformAllocations.reduce((sum, a) => sum + a.floor, 0);
   if (platformLeftover > 0) {
@@ -341,7 +372,7 @@ async function createRevenueForPurchase(ctx) {
   //                         (giống nhau trên mọi record cùng purchased_chapter_id)
   //   share_percentage    = tỷ lệ user này (vd: 60 / 40 / 100)
   //   coin_amount         = phần user này THỰC NHẬN = floor(net * pct/100) + dư
-  //   vnd_amount          = coin_amount * coinToVndRate
+  //   vnd_amount          = floor(coin_amount * coinToVndRate / COIN_UNIT_SCALE)
   //
   // Lưu ý cho các luồng aggregate (dashboard, thống kê, Revenue Hub):
   //   - Tổng Gross của 1 purchase: SUM(gross_coin_amount) lấy DISTINCT theo
@@ -359,7 +390,7 @@ async function createRevenueForPurchase(ctx) {
     if (coinAmount <= 0) continue;
 
     const share = allocations[i].share;
-    const vndAmount = coinAmount * vndRate;
+    const vndAmount = unitsToVnd(coinAmount, vndRate);
     const allocatedPlatformFee =
       platformAllocByUser.get(String(share.user_id)) || 0;
 
@@ -402,6 +433,8 @@ async function createRevenueForPurchase(ctx) {
 }
 
 module.exports = {
+  allocateUnits,
+  roundPercentageOfUnits,
   resolveChapterRevenueShares,
   resolveSharesForSeries,
   createRevenueForPurchase,

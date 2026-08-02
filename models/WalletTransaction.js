@@ -2,6 +2,7 @@ const mongoose = require("mongoose");
 
 /**
  * WalletTransaction - Lịch sử giao dịch ví.
+ * `coin_amount` is a safe integer CoinUnit value (100 CoinUnit = 1 Coin).
  *
  * Loại giao dịch:
  *   - DEPOSIT   : Reader nạp Coin qua PayOS (+balance, +total_deposited)
@@ -48,7 +49,12 @@ const txSchema = new mongoose.Schema(
       enum: ["in", "out"],
       required: true,
     },
-    coin_amount: { type: Number, required: true, min: 0 },
+    coin_amount: {
+      type: Number,
+      required: true,
+      min: 0,
+      validate: { validator: Number.isSafeInteger, message: "coin_amount must be integer CoinUnit" },
+    },
     vnd_amount: { type: Number, default: 0, min: 0 },
     description: { type: String, default: "" },
     // Reference tuỳ loại:

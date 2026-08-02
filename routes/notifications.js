@@ -7,6 +7,33 @@ const Notification = require("../models/Notification");
 
 /**
  * @swagger
+ * /notifications/unread-count:
+ *   get:
+ *     tags: [Notifications]
+ *     summary: Get unread notification count for the authenticated user
+ *     security:
+ *       - BearerAuth: []
+ *     responses:
+ *       200:
+ *         description: Unread notification count
+ *       401:
+ *         description: Unauthorized
+ */
+router.get("/unread-count", authMiddleware, async (req, res) => {
+  try {
+    const count = await Notification.countDocuments({
+      user_id: req.user.nameid,
+      is_read: false,
+    });
+
+    return res.status(200).json({ success: true, count });
+  } catch (error) {
+    return res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+/**
+ * @swagger
  * /notifications:
  *   get:
  *     tags: [Notifications]

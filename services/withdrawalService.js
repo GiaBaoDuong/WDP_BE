@@ -1,5 +1,6 @@
 /**
  * withdrawalService - Yêu cầu rút tiền cho Mangaka/Assistant.
+ * Wallet amounts are CoinUnit; VND conversion divides by COIN_UNIT_SCALE.
  *
  * Flow:
  *   1. User gửi POST /withdrawals → validate đủ điều kiện, tạo Withdrawal (pending)
@@ -12,6 +13,7 @@ const mongoose = require("mongoose");
 const User = require("../models/User");
 const Withdrawal = require("../models/Withdrawal");
 const config = require("../config/payment");
+const { COIN_UNIT_SCALE, assertCoinUnits, unitsToVnd } = require("../utils/coinUnit");
 const {
   getOrCreateWallet,
   debitWithdrawal,
@@ -65,7 +67,7 @@ async function createWithdrawalRequest(userId, body) {
   const wallet = await getOrCreateWallet(userId);
   const coinAmount = wallet.available_balance;
 
-  if (!Number.isFinite(coinAmount) || coinAmount <= 0) {
+  if (!Number.isSafeInteger(coinAmount) || coinAmount <= 0) {
     throw new WithdrawalError(
       "Số dư khả dụng phải > 0 để tạo yêu cầu rút tiền",
       "zero_balance",
@@ -73,7 +75,8 @@ async function createWithdrawalRequest(userId, body) {
     );
   }
 
-  const vndAmount = coinAmount * config.monetization.coinToVndRate;
+  assertCoinUnits(coinAmount, "available_balance", { allowZero: false });
+  const vndAmount = unitsToVnd(coinAmount, config.monetization.coinToVndRate);
 
   if (vndAmount < config.monetization.minWithdrawalVnd) {
     throw new WithdrawalError(
@@ -120,6 +123,8 @@ async function createWithdrawalRequest(userId, body) {
     user_id: userId,
     user_role: user.role,
     coin_amount: coinAmount,
+    coin_unit_scale: COIN_UNIT_SCALE,
+    coin_to_vnd_rate: config.monetization.coinToVndRate,
     vnd_amount: vndAmount,
     status: "pending",
     bank_snapshot: {

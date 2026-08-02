@@ -1,4 +1,5 @@
 const express = require("express");
+const { unitsToCoinString } = require("../utils/coinUnit");
 const router = express.Router();
 const { authMiddleware } = require("../middleware/auth");
 const { optionalAuth } = require("../middleware/auth");
@@ -732,7 +733,7 @@ router.get("/chapters/:id/pages", authMiddleware, requireReader, async (req, res
       if (!isPurchased) {
         return next(
           new AppError(
-            `Chapter này cần ${chapter.coin_price || 0} Coin để mở khóa`,
+            `Chapter này cần ${unitsToCoinString(chapter.coin_price || 0)} Coin để mở khóa`,
             402
           )
         );

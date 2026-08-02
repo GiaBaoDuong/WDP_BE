@@ -1,7 +1,15 @@
 const mongoose = require("mongoose");
 
+const coinUnitField = () => ({
+  type: Number,
+  required: true,
+  min: 0,
+  validate: { validator: Number.isSafeInteger, message: "Revenue value must be integer CoinUnit" },
+});
+
 /**
  * Revenue - Doanh thu được chia cho từng Mangaka/Assistant khi Reader mua chapter.
+ * All Coin amount fields are integer CoinUnit values (100 CoinUnit = 1 Coin).
  *
  * Mỗi lượt mua chapter tạo N Revenue record (N = 1 nếu không có assistant, N = 2
  * nếu có assistant). Mọi record cùng `purchased_chapter_id` chia sẻ các field
@@ -77,11 +85,11 @@ const revenueSchema = new mongoose.Schema(
       ref: "User",
       required: true,
     },
-    gross_coin_amount: { type: Number, required: true, min: 0 },
-    platform_fee_coin: { type: Number, required: true, min: 0 },
-    net_coin_amount: { type: Number, required: true, min: 0 },
+    gross_coin_amount: coinUnitField(),
+    platform_fee_coin: coinUnitField(),
+    net_coin_amount: coinUnitField(),
     share_percentage: { type: Number, required: true, min: 0, max: 100 },
-    coin_amount: { type: Number, required: true, min: 0 },
+    coin_amount: coinUnitField(),
     vnd_amount: { type: Number, default: 0, min: 0 },
     status: {
       type: String,

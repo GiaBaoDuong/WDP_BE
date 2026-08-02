@@ -2,6 +2,7 @@ const mongoose = require("mongoose");
 
 /**
  * Payment - Giao dịch thanh toán PayOS.
+ * `coin_amount` is an integer CoinUnit snapshot; `amount_vnd` remains VND.
  *
  * Lifecycle:
  *   1. Reader chọn gói Coin → tạo Payment (status = "pending") + gọi PayOS tạo link
@@ -35,7 +36,12 @@ const paymentSchema = new mongoose.Schema(
     },
     order_code: { type: Number, required: true, unique: true, index: true },
     amount_vnd: { type: Number, required: true, min: 1 },
-    coin_amount: { type: Number, required: true, min: 1 }, // tổng coin (cơ bản + bonus)
+    coin_amount: {
+      type: Number,
+      required: true,
+      min: 1,
+      validate: { validator: Number.isSafeInteger, message: "coin_amount must be integer CoinUnit" },
+    }, // total CoinUnit (base + bonus)
     status: {
       type: String,
       enum: Object.values(PAYMENT_STATUS),

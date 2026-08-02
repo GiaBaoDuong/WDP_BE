@@ -1,5 +1,6 @@
 /**
  * walletService - Tất cả thao tác với Wallet + WalletTransaction.
+ * Every monetary amount is a positive safe integer CoinUnit unless explicitly documented.
  *
  * Mọi thay đổi balance/pending_balance/available_balance đều được ghi vào
  * WalletTransaction tương ứng. Các thao tác cập nhật dùng $inc để tránh race
@@ -10,6 +11,7 @@
 const Wallet = require("../models/Wallet");
 const WalletTransaction = require("../models/WalletTransaction");
 const { TX_TYPES } = require("../models/WalletTransaction");
+const { assertCoinUnits } = require("../utils/coinUnit");
 
 /**
  * Lấy hoặc tạo mới Wallet cho user.
@@ -28,7 +30,7 @@ async function getOrCreateWallet(userId) {
  * @returns {Promise<{wallet, transaction}>}
  */
 async function creditCoin(userId, coinAmount, vndAmount = 0, opts = {}) {
-  if (!Number.isFinite(coinAmount) || coinAmount <= 0) {
+  if (!Number.isSafeInteger(coinAmount) || coinAmount <= 0) {
     throw new Error("coinAmount phải > 0");
   }
   const wallet = await getOrCreateWallet(userId);
@@ -62,7 +64,7 @@ async function creditCoin(userId, coinAmount, vndAmount = 0, opts = {}) {
  * Trước khi trừ, kiểm tra và trả về lỗi để caller có thể dừng.
  */
 async function debitCoin(userId, coinAmount, opts = {}) {
-  if (!Number.isFinite(coinAmount) || coinAmount <= 0) {
+  if (!Number.isSafeInteger(coinAmount) || coinAmount <= 0) {
     throw new Error("coinAmount phải > 0");
   }
   const wallet = await getOrCreateWallet(userId);
@@ -104,7 +106,7 @@ async function debitCoin(userId, coinAmount, opts = {}) {
  * (không khuyến khích - chỉ dùng cho seed/test).
  */
 async function creditRevenue(userId, coinAmount, opts = {}) {
-  if (!Number.isFinite(coinAmount) || coinAmount <= 0) {
+  if (!Number.isSafeInteger(coinAmount) || coinAmount <= 0) {
     throw new Error("coinAmount phải > 0");
   }
   const wallet = await getOrCreateWallet(userId);
@@ -139,7 +141,7 @@ async function creditRevenue(userId, coinAmount, opts = {}) {
  * Không tính là doanh thu mới, không cộng total_revenue (đã cộng khi tạo).
  */
 async function releasePendingRevenue(userId, coinAmount, opts = {}) {
-  if (!Number.isFinite(coinAmount) || coinAmount <= 0) {
+  if (!Number.isSafeInteger(coinAmount) || coinAmount <= 0) {
     throw new Error("coinAmount phải > 0");
   }
   const wallet = await getOrCreateWallet(userId);
@@ -176,7 +178,7 @@ async function releasePendingRevenue(userId, coinAmount, opts = {}) {
  * Trừ Coin từ available_balance khi user yêu cầu Withdrawal.
  */
 async function debitWithdrawal(userId, coinAmount, opts = {}) {
-  if (!Number.isFinite(coinAmount) || coinAmount <= 0) {
+  if (!Number.isSafeInteger(coinAmount) || coinAmount <= 0) {
     throw new Error("coinAmount phải > 0");
   }
   const wallet = await getOrCreateWallet(userId);
@@ -213,6 +215,7 @@ async function debitWithdrawal(userId, coinAmount, opts = {}) {
  * Hoàn lại Coin vào available_balance khi Withdrawal bị reject / cancel.
  */
 async function refundWithdrawal(userId, coinAmount, opts = {}) {
+  assertCoinUnits(coinAmount, "coinAmount", { allowZero: false });
   const wallet = await getOrCreateWallet(userId);
   const updated = await Wallet.findOneAndUpdate(
     { _id: wallet._id },

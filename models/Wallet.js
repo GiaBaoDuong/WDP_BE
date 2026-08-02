@@ -1,7 +1,18 @@
 const mongoose = require("mongoose");
 
+const coinUnitField = () => ({
+  type: Number,
+  default: 0,
+  min: 0,
+  validate: {
+    validator: Number.isSafeInteger,
+    message: "Wallet value must be an integer CoinUnit",
+  },
+});
+
 /**
  * Wallet - Ví Coin của user.
+ * All monetary Number fields are safe integer CoinUnit values (100 CoinUnit = 1 Coin).
  *
  * Mỗi user có 1 wallet duy nhất. Wallet phục vụ cả 3 mục đích:
  *   1. Reader: nạp Coin (Deposit), mua chapter (Purchase)
@@ -31,14 +42,14 @@ const walletSchema = new mongoose.Schema(
       index: true,
     },
     // ─── Reader fields ─────────────────────────────────────────────────────
-    balance: { type: Number, default: 0, min: 0 },
-    total_deposited: { type: Number, default: 0, min: 0 },
-    total_spent: { type: Number, default: 0, min: 0 },
+    balance: coinUnitField(),
+    total_deposited: coinUnitField(),
+    total_spent: coinUnitField(),
     // ─── Mangaka/Assistant fields ──────────────────────────────────────────
-    pending_balance: { type: Number, default: 0, min: 0 },
-    available_balance: { type: Number, default: 0, min: 0 },
-    total_revenue: { type: Number, default: 0, min: 0 },
-    total_withdrawn: { type: Number, default: 0, min: 0 },
+    pending_balance: coinUnitField(),
+    available_balance: coinUnitField(),
+    total_revenue: coinUnitField(),
+    total_withdrawn: coinUnitField(),
   },
   { timestamps: true }
 );

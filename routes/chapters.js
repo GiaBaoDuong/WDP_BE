@@ -237,7 +237,7 @@ async function chapterHasPurchases(chapterId) {
  *                 description: Tiêu đề chapter (optional)
  *               assistant_id:
  *                 type: string
- *                 description: User ID của assistant (optional, nhưng bắt buộc khi series đã publish). Sẽ set chapter.assistant_id ngay khi tạo. Phải có Cooperation đã accepted với Mangaka (cùng series hoặc chung). Logic chia doanh thu: Mangaka 60% / Assistant 40% (sau khi trừ 20% phí nền tảng).
+ *                 description: "User ID của assistant (optional, nhưng bắt buộc khi series đã publish). Sẽ set chapter.assistant_id ngay khi tạo. Phải có Cooperation đã accepted với Mangaka (cùng series hoặc chung). Logic chia doanh thu: Mangaka 60% / Assistant 40% (sau khi trừ 20% phí nền tảng)."
  *               access_type:
  *                 type: string
  *                 enum: [FREE, PAID]
@@ -249,7 +249,7 @@ async function chapterHasPurchases(chapterId) {
  *       201:
  *         description: Chapter được tạo thành công
  *       400:
- *         description: Thiếu series_id hoặc chapter_number. Lỗi validation assistant_id: assistant_invalid_id, assistant_is_mangaka, invalid_assistant_role, assistant_not_in_cooperation.
+ *         description: "Thiếu series_id hoặc chapter_number. Lỗi validation assistant_id: assistant_invalid_id, assistant_is_mangaka, invalid_assistant_role, assistant_not_in_cooperation."
  *       403:
  *         description: Assistant có id hợp lệ nhưng chưa có Cooperation hợp lệ với Mangaka.
  *       404:

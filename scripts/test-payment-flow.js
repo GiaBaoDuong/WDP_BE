@@ -8,7 +8,7 @@ process.env.PAYOS_MOCK = "true";
 process.env.REVENUE_PENDING_HOURS = "0.001"; // ~3.6s
 process.env.PLATFORM_FEE_PERCENT = "20";
 process.env.COIN_TO_VND_RATE = "100";
-process.env.MIN_WITHDRAWAL_VND = "1000";
+process.env.MIN_WITHDRAWAL_VND = "100";
 
 const mongoose = require("mongoose");
 const { MongoMemoryServer } = require("mongodb-memory-server");
@@ -93,7 +93,8 @@ const { MongoMemoryServer } = require("mongodb-memory-server");
     status: "published",
     is_published: true,
     access_type: "PAID",
-    coin_price: 10,
+    coin_price: 500,
+    assistant_id: assistant._id,
   });
 
   await Cooperation.create({
@@ -102,8 +103,8 @@ const { MongoMemoryServer } = require("mongodb-memory-server");
     series_id: series._id,
     agreed_at: new Date(),
     revenue_shares: [
-      { user_id: mangaka._id, role: "Mangaka", percentage: 70 },
-      { user_id: assistant._id, role: "Assistant", percentage: 30 },
+      { user_id: mangaka._id, role: "Mangaka", percentage: 60 },
+      { user_id: assistant._id, role: "Assistant", percentage: 40 },
     ],
   });
 
@@ -111,11 +112,11 @@ const { MongoMemoryServer } = require("mongodb-memory-server");
   const pkg = await CoinPackage.create({
     name: "P100",
     price_vnd: 10000,
-    coin_amount: 100,
-    bonus_coin: 10,
+    coin_amount: 10000,
+    bonus_coin: 1000,
   });
   console.log(
-    `[Test1] CoinPackage total_coin (expect 110): ${pkg.total_coin}`
+    `[Test1] CoinPackage total_coin (expect 11000 CoinUnit): ${pkg.total_coin}`
   );
 
   // ─── Test 2: Reader nạp Coin (webhook success) ─────────────────────────
@@ -139,7 +140,7 @@ const { MongoMemoryServer } = require("mongodb-memory-server");
   await payment.save();
   const w1 = await Wallet.findOne({ user_id: reader._id });
   console.log(
-    `[Test2] Reader balance (expect 110): ${w1.balance}, total_deposited=${w1.total_deposited}`
+    `[Test2] Reader balance (expect 11000 CoinUnit): ${w1.balance}, total_deposited=${w1.total_deposited}`
   );
 
   // ─── Test 3: Reader mua chapter 2 (PAID, 10 Coin) ──────────────────────
@@ -152,17 +153,17 @@ const { MongoMemoryServer } = require("mongodb-memory-server");
   );
   const w2 = await Wallet.findOne({ user_id: reader._id });
   console.log(
-    `[Test3] Reader balance sau mua (expect 100): ${w2.balance}, total_spent=${w2.total_spent}`
+    `[Test3] Reader balance sau mua (expect 10500 CoinUnit): ${w2.balance}, total_spent=${w2.total_spent}`
   );
 
   // ─── Test 4: Kiểm tra Revenue & pending_balance ────────────────────────
   const wM = await Wallet.findOne({ user_id: mangaka._id });
   const wA = await Wallet.findOne({ user_id: assistant._id });
   console.log(
-    `[Test4] Mangaka pending_balance (expect 6 = round(10*0.8*0.7)): ${wM.pending_balance}`
+    `[Test4] Mangaka pending_balance (expect 240 CoinUnit = 60% of 400): ${wM.pending_balance}`
   );
   console.log(
-    `[Test4] Assistant pending_balance (expect 2 = round(10*0.8*0.3)): ${wA.pending_balance}`
+    `[Test4] Assistant pending_balance (expect 160 CoinUnit = 40% of 400): ${wA.pending_balance}`
   );
 
   // ─── Test 5: Idempotency - mua lại chapter 2 không trừ Coin ───────────
@@ -172,7 +173,7 @@ const { MongoMemoryServer } = require("mongodb-memory-server");
   );
   const w3 = await Wallet.findOne({ user_id: reader._id });
   console.log(
-    `[Test5] Already owned=${r2.alreadyOwned}, balance (expect vẫn 100): ${w3.balance}`
+    `[Test5] Already owned=${r2.alreadyOwned}, balance (expect vẫn 10500 CoinUnit): ${w3.balance}`
   );
 
   // ─── Test 6: Insufficient Coin ──────────────────────────────────────────
@@ -251,7 +252,7 @@ const { MongoMemoryServer } = require("mongodb-memory-server");
   await withdrawalService.rejectWithdrawal(admin._id, w9._id);
   const wA3 = await Wallet.findOne({ user_id: assistant._id });
   console.log(
-    `[Test9] Sau reject: Assistant available (expect 2): ${wA3.available_balance}, total_withdrawn (expect 0): ${wA3.total_withdrawn}`
+    `[Test9] Sau reject: Assistant available (expect 160 CoinUnit): ${wA3.available_balance}, total_withdrawn (expect 0): ${wA3.total_withdrawn}`
   );
 
   // ─── Test 10: FREE_CHAPTER_AUTO_LIMIT = 1 ────────────────────────────────

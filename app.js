@@ -12,6 +12,7 @@ const cors = require("cors");
 const { initSocket } = require("./config/socket");
 const swaggerUi = require("swagger-ui-express");
 const swaggerSpec = require("./config/swagger");
+const { formatCoinResponse } = require("./utils/coinUnit");
 
 const app = express();
 const server = http.createServer(app);
@@ -65,9 +66,9 @@ mongoose
     const existingCount = await CoinPackage.countDocuments();
     if (existingCount === 0) {
       const defaults = [
-        { name: "Gói 200 Coin", price_vnd: 20000, coin_amount: 200, bonus_coin: 0, sort_order: 1, is_active: true },
-        { name: "Gói 520 Coin", price_vnd: 50000, coin_amount: 500, bonus_coin: 20, sort_order: 2, is_active: true },
-        { name: "Gói 1.100 Coin", price_vnd: 100000, coin_amount: 1000, bonus_coin: 100, sort_order: 3, is_active: true },
+        { name: "Gói 200 Coin", price_vnd: 20000, coin_amount: 20000, bonus_coin: 0, sort_order: 1, is_active: true },
+        { name: "Gói 520 Coin", price_vnd: 50000, coin_amount: 50000, bonus_coin: 2000, sort_order: 2, is_active: true },
+        { name: "Gói 1.100 Coin", price_vnd: 100000, coin_amount: 100000, bonus_coin: 10000, sort_order: 3, is_active: true },
       ];
       // Tính total_coin trước khi insert (insertMany không chạy pre-save)
       const docs = defaults.map((d) => ({
@@ -89,6 +90,11 @@ app.use(logger("dev"));
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
 app.use(cookieParser());
+app.use((req, res, next) => {
+  const json = res.json.bind(res);
+  res.json = (body) => json(formatCoinResponse(body));
+  next();
+});
 app.use("/uploads", express.static(path.join(__dirname, "public/uploads")));
 
 // ─── Routes ───────────────────────────────────────────────────────────────────

@@ -258,7 +258,14 @@ router.get("/purchases", authMiddleware, async (req, res, next) => {
           series_name: "$series.name",
           purchases: 1,
           total_coin: 1,
-          total_vnd: { $multiply: ["$total_coin", config.monetization.coinToVndRate] },
+          total_vnd: {
+            $floor: {
+              $divide: [
+                { $multiply: ["$total_coin", config.monetization.coinToVndRate] },
+                100,
+              ],
+            },
+          },
         },
       },
       { $sort: { total_coin: -1 } },

@@ -2,6 +2,7 @@ const mongoose = require("mongoose");
 
 /**
  * PurchasedChapter - Reader đã mua chapter trả phí.
+ * `price` is an integer CoinUnit purchase snapshot.
  *
  * Unique (reader_id, chapter_id) để chỉ mua 1 lần duy nhất.
  * `price` là số Coin đã trừ tại thời điểm mua (snapshot).
@@ -25,7 +26,12 @@ const purchasedChapterSchema = new mongoose.Schema(
       ref: "Series",
       required: true,
     },
-    price: { type: Number, required: true, min: 0 },
+    price: {
+      type: Number,
+      required: true,
+      min: 0,
+      validate: { validator: Number.isSafeInteger, message: "price must be integer CoinUnit" },
+    },
     purchased_at: { type: Date, default: Date.now },
   },
   { timestamps: true }

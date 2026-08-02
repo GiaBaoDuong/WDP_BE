@@ -5,6 +5,7 @@ const { authMiddleware } = require("../middleware/auth");
 const { requireAdmin } = require("../middleware/roles");
 const { AppError } = require("../middleware/errorHandler");
 const { CHAPTER_STATUS } = require("../utils/constants");
+const { coinToUnits, unitsToVnd } = require("../utils/coinUnit");
 const User = require("../models/User");
 const Series = require("../models/Series");
 const Chapter = require("../models/Chapter");
@@ -3482,8 +3483,8 @@ router.get("/coin-packages", async (req, res, next) => {
  *               name: { type: string }
  *               description: { type: string }
  *               price_vnd: { type: number }
- *               coin_amount: { type: number }
- *               bonus_coin: { type: number }
+ *               coin_amount: { type: string, example: "500.00", description: "Coin display amount; backend converts it to CoinUnit" }
+ *               bonus_coin: { type: string, example: "20.00", description: "Coin display amount; backend converts it to CoinUnit" }
  *               sort_order: { type: number }
  *               is_active: { type: boolean }
  *     responses:
@@ -3499,8 +3500,8 @@ router.post("/coin-packages", async (req, res, next) => {
       name,
       description: description || "",
       price_vnd,
-      coin_amount,
-      bonus_coin: bonus_coin || 0,
+      coin_amount: coinToUnits(coin_amount),
+      bonus_coin: coinToUnits(bonus_coin || 0),
       sort_order: sort_order || 0,
       is_active: is_active !== false,
     });
@@ -3528,16 +3529,14 @@ router.patch("/coin-packages/:id", async (req, res, next) => {
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
       return next(new AppError("Invalid id", 400));
     }
-    const updates = {};
-    ["name", "description", "price_vnd", "coin_amount", "bonus_coin", "sort_order", "is_active"].forEach((k) => {
-      if (req.body[k] !== undefined) updates[k] = req.body[k];
-    });
-    const pkg = await CoinPackage.findByIdAndUpdate(
-      req.params.id,
-      { $set: updates },
-      { new: true, runValidators: true }
-    ).lean();
+    const pkg = await CoinPackage.findById(req.params.id);
     if (!pkg) return next(new AppError("CoinPackage not found", 404));
+    ["name", "description", "price_vnd", "sort_order", "is_active"].forEach((key) => {
+      if (req.body[key] !== undefined) pkg[key] = req.body[key];
+    });
+    if (req.body.coin_amount !== undefined) pkg.coin_amount = coinToUnits(req.body.coin_amount);
+    if (req.body.bonus_coin !== undefined) pkg.bonus_coin = coinToUnits(req.body.bonus_coin);
+    await pkg.save();
     res.json({ success: true, data: pkg });
   } catch (error) { next(error); }
 });
@@ -4000,7 +3999,7 @@ router.get("/revenue/hub", async (req, res, next) => {
         overall: {
           total_platform_fee_coin: overall.total_platform_fee_coin || 0,
           total_platform_fee_vnd:
-            (overall.total_platform_fee_coin || 0) * coinToVnd,
+            unitsToVnd(overall.total_platform_fee_coin || 0, coinToVnd),
           total_gross_coin: overall.total_gross_coin || 0,
           total_net_coin: overall.total_net_coin || 0,
           total_chapters_sold: overall.total_chapters_sold || 0,
@@ -4008,7 +4007,7 @@ router.get("/revenue/hub", async (req, res, next) => {
         today: {
           platform_fee_coin: todayAgg[0]?.platform_fee_coin || 0,
           platform_fee_vnd:
-            (todayAgg[0]?.platform_fee_coin || 0) * coinToVnd,
+            unitsToVnd(todayAgg[0]?.platform_fee_coin || 0, coinToVnd),
           gross_coin: todayAgg[0]?.gross_coin || 0,
           net_coin: todayAgg[0]?.net_coin || 0,
           chapters_sold: todayAgg[0]?.chapters_sold || 0,
@@ -4016,7 +4015,7 @@ router.get("/revenue/hub", async (req, res, next) => {
         this_month: {
           platform_fee_coin: thisMonthAgg[0]?.platform_fee_coin || 0,
           platform_fee_vnd:
-            (thisMonthAgg[0]?.platform_fee_coin || 0) * coinToVnd,
+            unitsToVnd(thisMonthAgg[0]?.platform_fee_coin || 0, coinToVnd),
           gross_coin: thisMonthAgg[0]?.gross_coin || 0,
           net_coin: thisMonthAgg[0]?.net_coin || 0,
           chapters_sold: thisMonthAgg[0]?.chapters_sold || 0,
@@ -4024,7 +4023,7 @@ router.get("/revenue/hub", async (req, res, next) => {
         last_month: {
           platform_fee_coin: lastMonthAgg[0]?.platform_fee_coin || 0,
           platform_fee_vnd:
-            (lastMonthAgg[0]?.platform_fee_coin || 0) * coinToVnd,
+            unitsToVnd(lastMonthAgg[0]?.platform_fee_coin || 0, coinToVnd),
           gross_coin: lastMonthAgg[0]?.gross_coin || 0,
           net_coin: lastMonthAgg[0]?.net_coin || 0,
           chapters_sold: lastMonthAgg[0]?.chapters_sold || 0,
@@ -4033,7 +4032,7 @@ router.get("/revenue/hub", async (req, res, next) => {
           since: since,
           platform_fee_coin: period.period_platform_fee_coin || 0,
           platform_fee_vnd:
-            (period.period_platform_fee_coin || 0) * coinToVnd,
+            unitsToVnd(period.period_platform_fee_coin || 0, coinToVnd),
           gross_coin: period.period_gross_coin || 0,
           chapters_sold: period.period_chapters_sold || 0,
         },
@@ -4051,7 +4050,7 @@ router.get("/revenue/hub", async (req, res, next) => {
           year: m._id.year,
           month: m._id.month,
           platform_fee_coin: m.platform_fee_coin,
-          platform_fee_vnd: m.platform_fee_coin * coinToVnd,
+          platform_fee_vnd: unitsToVnd(m.platform_fee_coin, coinToVnd),
           gross_coin: m.gross_coin,
           net_coin: m.net_coin,
           chapters_sold: m.chapters_sold,
@@ -4161,7 +4160,10 @@ router.get("/users/:id/financials", async (req, res, next) => {
           0
         ),
       };
-      result.transaction_summary = txSummary;
+      result.transaction_summary = (txSummary || []).map((item) => ({
+        ...item,
+        total_coin: item.total,
+      }));
 
       // ─── Financial Summary (Reader) ─────────────────────────────────
       // Tổng hợp nhanh toàn bộ số liệu tài chính của Reader.
@@ -4353,7 +4355,10 @@ router.get("/users/:id/financials", async (req, res, next) => {
           .filter((w) => w.status === "completed")
           .reduce((s, w) => s + (w.vnd_amount || 0), 0),
       };
-      result.transaction_summary = txSummary;
+      result.transaction_summary = (txSummary || []).map((item) => ({
+        ...item,
+        total_coin: item.total,
+      }));
 
       // ─── Cooperation Revenue Share ──────────────────────────────────
       // Lấy tất cả Cooperation đã ký liên quan đến user này.
@@ -4827,7 +4832,7 @@ router.get("/dashboard/finance", async (req, res, next) => {
           enrichSeries(r._id, {
             total_platform_fee_coin: r.total_platform_fee_coin || 0,
             total_platform_fee_vnd:
-              (r.total_platform_fee_coin || 0) * coinToVnd,
+              unitsToVnd(r.total_platform_fee_coin || 0, coinToVnd),
             total_gross_coin: r.total_gross_coin || 0,
             chapters_sold: r.chapters_sold || 0,
           })

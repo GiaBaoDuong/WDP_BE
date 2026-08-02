@@ -1,5 +1,6 @@
 /**
  * Revenue Release Job
+ * Revenue and wallet amounts are integer CoinUnit values; no Coin rounding occurs here.
  *
  * Chạy mỗi 1 phút: tìm các Revenue đã đến `available_at` mà vẫn ở status "pending"
  * → chuyển sang "available" + cộng tiền vào available_balance của wallet.

@@ -2,6 +2,7 @@ const mongoose = require("mongoose");
 
 /**
  * Withdrawal - Yêu cầu rút tiền của Mangaka/Assistant.
+ * `coin_amount` is integer CoinUnit; scale/rate/VND are immutable snapshots.
  *
  * Lifecycle:
  *   pending  ──approve──►  approved  ──complete──►  completed
@@ -34,7 +35,14 @@ const withdrawalSchema = new mongoose.Schema(
       enum: ["Mangaka", "Assistant"],
       required: true,
     },
-    coin_amount: { type: Number, required: true, min: 0 },
+    coin_amount: {
+      type: Number,
+      required: true,
+      min: 0,
+      validate: { validator: Number.isSafeInteger, message: "coin_amount must be integer CoinUnit" },
+    },
+    coin_unit_scale: { type: Number, required: true, default: 100, immutable: true },
+    coin_to_vnd_rate: { type: Number, required: true, default: 100, immutable: true },
     vnd_amount: { type: Number, required: true, min: 0 },
     status: {
       type: String,

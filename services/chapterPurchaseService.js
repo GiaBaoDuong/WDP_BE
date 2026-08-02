@@ -1,5 +1,6 @@
 /**
  * chapterPurchaseService - Logic mua chapter trả phí.
+ * All prices and wallet mutations are integer CoinUnit values.
  *
  * Idempotent + race-safe:
  *   - Bước 1: Tạo PurchasedChapter trước (dựa vào unique index (reader_id, chapter_id))
