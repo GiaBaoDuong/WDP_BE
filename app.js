@@ -113,6 +113,7 @@ app.use("/eb-evaluations", require("./routes/ebEvaluations"));
 app.use("/eb-scores", require("./routes/ebScores"));
 app.use("/reader", require("./routes/readers"));
 app.use("/mangaka", require("./routes/mangakas"));
+app.use("/assistant", require("./routes/assistants"));
 app.use("/authors", require("./routes/authors"));
 app.use("/comments", require("./routes/comments"));
 app.use("/votes", require("./routes/votes"));

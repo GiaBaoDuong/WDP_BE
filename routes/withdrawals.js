@@ -92,7 +92,7 @@ const shapeForPublic = (w) => {
  *               note: { type: string, description: "Ghi chú kèm yêu cầu" }
  *     responses:
  *       201: { description: Tạo thành công }
- *       400: { description: Số dư = 0 hoặc dưới mức rút tối thiểu, hoặc đã có yêu cầu đang xử lý }
+ *       400: { description: Thiếu thông tin ngân hàng, số dư không hợp lệ, dưới mức tối thiểu, hoặc đã có yêu cầu đang xử lý }
  */
 router.post("/", authMiddleware, async (req, res, next) => {
   try {
@@ -107,7 +107,9 @@ router.post("/", authMiddleware, async (req, res, next) => {
     });
   } catch (error) {
     if (error instanceof withdrawalService.WithdrawalError) {
-      return next(new AppError(error.message, error.statusCode));
+      return next(
+        new AppError(error.message, error.statusCode, { code: error.code })
+      );
     }
     next(error);
   }

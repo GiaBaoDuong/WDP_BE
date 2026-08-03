@@ -8,6 +8,44 @@ const router = express.Router();
 
 const EXPIRES_IN = 7 * 24 * 60 * 60;
 
+const parseOptionalBankInfo = ({
+  role,
+  bank_name,
+  account_holder,
+  bank_account_number,
+}) => {
+  if (!["Mangaka", "Assistant"].includes(role)) {
+    return { provided: false, data: null };
+  }
+
+  const values = [bank_name, account_holder, bank_account_number];
+  const hasAnyValue = values.some(
+    (value) => value !== undefined && value !== null && String(value).trim()
+  );
+  if (!hasAnyValue) return { provided: false, data: null };
+
+  const hasAllValues = values.every(
+    (value) => typeof value === "string" && value.trim()
+  );
+  if (!hasAllValues) {
+    return {
+      provided: false,
+      data: null,
+      error:
+        "Nếu nhập thông tin ngân hàng, vui lòng nhập đầy đủ bank_name, account_holder và bank_account_number",
+    };
+  }
+
+  return {
+    provided: true,
+    data: {
+      bank_name: bank_name.trim(),
+      account_holder: account_holder.trim(),
+      bank_account_number: bank_account_number.trim(),
+    },
+  };
+};
+
 const buildTokenPayload = (user) => ({
   nameid: user._id,
   unique_name: user.username,
@@ -54,9 +92,9 @@ const buildUserResponse = (user) => ({
  *               email: { type: string }
  *               phoneNumber: { type: string }
  *               role: { type: string, enum: [Admin, Mangaka, Assistant, Editor, EB, Reader] }
- *               bank_name: { type: string, description: "Bắt buộc nếu role là Mangaka hoặc Assistant" }
- *               account_holder: { type: string, description: "Bắt buộc nếu role là Mangaka hoặc Assistant" }
- *               bank_account_number: { type: string, description: "Bắt buộc nếu role là Mangaka hoặc Assistant" }
+ *               bank_name: { type: string, description: "Optional. Nếu nhập thì phải nhập đủ cả 3 field ngân hàng." }
+ *               account_holder: { type: string, description: "Optional. Nếu nhập thì phải nhập đủ cả 3 field ngân hàng." }
+ *               bank_account_number: { type: string, description: "Optional. Nếu nhập thì phải nhập đủ cả 3 field ngân hàng." }
  *     responses:
  *       201:
  *         description: Đăng ký thành công
@@ -111,15 +149,18 @@ router.post("/register", async (req, res) => {
       });
     }
 
-    // Mangaka/Assistant bắt buộc phải có thông tin ngân hàng
-    if (["Mangaka", "Assistant"].includes(role)) {
-      if (!bank_name || !account_holder || !bank_account_number) {
-        return res.status(400).json({
-          success: false,
-          message:
-            "Mangaka/Assistant phải nhập đầy đủ thông tin ngân hàng: bank_name, account_holder, bank_account_number",
-        });
-      }
+    // Thông tin ngân hàng là optional; nếu nhập thì phải nhập đủ cả 3 field.
+    const bankInfo = parseOptionalBankInfo({
+      role,
+      bank_name,
+      account_holder,
+      bank_account_number,
+    });
+    if (bankInfo.error) {
+      return res.status(400).json({
+        success: false,
+        message: bankInfo.error,
+      });
     }
 
     const existingUser = await User.findOne({
@@ -141,11 +182,7 @@ router.post("/register", async (req, res) => {
       phoneNumber,
       role,
     };
-    if (["Mangaka", "Assistant"].includes(role)) {
-      userData.bank_name = bank_name;
-      userData.account_holder = account_holder;
-      userData.bank_account_number = bank_account_number;
-    }
+    if (bankInfo.provided) Object.assign(userData, bankInfo.data);
 
     await User.create(userData);
 
@@ -183,9 +220,9 @@ router.post("/register", async (req, res) => {
  *               email: { type: string }
  *               phoneNumber: { type: string }
  *               role: { type: string, enum: [Admin, Mangaka, Assistant, Editor, EB, Reader] }
- *               bank_name: { type: string }
- *               account_holder: { type: string }
- *               bank_account_number: { type: string }
+ *               bank_name: { type: string, description: "Optional. Nếu nhập thì phải nhập đủ cả 3 field ngân hàng." }
+ *               account_holder: { type: string, description: "Optional. Nếu nhập thì phải nhập đủ cả 3 field ngân hàng." }
+ *               bank_account_number: { type: string, description: "Optional. Nếu nhập thì phải nhập đủ cả 3 field ngân hàng." }
  *     responses:
  *       200:
  *         description: OTP đã được gửi đến email
@@ -240,15 +277,18 @@ router.post("/register/send-otp", async (req, res) => {
       });
     }
 
-    // Mangaka/Assistant bắt buộc phải có thông tin ngân hàng
-    if (["Mangaka", "Assistant"].includes(role)) {
-      if (!bank_name || !account_holder || !bank_account_number) {
-        return res.status(400).json({
-          success: false,
-          message:
-            "Mangaka/Assistant phải nhập đầy đủ thông tin ngân hàng: bank_name, account_holder, bank_account_number",
-        });
-      }
+    // Thông tin ngân hàng là optional; nếu nhập thì phải nhập đủ cả 3 field.
+    const bankInfo = parseOptionalBankInfo({
+      role,
+      bank_name,
+      account_holder,
+      bank_account_number,
+    });
+    if (bankInfo.error) {
+      return res.status(400).json({
+        success: false,
+        message: bankInfo.error,
+      });
     }
 
     const existingUser = await User.findOne({
@@ -298,9 +338,9 @@ router.post("/register/send-otp", async (req, res) => {
  *               email: { type: string }
  *               phoneNumber: { type: string }
  *               role: { type: string, enum: [Admin, Mangaka, Assistant, Editor, EB, Reader] }
- *               bank_name: { type: string }
- *               account_holder: { type: string }
- *               bank_account_number: { type: string }
+ *               bank_name: { type: string, description: "Optional. Nếu nhập thì phải nhập đủ cả 3 field ngân hàng." }
+ *               account_holder: { type: string, description: "Optional. Nếu nhập thì phải nhập đủ cả 3 field ngân hàng." }
+ *               bank_account_number: { type: string, description: "Optional. Nếu nhập thì phải nhập đủ cả 3 field ngân hàng." }
  *               otp: { type: string, description: 6-digit OTP code sent to email }
  *     responses:
  *       201:
@@ -334,15 +374,18 @@ router.post("/register/verify-otp", async (req, res) => {
       });
     }
 
-    // Mangaka/Assistant bắt buộc phải có thông tin ngân hàng
-    if (["Mangaka", "Assistant"].includes(role)) {
-      if (!bank_name || !account_holder || !bank_account_number) {
-        return res.status(400).json({
-          success: false,
-          message:
-            "Mangaka/Assistant phải nhập đầy đủ thông tin ngân hàng: bank_name, account_holder, bank_account_number",
-        });
-      }
+    // Thông tin ngân hàng là optional; nếu nhập thì phải nhập đủ cả 3 field.
+    const bankInfo = parseOptionalBankInfo({
+      role,
+      bank_name,
+      account_holder,
+      bank_account_number,
+    });
+    if (bankInfo.error) {
+      return res.status(400).json({
+        success: false,
+        message: bankInfo.error,
+      });
     }
 
     const { valid, reason } = await verifyOtp({ email, code: otp.trim(), purpose: "register" });
@@ -373,11 +416,7 @@ router.post("/register/verify-otp", async (req, res) => {
       phoneNumber,
       role,
     };
-    if (["Mangaka", "Assistant"].includes(role)) {
-      userData.bank_name = bank_name;
-      userData.account_holder = account_holder;
-      userData.bank_account_number = bank_account_number;
-    }
+    if (bankInfo.provided) Object.assign(userData, bankInfo.data);
 
     await User.create(userData);
 

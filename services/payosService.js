@@ -41,6 +41,7 @@ async function createPaymentLink(args) {
     returnUrl = config.payos.returnUrl,
     cancelUrl = config.payos.cancelUrl,
     items = [],
+    expiredAt,
   } = args;
 
   if (!Number.isSafeInteger(orderCode) || orderCode <= 0) {
@@ -65,6 +66,7 @@ async function createPaymentLink(args) {
     returnUrl,
     cancelUrl,
     items,
+    ...(expiredAt ? { expiredAt } : {}),
   });
 }
 

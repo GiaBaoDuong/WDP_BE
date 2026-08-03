@@ -10,6 +10,7 @@
  *  PAYOS_RETURN_URL        (URL frontend sau khi thanh toán thành công)
  *  PAYOS_CANCEL_URL        (URL frontend khi user huỷ)
  *  PAYOS_MOCK=true         (dùng cho dev/test không cần kết nối PayOS thật)
+ *  PAYMENT_TIMEOUT_SECONDS (thời gian checkout còn hiệu lực, mặc định 120 giây)
  *
  *  REVENUE_PENDING_HOURS   (mặc định 24, dev có thể đặt 0.003 = ~10 giây)
  *  PLATFORM_FEE_PERCENT    (mặc định 20 = 20%)
@@ -52,6 +53,10 @@ const config = {
     // Khi true: không gọi PayOS thật, trả về mock checkout URL.
     // Cho phép dev/test mà không cần tài khoản PayOS.
     mock: String(process.env.PAYOS_MOCK || "false").toLowerCase() === "true",
+    paymentTimeoutSeconds: Math.max(
+      30,
+      toSafeInteger(process.env.PAYMENT_TIMEOUT_SECONDS, 120)
+    ),
   },
   revenue: {
     // Số giờ Revenue nằm ở trạng thái pending trước khi chuyển sang available.

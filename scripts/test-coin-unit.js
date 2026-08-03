@@ -4,6 +4,7 @@ const {
   coinToUnits,
   unitsToCoinString,
   unitsToVnd,
+  withCreatorVndBalances,
   formatCoinResponse,
 } = require("../utils/coinUnit");
 const { allocateUnits, roundPercentageOfUnits } = require("../services/revenueService");
@@ -39,6 +40,15 @@ async function main() {
   assert.deepEqual(allocateUnits(400, shares).map((item) => item.floor), [240, 160]);
   assert.deepEqual(allocateUnits(100, shares).map((item) => item.floor), [60, 40]);
   assert.equal(unitsToVnd(25050, 100), 25050);
+
+  const creatorWallet = withCreatorVndBalances(
+    { pending_balance: 240, available_balance: 160 },
+    100
+  );
+  assert.equal(creatorWallet.current_balance, 400);
+  assert.equal(creatorWallet.pending_balance_vnd, 240);
+  assert.equal(creatorWallet.available_balance_vnd, 160);
+  assert.equal(creatorWallet.current_balance_vnd, 400);
 
   const formatted = formatCoinResponse({ success: true, data: { balance: 12550, pending_balance: 240 } });
   assert.equal(formatted.data.balance, 12550);

@@ -55,6 +55,7 @@ const paymentSchema = new mongoose.Schema(
     paid_at: { type: Date, default: null },
     cancelled_at: { type: Date, default: null },
     expired_at: { type: Date, default: null },
+    expires_at: { type: Date, default: null, index: true },
   },
   { timestamps: true }
 );

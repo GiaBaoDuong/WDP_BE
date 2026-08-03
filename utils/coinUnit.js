@@ -44,6 +44,26 @@ function unitsToVnd(units, coinToVndRate) {
   return Number(amount);
 }
 
+function withCreatorVndBalances(wallet, coinToVndRate) {
+  const source = wallet && wallet.toObject ? wallet.toObject() : { ...wallet };
+  const pendingBalance = source.pending_balance ?? 0;
+  const availableBalance = source.available_balance ?? 0;
+
+  assertCoinUnits(pendingBalance, "pending_balance");
+  assertCoinUnits(availableBalance, "available_balance");
+
+  const currentBalance = pendingBalance + availableBalance;
+  assertCoinUnits(currentBalance, "current_balance");
+
+  return {
+    ...source,
+    current_balance: currentBalance,
+    pending_balance_vnd: unitsToVnd(pendingBalance, coinToVndRate),
+    available_balance_vnd: unitsToVnd(availableBalance, coinToVndRate),
+    current_balance_vnd: unitsToVnd(currentBalance, coinToVndRate),
+  };
+}
+
 function withCoinFields(value, fields) {
   if (!value) return value;
   const result = value.toObject ? value.toObject() : { ...value };
@@ -146,6 +166,7 @@ module.exports = {
   coinToUnits,
   unitsToCoinString,
   unitsToVnd,
+  withCreatorVndBalances,
   withCoinFields,
   formatCoinResponse,
 };

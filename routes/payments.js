@@ -23,6 +23,18 @@ const payos = require("../services/payosService");
 const config = require("../config/payment");
 const { unitsToCoinString } = require("../utils/coinUnit");
 
+async function expireOverduePayments(filter = {}) {
+  const now = new Date();
+  await Payment.updateMany(
+    {
+      ...filter,
+      status: PAYMENT_STATUS.PENDING,
+      expires_at: { $ne: null, $lte: now },
+    },
+    { $set: { status: PAYMENT_STATUS.EXPIRED, expired_at: now } }
+  );
+}
+
 // ─── GET /payments/packages ───────────────────────────────────────────────────
 /**
  * @swagger
@@ -77,6 +89,9 @@ router.post("/create", authMiddleware, requireReader, async (req, res, next) => 
 
     const orderCode = payos.generateOrderCode();
     const description = `WDPManga nap ${unitsToCoinString(pkg.total_coin)} Coin`;
+    const expiresAt = new Date(
+      Date.now() + config.payos.paymentTimeoutSeconds * 1000
+    );
 
     // Tạo payment record pending
     const payment = await Payment.create({
@@ -87,6 +102,7 @@ router.post("/create", authMiddleware, requireReader, async (req, res, next) => 
       coin_amount: pkg.total_coin,
       status: PAYMENT_STATUS.PENDING,
       description,
+      expires_at: expiresAt,
     });
 
     // Tạo link PayOS
@@ -101,6 +117,7 @@ router.post("/create", authMiddleware, requireReader, async (req, res, next) => 
           price: pkg.price_vnd,
         },
       ],
+      expiredAt: Math.floor(expiresAt.getTime() / 1000),
     });
 
     payment.checkout_url = link.checkoutUrl;
@@ -115,6 +132,7 @@ router.post("/create", authMiddleware, requireReader, async (req, res, next) => 
         amount_vnd: payment.amount_vnd,
         coin_amount: payment.coin_amount,
         checkout_url: payment.checkout_url,
+        expires_at: payment.expires_at,
         mock: !!link.mock,
       },
     });
@@ -293,6 +311,8 @@ router.get("/mine", authMiddleware, requireReader, async (req, res, next) => {
     const limit = Math.min(100, Math.max(1, parseInt(req.query.limit) || 20));
     const skip = (page - 1) * limit;
 
+    await expireOverduePayments({ user_id: req.user.nameid });
+
     const [items, total] = await Promise.all([
       Payment.find({ user_id: req.user.nameid })
         .sort({ createdAt: -1 })
@@ -324,6 +344,7 @@ router.get("/:id", authMiddleware, async (req, res, next) => {
     if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
       return next(new AppError("Invalid payment id", 400));
     }
+    await expireOverduePayments({ _id: req.params.id });
     const payment = await Payment.findById(req.params.id)
       .populate("coin_package_id", "name price_vnd coin_amount bonus_coin")
       .lean();

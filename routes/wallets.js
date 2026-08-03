@@ -17,6 +17,7 @@ const PurchasedChapter = require("../models/PurchasedChapter");
 const Revenue = require("../models/Revenue");
 const { getOrCreateWallet } = require("../services/walletService");
 const config = require("../config/payment");
+const { withCreatorVndBalances } = require("../utils/coinUnit");
 
 // ─── GET /wallet ──────────────────────────────────────────────────────────────
 /**
@@ -32,10 +33,13 @@ const config = require("../config/payment");
 router.get("/", authMiddleware, async (req, res, next) => {
   try {
     const wallet = await getOrCreateWallet(req.user.nameid);
+    const walletData = ["Mangaka", "Assistant"].includes(req.user.role)
+      ? withCreatorVndBalances(wallet, config.monetization.coinToVndRate)
+      : wallet.toObject();
     return res.json({
       success: true,
       data: {
-        ...wallet.toObject(),
+        ...walletData,
         config: {
           coin_to_vnd_rate: config.monetization.coinToVndRate,
           platform_fee_percent: config.monetization.platformFeePercent,

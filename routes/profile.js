@@ -37,6 +37,11 @@ const shapeUser = (user) => {
       account_holder: u.account_holder || "",
       account_number_masked: maskAccountNumber(u.bank_account_number),
       has_account_number: !!u.bank_account_number,
+      has_bank_info: !!(
+        u.bank_name &&
+        u.account_holder &&
+        u.bank_account_number
+      ),
     },
   };
 };

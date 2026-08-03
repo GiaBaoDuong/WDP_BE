@@ -17,6 +17,7 @@ const Withdrawal = require("../models/Withdrawal");
 const Chapter = require("../models/Chapter");
 const Series = require("../models/Series");
 const config = require("../config/payment");
+const { withCreatorVndBalances } = require("../utils/coinUnit");
 
 // ─── GET /dashboard/me ────────────────────────────────────────────────────────
 /**
@@ -37,6 +38,9 @@ router.get("/me", authMiddleware, async (req, res, next) => {
     // Wallet
     let wallet = await Wallet.findOne({ user_id: userId }).lean();
     if (!wallet) wallet = await Wallet.create({ user_id: userId });
+    if (["Mangaka", "Assistant"].includes(role)) {
+      wallet = withCreatorVndBalances(wallet, config.monetization.coinToVndRate);
+    }
 
     // Mặc định cho Reader
     let data = {
