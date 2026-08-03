@@ -18,6 +18,7 @@ const { AppError } = require("../middleware/errorHandler");
 const CoinPackage = require("../models/CoinPackage");
 const Payment = require("../models/Payment");
 const { PAYMENT_STATUS } = require("../models/Payment");
+const WalletTransaction = require("../models/WalletTransaction");
 const { creditCoin } = require("../services/walletService");
 const payos = require("../services/payosService");
 const config = require("../config/payment");
@@ -162,7 +163,7 @@ router.post("/payos/webhook", async (req, res) => {
     const body = req.body || {};
     let data;
     try {
-      data = payos.verifyWebhookData(body);
+      data = await payos.verifyWebhookData(body);
     } catch (error) {
       console.warn("[PayOS Webhook] Invalid signature:", error.message);
       return res.status(400).json({ success: false, message: "Invalid signature" });
@@ -172,6 +173,14 @@ router.post("/payos/webhook", async (req, res) => {
     }
     const orderCode = Number(data.orderCode);
     const code = String(data.code || "").toUpperCase();
+
+    if (!Number.isSafeInteger(orderCode) || orderCode <= 0) {
+      console.warn("[PayOS Webhook] Invalid orderCode:", data.orderCode);
+      return res.status(400).json({
+        success: false,
+        message: "Invalid orderCode",
+      });
+    }
 
     const payment = await Payment.findOne({ order_code: orderCode });
     if (!payment) {
@@ -185,40 +194,86 @@ router.post("/payos/webhook", async (req, res) => {
     }
 
     if (code === "00" || code === "SUCCESS" || code === "PAID") {
-      if (Number(data.amount) !== payment.amount_vnd) {
+      const paidAmount = Number(data.amount);
+      if (!Number.isSafeInteger(paidAmount) || paidAmount !== payment.amount_vnd) {
         console.warn(
           `[PayOS Webhook] Amount mismatch orderCode=${orderCode}: expected=${payment.amount_vnd}, received=${data.amount}`
         );
         return res.status(400).json({ success: false, message: "Amount mismatch" });
       }
-      payment.status = PAYMENT_STATUS.PAID;
-      payment.paid_at = new Date();
-      payment.payos_raw_payload = body;
-      await payment.save();
+      // Commit Payment + Wallet + WalletTransaction trong cùng một MongoDB
+      // transaction. Webhook gửi lặp/đồng thời sẽ không thể cộng Coin hai lần.
+      const session = await mongoose.startSession();
+      let credited = false;
+      try {
+        await session.withTransaction(async () => {
+          const current = await Payment.findById(payment._id).session(session);
+          if (!current || current.status === PAYMENT_STATUS.PAID) return;
 
-      // Cộng Coin vào wallet
-      await creditCoin(payment.user_id, payment.coin_amount, payment.amount_vnd, {
-        description: `Nạp ${unitsToCoinString(payment.coin_amount)} Coin qua PayOS`,
-        payment_id: payment._id,
-      });
+          const existingDeposit = await WalletTransaction.findOne({
+            payment_id: current._id,
+          }).session(session);
+
+          if (!existingDeposit) {
+            await creditCoin(
+              current.user_id,
+              current.coin_amount,
+              current.amount_vnd,
+              {
+                description: `Nạp ${unitsToCoinString(current.coin_amount)} Coin qua PayOS`,
+                payment_id: current._id,
+                session,
+              }
+            );
+            credited = true;
+          }
+
+          current.status = PAYMENT_STATUS.PAID;
+          current.paid_at = new Date();
+          current.cancelled_at = null;
+          current.expired_at = null;
+          current.payos_raw_payload = body;
+          await current.save({ session });
+        });
+      } finally {
+        await session.endSession();
+      }
 
       console.log(
-        `[PayOS Webhook] Paid orderCode=${orderCode}, +${unitsToCoinString(payment.coin_amount)} Coin for user ${payment.user_id}`
+        `[PayOS Webhook] Paid orderCode=${orderCode}, credited=${credited}, +${unitsToCoinString(payment.coin_amount)} Coin for user ${payment.user_id}`
       );
     } else if (code === "CANCELLED" || code === "CANCEL") {
-      payment.status = PAYMENT_STATUS.CANCELLED;
-      payment.cancelled_at = new Date();
-      payment.payos_raw_payload = body;
-      await payment.save();
+      await Payment.updateOne(
+        { _id: payment._id, status: { $ne: PAYMENT_STATUS.PAID } },
+        {
+          $set: {
+            status: PAYMENT_STATUS.CANCELLED,
+            cancelled_at: new Date(),
+            payos_raw_payload: body,
+          },
+        }
+      );
     } else if (code === "EXPIRED") {
-      payment.status = PAYMENT_STATUS.EXPIRED;
-      payment.expired_at = new Date();
-      payment.payos_raw_payload = body;
-      await payment.save();
+      await Payment.updateOne(
+        { _id: payment._id, status: { $ne: PAYMENT_STATUS.PAID } },
+        {
+          $set: {
+            status: PAYMENT_STATUS.EXPIRED,
+            expired_at: new Date(),
+            payos_raw_payload: body,
+          },
+        }
+      );
     } else {
-      payment.status = PAYMENT_STATUS.FAILED;
-      payment.payos_raw_payload = body;
-      await payment.save();
+      await Payment.updateOne(
+        { _id: payment._id, status: { $ne: PAYMENT_STATUS.PAID } },
+        {
+          $set: {
+            status: PAYMENT_STATUS.FAILED,
+            payos_raw_payload: body,
+          },
+        }
+      );
     }
 
     return res.json({ success: true });

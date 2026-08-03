@@ -16,10 +16,18 @@ const { assertCoinUnits } = require("../utils/coinUnit");
 /**
  * Lấy hoặc tạo mới Wallet cho user.
  */
-async function getOrCreateWallet(userId) {
-  let wallet = await Wallet.findOne({ user_id: userId });
+async function getOrCreateWallet(userId, opts = {}) {
+  let query = Wallet.findOne({ user_id: userId });
+  if (opts.session) query = query.session(opts.session);
+  let wallet = await query;
   if (!wallet) {
-    wallet = await Wallet.create({ user_id: userId });
+    if (opts.session) {
+      [wallet] = await Wallet.create([{ user_id: userId }], {
+        session: opts.session,
+      });
+    } else {
+      wallet = await Wallet.create({ user_id: userId });
+    }
   }
   return wallet;
 }
@@ -33,7 +41,7 @@ async function creditCoin(userId, coinAmount, vndAmount = 0, opts = {}) {
   if (!Number.isSafeInteger(coinAmount) || coinAmount <= 0) {
     throw new Error("coinAmount phải > 0");
   }
-  const wallet = await getOrCreateWallet(userId);
+  const wallet = await getOrCreateWallet(userId, { session: opts.session });
   const updated = await Wallet.findOneAndUpdate(
     { _id: wallet._id },
     {
@@ -42,9 +50,9 @@ async function creditCoin(userId, coinAmount, vndAmount = 0, opts = {}) {
         total_deposited: coinAmount,
       },
     },
-    { new: true }
+    { new: true, session: opts.session }
   );
-  const transaction = await WalletTransaction.create({
+  const transactionData = {
     wallet_id: updated._id,
     user_id: userId,
     type: TX_TYPES.DEPOSIT,
@@ -53,7 +61,10 @@ async function creditCoin(userId, coinAmount, vndAmount = 0, opts = {}) {
     vnd_amount: vndAmount,
     description: opts.description || "Nạp Coin qua PayOS",
     payment_id: opts.payment_id || null,
-  });
+  };
+  const transaction = opts.session
+    ? (await WalletTransaction.create([transactionData], { session: opts.session }))[0]
+    : await WalletTransaction.create(transactionData);
   return { wallet: updated, transaction };
 }
 

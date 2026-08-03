@@ -77,6 +77,15 @@ const txSchema = new mongoose.Schema(
 
 txSchema.index({ user_id: 1, createdAt: -1 });
 txSchema.index({ wallet_id: 1, createdAt: -1 });
+// Mỗi Payment chỉ được tạo đúng một bút toán nạp Coin. Partial index cho phép
+// các loại giao dịch khác tiếp tục có payment_id = null.
+txSchema.index(
+  { payment_id: 1 },
+  {
+    unique: true,
+    partialFilterExpression: { payment_id: { $type: "objectId" } },
+  }
+);
 
 const WalletTransaction = mongoose.model("WalletTransaction", txSchema);
 module.exports = WalletTransaction;

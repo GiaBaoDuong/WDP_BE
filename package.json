@@ -6,6 +6,7 @@
     "start": "node ./bin/www",
     "dev": "nodemon ./bin/www",
     "test:coin-unit": "node ./scripts/test-coin-unit.js",
+    "test:payos-webhook": "node ./scripts/test-payos-webhook.js",
     "payos:webhook": "node ./scripts/register-payos-webhook.js"
   },
   "dependencies": {

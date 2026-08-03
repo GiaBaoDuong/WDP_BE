@@ -74,9 +74,9 @@ async function createPaymentLink(args) {
  * Verify a webhook and return its signed data. The SDK throws when the
  * signature is invalid; callers can treat that as an invalid request.
  */
-function verifyWebhookData(webhookBody) {
+async function verifyWebhookData(webhookBody) {
   if (config.payos.mock) return webhookBody?.data || null;
-  return getClient().webhooks.verify(webhookBody);
+  return await getClient().webhooks.verify(webhookBody);
 }
 
 async function confirmWebhook(webhookUrl = config.payos.webhookUrl) {
