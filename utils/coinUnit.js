@@ -64,6 +64,22 @@ function withCreatorVndBalances(wallet, coinToVndRate) {
   };
 }
 
+function withWalletCoinDisplayFields(wallet) {
+  const source = wallet && wallet.toObject ? wallet.toObject() : { ...wallet };
+  const getDisplay = (field) => unitsToCoinString(source[field] ?? 0);
+
+  return {
+    ...source,
+    balance_coin_display: getDisplay("balance"),
+    available_balance_coin_display: getDisplay("available_balance"),
+    pending_balance_coin_display: getDisplay("pending_balance"),
+    total_revenue_coin_display: getDisplay("total_revenue"),
+    total_withdrawn_coin_display: getDisplay("total_withdrawn"),
+    total_deposited_coin_display: getDisplay("total_deposited"),
+    total_spent_coin_display: getDisplay("total_spent"),
+  };
+}
+
 function withCoinFields(value, fields) {
   if (!value) return value;
   const result = value.toObject ? value.toObject() : { ...value };
@@ -185,6 +201,7 @@ module.exports = {
   unitsToCoinString,
   unitsToVnd,
   withCreatorVndBalances,
+  withWalletCoinDisplayFields,
   withCoinFields,
   formatCoinResponse,
 };

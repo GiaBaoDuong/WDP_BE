@@ -47,9 +47,9 @@ const shapeUser = (user) => ({
  *     responses:
  *       200:
  *         description: |
- *           Assistant profile. Các field `earnings`, `pendingEarnings`,
- *           `availableEarnings`, `withdrawnEarnings`, `pendingBalance` và
- *           `availableBalance` là raw CoinUnit. Các field kết thúc bằng
+ *           Assistant profile. Stats có cả snake_case (FE contract) và camelCase (backward compat).
+ *           Các field `earnings`, `pendingEarnings`, `availableEarnings`, `withdrawnEarnings`,
+ *           `pendingBalance` và `availableBalance` là raw CoinUnit. Các field kết thúc bằng
  *           `Coin` là chuỗi Coin đã chia theo `coinUnitScale`, dùng để hiển thị.
  *       401:
  *         description: Unauthorized
@@ -221,8 +221,13 @@ router.get(
         data: {
           user: shapeUser(user),
           stats: {
-            totalSeries: series.length,
+            // Snake_case (FE contract)
+            total_series: series.length,
             chapters: chapters.length,
+            total_tasks: taskSummary.total,
+            approved_tasks: taskSummary.approved,
+            // CamelCase (backward compat)
+            totalSeries: series.length,
             totalTasks: taskSummary.total,
             approvedTasks: taskSummary.approved,
             earnings: revenueSummary.earnings,

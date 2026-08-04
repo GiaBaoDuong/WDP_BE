@@ -17,7 +17,10 @@ const PurchasedChapter = require("../models/PurchasedChapter");
 const Revenue = require("../models/Revenue");
 const { getOrCreateWallet } = require("../services/walletService");
 const config = require("../config/payment");
-const { withCreatorVndBalances } = require("../utils/coinUnit");
+const {
+  withCreatorVndBalances,
+  withWalletCoinDisplayFields,
+} = require("../utils/coinUnit");
 
 // ─── GET /wallet ──────────────────────────────────────────────────────────────
 /**
@@ -28,7 +31,13 @@ const { withCreatorVndBalances } = require("../utils/coinUnit");
  *     tags: [Wallet]
  *     security: [{ BearerAuth: [] }]
  *     responses:
- *       200: { description: Wallet info }
+ *       200:
+ *         description: |
+ *           Wallet info. Có đủ 7 field *_coin_display theo FE contract:
+ *           balance_coin_display, available_balance_coin_display, pending_balance_coin_display,
+ *           total_revenue_coin_display, total_withdrawn_coin_display, total_deposited_coin_display,
+ *           total_spent_coin_display. Các field balance_coin, pending_balance_coin vẫn giữ nguyên
+ *           để tương thích ngược.
  */
 router.get("/", authMiddleware, async (req, res, next) => {
   try {
@@ -36,10 +45,13 @@ router.get("/", authMiddleware, async (req, res, next) => {
     const walletData = ["Mangaka", "Assistant"].includes(req.user.role)
       ? withCreatorVndBalances(wallet, config.monetization.coinToVndRate)
       : wallet.toObject();
+
+    const walletWithDisplay = withWalletCoinDisplayFields(walletData);
+
     return res.json({
       success: true,
       data: {
-        ...walletData,
+        ...walletWithDisplay,
         config: {
           coin_to_vnd_rate: config.monetization.coinToVndRate,
           platform_fee_percent: config.monetization.platformFeePercent,

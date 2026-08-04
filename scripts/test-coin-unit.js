@@ -5,6 +5,7 @@ const {
   unitsToCoinString,
   unitsToVnd,
   withCreatorVndBalances,
+  withWalletCoinDisplayFields,
   formatCoinResponse,
 } = require("../utils/coinUnit");
 const { allocateUnits, roundPercentageOfUnits } = require("../services/revenueService");
@@ -55,6 +56,22 @@ async function main() {
   assert.equal(formatted.data.balance_coin, "125.50");
   assert.equal(formatted.data.pending_balance_coin, "2.40");
   assert.equal(formatted.coin_unit_scale, 100);
+
+  const walletDisplay = withWalletCoinDisplayFields({
+    balance: 12550,
+    available_balance: 160,
+    pending_balance: 240,
+    total_revenue: 50000,
+    total_withdrawn: 10000,
+    total_deposited: 20000,
+  });
+  assert.equal(walletDisplay.balance_coin_display, "125.50");
+  assert.equal(walletDisplay.available_balance_coin_display, "1.60");
+  assert.equal(walletDisplay.pending_balance_coin_display, "2.40");
+  assert.equal(walletDisplay.total_revenue_coin_display, "500.00");
+  assert.equal(walletDisplay.total_withdrawn_coin_display, "100.00");
+  assert.equal(walletDisplay.total_deposited_coin_display, "200.00");
+  assert.equal(walletDisplay.total_spent_coin_display, "0.00");
 
   const chapter = new Chapter({
     series_id: "64b000000000000000000001",

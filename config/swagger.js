@@ -362,15 +362,31 @@ const options = {
             available_balance: { type: "integer", format: "int64", description: "Raw CoinUnit" },
             total_revenue: { type: "integer", format: "int64", description: "Raw CoinUnit" },
             total_withdrawn: { type: "integer", format: "int64", description: "Raw CoinUnit" },
-            balance_coin: { type: "string", example: "125.50" },
-            pending_balance_coin: { type: "string", example: "2.40" },
-            available_balance_coin: { type: "string", example: "1.60" },
+            balance_coin: { type: "string", example: "125.50", description: "Legacy - dùng balance_coin_display" },
+            pending_balance_coin: { type: "string", example: "2.40", description: "Legacy - dùng pending_balance_coin_display" },
+            available_balance_coin: { type: "string", example: "1.60", description: "Legacy - dùng available_balance_coin_display" },
+            // 7 field *_coin_display theo FE contract
+            balance_coin_display: { type: "string", example: "125.50", description: "Display string cho balance" },
+            available_balance_coin_display: { type: "string", example: "1.60", description: "Display string cho available_balance" },
+            pending_balance_coin_display: { type: "string", example: "2.40", description: "Display string cho pending_balance" },
+            total_revenue_coin_display: { type: "string", example: "500.00", description: "Display string cho total_revenue" },
+            total_withdrawn_coin_display: { type: "string", example: "100.00", description: "Display string cho total_withdrawn" },
+            total_deposited_coin_display: { type: "string", example: "200.00", description: "Display string cho total_deposited" },
+            total_spent_coin_display: { type: "string", example: "75.00", description: "Display string cho total_spent" },
             current_balance: { type: "integer", format: "int64", description: "Mangaka/Assistant only: pending_balance + available_balance, raw CoinUnit" },
             current_balance_display: { type: "string", example: "4.00", description: "Mangaka/Assistant only: tổng Coin hiện có để hiển thị" },
             pending_balance_vnd: { type: "integer", example: 240, description: "Mangaka/Assistant only: VNĐ quy đổi từ pending_balance" },
             available_balance_vnd: { type: "integer", example: 160, description: "Mangaka/Assistant only: VNĐ quy đổi từ available_balance" },
             current_balance_vnd: { type: "integer", example: 400, description: "Mangaka/Assistant only: VNĐ quy đổi từ current_balance" },
             coin_unit_scale: { type: "integer", example: 100 },
+            config: {
+              type: "object",
+              properties: {
+                coin_to_vnd_rate: { type: "integer", example: 1000 },
+                platform_fee_percent: { type: "number" },
+                revenue_pending_hours: { type: "integer" },
+              },
+            },
           },
         },
         WalletTransaction: {
@@ -575,6 +591,37 @@ const options = {
             role: { type: "string", enum: ["Reader"] },
             total_coin_spent: { type: "integer", format: "int64", description: "Raw CoinUnit" },
             chapters_bought: { type: "integer" },
+          },
+        },
+// Assistant Profile Stats (snake_case + camelCase backward compat)
+        AssistantStats: {
+          type: "object",
+          description: "Stats có cả snake_case (FE contract) và camelCase (backward compat)",
+          properties: {
+            // Snake_case (FE contract)
+            total_series: { type: "integer", description: "Số series liên quan" },
+            chapters: { type: "integer", description: "Tổng số chapter đã tham gia" },
+            total_tasks: { type: "integer", description: "Tổng số task được giao" },
+            approved_tasks: { type: "integer", description: "Số task đã approve" },
+            // CamelCase (backward compat)
+            totalSeries: { type: "integer" },
+            totalTasks: { type: "integer" },
+            approvedTasks: { type: "integer" },
+            // Earnings (raw CoinUnit)
+            earnings: { type: "integer", format: "int64", description: "Raw CoinUnit" },
+            earningsCoin: { type: "string", example: "125.50" },
+            pendingEarnings: { type: "integer", format: "int64", description: "Raw CoinUnit" },
+            pendingEarningsCoin: { type: "string", example: "2.40" },
+            availableEarnings: { type: "integer", format: "int64", description: "Raw CoinUnit" },
+            availableEarningsCoin: { type: "string", example: "1.60" },
+            withdrawnEarnings: { type: "integer", format: "int64", description: "Raw CoinUnit" },
+            withdrawnEarningsCoin: { type: "string", example: "100.00" },
+            // Balance (raw CoinUnit)
+            pendingBalance: { type: "integer", format: "int64", description: "Raw CoinUnit" },
+            pendingBalanceCoin: { type: "string", example: "2.40" },
+            availableBalance: { type: "integer", format: "int64", description: "Raw CoinUnit" },
+            availableBalanceCoin: { type: "string", example: "1.60" },
+            coinUnitScale: { type: "integer", example: 100 },
           },
         },
         TopSeriesEntry: {
