@@ -1,16 +1,48 @@
 const express = require("express");
 const router = express.Router();
+const multer = require("multer");
+const mongoose = require("mongoose");
 const { authMiddleware } = require("../middleware/auth");
 const { requireMangaka, requireTE, requireEB } = require("../middleware/roles");
 const { AppError } = require("../middleware/errorHandler");
 const Chapter = require("../models/Chapter");
 const Series = require("../models/Series");
+const Page = require("../models/Page");
 const Task = require("../models/Task");
 const Notification = require("../models/Notification");
 const User = require("../models/User");
+const cloudinary = require("../config/cloudinary");
 const { CHAPTER_STATUS, ROLES, SERIES_STATUS } = require("../utils/constants");
 const { notifyChapterToTE } = require("../services/notificationService");
 const { canSubmitChapterToTE } = require("../services/debutGate");
+const path = require("path");
+
+// Multer memory storage for quick-revision uploads
+const uploadRevisionPages = multer({
+  storage: multer.memoryStorage(),
+  fileFilter: (req, file, cb) => {
+    const allowed = /jpeg|jpg|png|webp/;
+    const ext = allowed.test(path.extname(file.originalname).toLowerCase());
+    const mime = allowed.test(file.mimetype);
+    if (ext && mime) cb(null, true);
+    else cb(new Error("Only image files (jpeg, jpg, png, webp) are allowed"));
+  },
+  limits: { fileSize: 10 * 1024 * 1024 },
+});
+
+// Upload single file lên Cloudinary (stream from memory buffer)
+async function uploadSingleToCloudinary(file, folder) {
+  return new Promise((resolve, reject) => {
+    const stream = cloudinary.uploader.upload_stream(
+      { folder, resource_type: "image", allowed_formats: ["jpg", "jpeg", "png", "webp"] },
+      (error, result) => {
+        if (error) return reject(error);
+        resolve(result.secure_url);
+      }
+    );
+    stream.end(file.buffer);
+  });
+}
 
 // ─── GET /submissions/te-users ────────────────────────────────────────────────
 /**
@@ -680,6 +712,206 @@ router.get("/eb", authMiddleware, requireEB, async (req, res, next) => {
     next(error);
   }
 });
+
+// ─── POST /submissions/chapters/:id/quick-revision ───────────────────────────
+// Mangaka sửa nhanh 1-2 pages rồi gửi thẳng cho TE (bỏ qua bước Assistant).
+// Chỉ áp dụng khi EB hoặc TE yêu cầu chỉnh sửa nội dung nhỏ.
+// Luồng: EB/TE bảo sửa → Mangaka sửa 1-2 page → gọi API này → gửi thẳng cho TE
+/**
+ * @swagger
+ * /submissions/chapters/{id}/quick-revision:
+ *   post:
+ *     summary: Mangaka sửa nhanh pages rồi gửi thẳng cho TE (bỏ qua Assistant)
+ *     tags: [Submissions]
+ *     security:
+ *       - BearerAuth: []
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema:
+ *           type: string
+ *         description: ID của chapter
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         multipart/form-data:
+ *           schema:
+ *             type: object
+ *             properties:
+ *               pages:
+ *                 type: array
+ *                 items:
+ *                   type: object
+ *                   properties:
+ *                     page_id:
+ *                       type: string
+ *                       description: ID của page cần sửa
+ *                     image:
+ *                       type: string
+ *                       format: binary
+ *                       description: Ảnh đã sửa (file)
+ *     responses:
+ *       200:
+ *         description: Gửi lại cho TE thành công
+ *       400:
+ *         description: Chapter không ở trạng thái revision hoặc không có quyền
+ *       404:
+ *         description: Chapter không tìm thấy
+ */
+router.post(
+  "/chapters/:id/quick-revision",
+  authMiddleware,
+  requireMangaka,
+  uploadRevisionPages.array("pages", 5),
+  async (req, res, next) => {
+    try {
+      const { id } = req.params;
+      const { page_ids } = req.body;
+      const uploadedFiles = req.files || [];
+
+      const chapter = await Chapter.findOne({
+        _id: id,
+        submitted_by: req.user.nameid,
+      }).populate("series_id", "name status");
+      if (!chapter) {
+        return next(new AppError("Chapter not found or unauthorized", 404));
+      }
+
+      // Chỉ cho phép quick-revision khi chapter đang ở trạng thái revision
+      const revisionStatuses = [CHAPTER_STATUS.EB_REVISION, CHAPTER_STATUS.TE_REVISION, "revision_requested"];
+      if (!revisionStatuses.includes(chapter.status)) {
+        return next(
+          new AppError(
+            `Chỉ cho phép quick-revision khi chapter đang ở trạng thái revision (hiện tại: "${chapter.status}")`,
+            400
+          )
+        );
+      }
+
+      // Parse page_ids: có thể là JSON array string hoặc array
+      let parsedPageIds = [];
+      if (page_ids) {
+        try {
+          parsedPageIds = typeof page_ids === "string" ? JSON.parse(page_ids) : page_ids;
+        } catch {
+          return next(new AppError("page_ids không hợp lệ", 400));
+        }
+      }
+
+      if (parsedPageIds.length === 0 && uploadedFiles.length === 0) {
+        return next(new AppError("Cần truyền ít nhất 1 page_id và 1 ảnh đã sửa", 400));
+      }
+
+      if (parsedPageIds.length !== uploadedFiles.length) {
+        return next(new AppError("Số lượng page_ids và số ảnh upload phải bằng nhau", 400));
+      }
+
+      // Giới hạn số page được quick-revision (tối đa 5 pages)
+      if (uploadedFiles.length > 5) {
+        return next(new AppError("Quick revision chỉ cho phép tối đa 5 pages mỗi lần", 400));
+      }
+
+      // Validate page_ids tồn tại và thuộc về chapter này
+      const pages = await Page.find({
+        _id: { $in: parsedPageIds },
+        chapter_id: chapter._id,
+      });
+      if (pages.length !== parsedPageIds.length) {
+        return next(new AppError("Một hoặc nhiều page_id không hợp lệ hoặc không thuộc chapter này", 400));
+      }
+
+      const series = await Series.findById(chapter.series_id).lean();
+      if (!series) return next(new AppError("Series not found", 404));
+
+      // Upload images lên Cloudinary
+      const folder = `wdp/chapters/${chapter.series_id}/${Date.now()}`;
+      const uploadPromises = uploadedFiles.map((file) =>
+        uploadSingleToCloudinary(file, folder)
+      );
+      const uploadResults = await Promise.all(uploadPromises);
+
+      // Cập nhật từng page với ảnh đã sửa
+      const pageUpdates = pages.map((page, index) => {
+        const imageUrl = uploadResults[index];
+        return Page.findByIdAndUpdate(page._id, {
+          result_image_url: imageUrl,
+          final_image_url: imageUrl,
+          current_version: page.current_version + 1,
+          status: "approved",
+        });
+      });
+      await Promise.all(pageUpdates);
+
+      // Reset revision fields và chuyển chapter sang pending_TE
+      chapter.status = CHAPTER_STATUS.PENDING_TE;
+      chapter.revision_notes = "";
+      chapter.revision_annotations = [];
+      chapter.revision_source = "";
+      chapter.revision_round = (chapter.revision_round || 1) + 1;
+      chapter.revision_history.push({
+        at: new Date(),
+        by: req.user.nameid,
+        note: `Quick revision: ${uploadedFiles.length} page(s) đã sửa và gửi thẳng cho TE`,
+      });
+      await chapter.save();
+
+      // Notify TE
+      const seriesName = series.name || "";
+      if (chapter.te_id) {
+        await Notification.create({
+          user_id: chapter.te_id,
+          type: "chapter_pending_te",
+          title: `Chapter "${chapter.title}" cần duyệt lại`,
+          message: `Chapter "${chapter.title}" (#${chapter.chapter_number}) của series "${seriesName}" đã được Mangaka sửa nhanh và gửi lại. Có ${uploadedFiles.length} page(s) đã được cập nhật.`,
+          meta: {
+            chapter_id: chapter._id,
+            series_id: chapter.series_id,
+            revision_type: "quick_revision",
+            page_count: uploadedFiles.length,
+          },
+        });
+      } else {
+        const teUsers = await User.find({ role: "Editor", status: "active" }).lean();
+        await Notification.insertMany(
+          teUsers.map((u) => ({
+            user_id: u._id,
+            type: "chapter_pending_te",
+            title: `Chapter "${chapter.title}" cần duyệt lại`,
+            message: `Chapter "${chapter.title}" (#${chapter.chapter_number}) của series "${seriesName}" đã được Mangaka sửa nhanh và gửi lại. Có ${uploadedFiles.length} page(s) đã được cập nhật.`,
+            meta: {
+              chapter_id: chapter._id,
+              series_id: chapter.series_id,
+              revision_type: "quick_revision",
+              page_count: uploadedFiles.length,
+            },
+          }))
+        );
+      }
+
+      return res.status(200).json({
+        success: true,
+        message: `Đã sửa ${uploadedFiles.length} page(s) và gửi lại cho TE.`,
+        data: {
+          chapter_id: chapter._id,
+          chapter_number: chapter.chapter_number,
+          chapter_title: chapter.title,
+          series_id: chapter.series_id,
+          series_name: seriesName,
+          status: chapter.status,
+          revision_round: chapter.revision_round,
+          updated_pages: parsedPageIds.map((pid, i) => ({
+            page_id: pid,
+            page_number: pages.find((p) => p._id.toString() === pid).page_number,
+            new_image_url: uploadResults[i],
+          })),
+        },
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+);
 
 // ─── PATCH /submissions/chapters/:id/approve ──────────────────────────────────
 /**
