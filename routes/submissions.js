@@ -763,11 +763,11 @@ router.post(
   "/chapters/:id/quick-revision",
   authMiddleware,
   requireMangaka,
-  uploadRevisionPages.array("pages", 5),
+  uploadRevisionPages.array("pages", 20),
   async (req, res, next) => {
     try {
       const { id } = req.params;
-      const { page_ids } = req.body;
+      const { page_ids, new_page_count, deleted_page_ids } = req.body;
       const uploadedFiles = req.files || [];
 
       const chapter = await Chapter.findOne({
@@ -794,7 +794,14 @@ router.post(
         );
       }
 
-      // Parse page_ids: có thể là JSON array string hoặc array
+      const series = await Series.findById(chapter.series_id).lean();
+      if (!series) return next(new AppError("Series not found", 404));
+
+      let updateCount = 0;
+      let addCount = 0;
+      let deleteCount = 0;
+
+      // ─── Parse page_ids để update ───
       let parsedPageIds = [];
       if (page_ids) {
         try {
@@ -804,51 +811,119 @@ router.post(
         }
       }
 
-      if (parsedPageIds.length === 0 && uploadedFiles.length === 0) {
-        return next(new AppError("Cần truyền ít nhất 1 page_id và 1 ảnh đã sửa", 400));
+      // ─── Parse deleted_page_ids ───
+      let parsedDeletedPageIds = [];
+      if (deleted_page_ids) {
+        try {
+          parsedDeletedPageIds = typeof deleted_page_ids === "string" ? JSON.parse(deleted_page_ids) : deleted_page_ids;
+        } catch {
+          return next(new AppError("deleted_page_ids không hợp lệ", 400));
+        }
       }
 
-      if (parsedPageIds.length !== uploadedFiles.length) {
-        return next(new AppError("Số lượng page_ids và số ảnh upload phải bằng nhau", 400));
+      // ─── Số page mới cần thêm ───
+      const newPageCount = parseInt(new_page_count) || 0;
+
+      // Validate: cần có ít nhất 1 action
+      if (parsedPageIds.length === 0 && newPageCount === 0 && parsedDeletedPageIds.length === 0) {
+        return next(new AppError("Cần ít nhất 1 page để update, thêm mới, hoặc xóa", 400));
       }
 
-      // Giới hạn số page được quick-revision (tối đa 5 pages)
-      if (uploadedFiles.length > 5) {
-        return next(new AppError("Quick revision chỉ cho phép tối đa 5 pages mỗi lần", 400));
+      // Giới hạn tổng số page thay đổi (tối đa 10)
+      const totalChanges = parsedPageIds.length + newPageCount + parsedDeletedPageIds.length;
+      if (totalChanges > 10) {
+        return next(new AppError("Quick revision chỉ cho phép tối đa 10 pages thay đổi mỗi lần", 400));
       }
 
-      // Validate page_ids tồn tại và thuộc về chapter này
-      const pages = await Page.find({
-        _id: { $in: parsedPageIds },
-        chapter_id: chapter._id,
-      });
-      if (pages.length !== parsedPageIds.length) {
-        return next(new AppError("Một hoặc nhiều page_id không hợp lệ hoặc không thuộc chapter này", 400));
-      }
-
-      const series = await Series.findById(chapter.series_id).lean();
-      if (!series) return next(new AppError("Series not found", 404));
-
-      // Upload images lên Cloudinary
-      const folder = `wdp/chapters/${chapter.series_id}/${Date.now()}`;
-      const uploadPromises = uploadedFiles.map((file) =>
-        uploadSingleToCloudinary(file, folder)
-      );
-      const uploadResults = await Promise.all(uploadPromises);
-
-      // Cập nhật từng page với ảnh đã sửa
-      const pageUpdates = pages.map((page, index) => {
-        const imageUrl = uploadResults[index];
-        return Page.findByIdAndUpdate(page._id, {
-          result_image_url: imageUrl,
-          final_image_url: imageUrl,
-          current_version: page.current_version + 1,
-          status: "approved",
+      // ─── Xử lý XÓA page ───
+      if (parsedDeletedPageIds.length > 0) {
+        const pagesToDelete = await Page.find({
+          _id: { $in: parsedDeletedPageIds },
+          chapter_id: chapter._id,
         });
-      });
-      await Promise.all(pageUpdates);
+        if (pagesToDelete.length !== parsedDeletedPageIds.length) {
+          return next(new AppError("Một hoặc nhiều page_id cần xóa không hợp lệ", 400));
+        }
+        await Page.deleteMany({ _id: { $in: parsedDeletedPageIds } });
+        deleteCount = parsedDeletedPageIds.length;
+      }
 
-      // Reset revision fields và chuyển chapter sang pending_TE
+      // ─── Xử lý UPDATE page ───
+      if (parsedPageIds.length > 0) {
+        if (parsedPageIds.length !== uploadedFiles.length) {
+          return next(new AppError(`Số lượng page_ids (${parsedPageIds.length}) và số ảnh upload (${uploadedFiles.length}) phải bằng nhau`, 400));
+        }
+
+        const pages = await Page.find({
+          _id: { $in: parsedPageIds },
+          chapter_id: chapter._id,
+        });
+        if (pages.length !== parsedPageIds.length) {
+          return next(new AppError("Một hoặc nhiều page_id không hợp lệ hoặc không thuộc chapter này", 400));
+        }
+
+        // Upload images lên Cloudinary
+        const seriesIdStr = chapter.series_id._id ? chapter.series_id._id.toString() : chapter.series_id.toString();
+        const folder = `wdp/chapters/${seriesIdStr}/${Date.now()}`;
+        const uploadPromises = uploadedFiles.map((file) =>
+          uploadSingleToCloudinary(file, folder)
+        );
+        const uploadResults = await Promise.all(uploadPromises);
+
+        // Cập nhật từng page với ảnh đã sửa
+        const pageUpdates = pages.map((page, index) => {
+          const imageUrl = uploadResults[index];
+          return Page.findByIdAndUpdate(page._id, {
+            result_image_url: imageUrl,
+            final_image_url: imageUrl,
+            current_version: page.current_version + 1,
+            status: "approved",
+          });
+        });
+        await Promise.all(pageUpdates);
+        updateCount = parsedPageIds.length;
+      }
+
+      // ─── Xử lý THÊM page mới ───
+      if (newPageCount > 0) {
+        // Lấy số thứ tự page tiếp theo
+        const lastPage = await Page.findOne({ chapter_id: chapter._id })
+          .sort({ page_number: -1 })
+          .lean();
+        let nextPageNumber = lastPage ? lastPage.page_number + 1 : 1;
+
+        // Tách riêng files cho page mới (nằm sau các files update)
+        const newPageFiles = uploadedFiles.slice(parsedPageIds.length, parsedPageIds.length + newPageCount);
+        
+        if (newPageFiles.length !== newPageCount) {
+          return next(new AppError(`Cần ${newPageCount} ảnh cho ${newPageCount} page mới, nhưng chỉ có ${newPageFiles.length} ảnh`, 400));
+        }
+
+        const seriesIdStr = chapter.series_id._id ? chapter.series_id._id.toString() : chapter.series_id.toString();
+        const folder = `wdp/chapters/${seriesIdStr}/${Date.now()}`;
+        const uploadPromises = newPageFiles.map((file) =>
+          uploadSingleToCloudinary(file, folder)
+        );
+        const uploadResults = await Promise.all(uploadPromises);
+
+        const newPages = [];
+        for (let i = 0; i < newPageCount; i++) {
+          newPages.push({
+            chapter_id: chapter._id,
+            page_number: nextPageNumber + i,
+            original_image_url: uploadResults[i],
+            result_image_url: uploadResults[i],
+            final_image_url: uploadResults[i],
+            status: "approved",
+            uploaded_by: req.user.nameid,
+            current_version: 1,
+          });
+        }
+        await Page.insertMany(newPages);
+        addCount = newPageCount;
+      }
+
+      // ─── Cập nhật chapter ───
       chapter.status = CHAPTER_STATUS.PENDING_TE;
       chapter.revision_notes = "";
       chapter.revision_annotations = [];
@@ -857,23 +932,26 @@ router.post(
       chapter.revision_history.push({
         at: new Date(),
         by: req.user.nameid,
-        note: `Quick revision: ${uploadedFiles.length} page(s) đã sửa và gửi thẳng cho TE`,
+        note: `Quick revision: ${updateCount} page(s) sửa, ${addCount} page(s) thêm, ${deleteCount} page(s) xóa`,
       });
       await chapter.save();
 
       // Notify TE
       const seriesName = series.name || "";
+      const totalPagesChanged = updateCount + addCount + deleteCount;
       if (chapter.te_id) {
         await Notification.create({
           user_id: chapter.te_id,
           type: "chapter_pending_te",
           title: `Chapter "${chapter.title}" cần duyệt lại`,
-          message: `Chapter "${chapter.title}" (#${chapter.chapter_number}) của series "${seriesName}" đã được Mangaka sửa nhanh và gửi lại. Có ${uploadedFiles.length} page(s) đã được cập nhật.`,
+          message: `Chapter "${chapter.title}" (#${chapter.chapter_number}) của series "${seriesName}" đã được Mangaka sửa nhanh và gửi lại. Có ${totalPagesChanged} page(s) đã thay đổi (sửa: ${updateCount}, thêm: ${addCount}, xóa: ${deleteCount}).`,
           meta: {
             chapter_id: chapter._id,
             series_id: chapter.series_id,
             revision_type: "quick_revision",
-            page_count: uploadedFiles.length,
+            page_update_count: updateCount,
+            page_add_count: addCount,
+            page_delete_count: deleteCount,
           },
         });
       } else {
@@ -883,12 +961,14 @@ router.post(
             user_id: u._id,
             type: "chapter_pending_te",
             title: `Chapter "${chapter.title}" cần duyệt lại`,
-            message: `Chapter "${chapter.title}" (#${chapter.chapter_number}) của series "${seriesName}" đã được Mangaka sửa nhanh và gửi lại. Có ${uploadedFiles.length} page(s) đã được cập nhật.`,
+            message: `Chapter "${chapter.title}" (#${chapter.chapter_number}) của series "${seriesName}" đã được Mangaka sửa nhanh và gửi lại. Có ${totalPagesChanged} page(s) đã thay đổi (sửa: ${updateCount}, thêm: ${addCount}, xóa: ${deleteCount}).`,
             meta: {
               chapter_id: chapter._id,
               series_id: chapter.series_id,
               revision_type: "quick_revision",
-              page_count: uploadedFiles.length,
+              page_update_count: updateCount,
+              page_add_count: addCount,
+              page_delete_count: deleteCount,
             },
           }))
         );
@@ -896,7 +976,7 @@ router.post(
 
       return res.status(200).json({
         success: true,
-        message: `Đã sửa ${uploadedFiles.length} page(s) và gửi lại cho TE.`,
+        message: `Quick revision thành công: ${updateCount} page(s) sửa, ${addCount} page(s) thêm, ${deleteCount} page(s) xóa.`,
         data: {
           chapter_id: chapter._id,
           chapter_number: chapter.chapter_number,
@@ -905,11 +985,9 @@ router.post(
           series_name: seriesName,
           status: chapter.status,
           revision_round: chapter.revision_round,
-          updated_pages: parsedPageIds.map((pid, i) => ({
-            page_id: pid,
-            page_number: pages.find((p) => p._id.toString() === pid).page_number,
-            new_image_url: uploadResults[i],
-          })),
+          page_update_count: updateCount,
+          page_add_count: addCount,
+          page_delete_count: deleteCount,
         },
       });
     } catch (error) {
