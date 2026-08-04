@@ -778,12 +778,15 @@ router.post(
         return next(new AppError("Chapter not found or unauthorized", 404));
       }
 
-      // Chỉ cho phép quick-revision khi chapter đang ở trạng thái revision
+      // Chỉ cho phép quick-revision khi:
+      // - chapter đang ở trạng thái revision (TE_revision, EB_revision, revision_requested), HOẶC
+      // - series bị EB reject (series.status = "rejected")
       const revisionStatuses = [CHAPTER_STATUS.EB_REVISION, CHAPTER_STATUS.TE_REVISION, "revision_requested"];
-      if (!revisionStatuses.includes(chapter.status)) {
+      const isSeriesRejected = chapter.series_id && chapter.series_id.status === "rejected";
+      if (!revisionStatuses.includes(chapter.status) && !isSeriesRejected) {
         return next(
           new AppError(
-            `Chỉ cho phép quick-revision khi chapter đang ở trạng thái revision (hiện tại: "${chapter.status}")`,
+            `Chỉ cho phép quick-revision khi chapter đang ở trạng thái revision hoặc series bị EB reject (hiện tại: chapter="${chapter.status}", series="${chapter.series_id?.status || 'unknown'}")`,
             400
           )
         );
