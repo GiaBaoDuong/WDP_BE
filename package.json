@@ -5,6 +5,7 @@
   "scripts": {
     "start": "node ./bin/www",
     "dev": "nodemon ./bin/www",
+    "test": "jest --testPathPatterns=tests/ --forceExit --detectOpenHandles",
     "test:coin-unit": "node ./scripts/test-coin-unit.js",
     "test:payos-webhook": "node ./scripts/test-payos-webhook.js",
     "payos:webhook": "node ./scripts/register-payos-webhook.js"
@@ -34,6 +35,7 @@
     "swagger-ui-express": "^5.0.1"
   },
   "devDependencies": {
+    "jest": "^30.4.2",
     "mongodb-memory-server": "^11.2.0",
     "nodemon": "^3.1.14",
     "supertest": "^7.2.2"

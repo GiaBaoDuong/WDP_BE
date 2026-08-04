@@ -163,6 +163,10 @@ router.get("/mine/:id", authMiddleware, async (req, res, next) => {
  * /withdrawals/admin/all:
  *   get:
  *     summary: (Admin) Danh sách tất cả yêu cầu rút tiền
+ *     description: |
+ *       Trả về danh sách withdrawals kèm pagination và stats.
+ *       Stats luôn chứa đầy đủ 10 field cho mọi status (count + coin).
+ *       Stats tính trên toàn bộ collection, không bị ảnh hưởng bởi page/limit/query status.
  *     tags: [Withdrawals - Admin]
  *     security: [{ BearerAuth: [] }]
  *     parameters:
@@ -176,7 +180,24 @@ router.get("/mine/:id", authMiddleware, async (req, res, next) => {
  *         name: limit
  *         schema: { type: integer, default: 20 }
  *     responses:
- *       200: { description: Danh sách }
+ *       200:
+ *         description: Danh sách withdrawals kèm stats
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success: { type: boolean }
+ *                 data: { type: array, items: { $ref: "#/components/schemas/Withdrawal" } }
+ *                 pagination:
+ *                   type: object
+ *                   properties:
+ *                     total: { type: integer }
+ *                     page: { type: integer }
+ *                     limit: { type: integer }
+ *                     pages: { type: integer }
+ *                 stats:
+ *                   $ref: "#/components/schemas/WithdrawalStats"
  */
 router.get("/admin/all", authMiddleware, requireAdmin, async (req, res, next) => {
   try {
@@ -186,7 +207,18 @@ router.get("/admin/all", authMiddleware, requireAdmin, async (req, res, next) =>
     const filter = {};
     if (req.query.status) filter.status = req.query.status;
 
-    const [items, total] = await Promise.all([
+    // Chạy stats aggregation song song với query items và count
+    const statsAggregation = Withdrawal.aggregate([
+      {
+        $group: {
+          _id: "$status",
+          count: { $sum: 1 },
+          coin: { $sum: "$coin_amount" },
+        },
+      },
+    ]);
+
+    const [items, total, statsRaw] = await Promise.all([
       Withdrawal.find(filter)
         .sort({ createdAt: -1 })
         .skip(skip)
@@ -195,7 +227,22 @@ router.get("/admin/all", authMiddleware, requireAdmin, async (req, res, next) =>
         .populate("processed_by", "username full_name")
         .lean(),
       Withdrawal.countDocuments(filter),
+      statsAggregation,
     ]);
+
+    // Build stats object đảm bảo đầy đủ 10 field
+    const allStatuses = ["pending", "approved", "completed", "rejected", "cancelled"];
+    const statsMap = {};
+    statsRaw.forEach((s) => {
+      statsMap[s._id] = s;
+    });
+
+    const stats = {};
+    allStatuses.forEach((status) => {
+      stats[`${status}_count`] = statsMap[status]?.count || 0;
+      stats[`${status}_coin`] = statsMap[status]?.coin || 0;
+    });
+
     return res.json({
       success: true,
       data: items.map(shapeForAdmin),
@@ -205,6 +252,7 @@ router.get("/admin/all", authMiddleware, requireAdmin, async (req, res, next) =>
         limit,
         pages: Math.ceil(total / limit),
       },
+      stats,
     });
   } catch (error) {
     next(error);

@@ -599,6 +599,107 @@ const options = {
             total_gross_coin: { type: "integer", format: "int64", description: "Raw CoinUnit" },
           },
         },
+        // ─── Admin Finance Schemas ───────────────────────────────────────────
+        FinanceSummary: {
+          type: "object",
+          description: "Tổng quan tài chính hệ thống. Tất cả giá trị Coin là raw integer CoinUnit (100 CoinUnit = 1 Coin).",
+          properties: {
+            total_circulation_coin: { type: "integer", format: "int64", description: "Raw CoinUnit - Tổng balance+pending+available từ Wallet" },
+            total_revenue_all_time_coin: { type: "integer", format: "int64", description: "Raw CoinUnit - Tổng SUM(Revenue.coin_amount)" },
+            total_withdrawn_vnd: { type: "integer", description: "Raw VND - Chỉ withdrawal status=completed" },
+            total_platform_coin: { type: "integer", format: "int64", description: "Raw CoinUnit - Luôn 0 (project không có system wallet)" },
+            pending_withdrawals: {
+              type: "object",
+              properties: {
+                count: { type: "integer" },
+                coin: { type: "integer", format: "int64", description: "Raw CoinUnit" },
+              },
+            },
+            total_users_with_balance: { type: "integer", description: "Số Wallet có tổng balance > 0" },
+            coin_to_vnd_rate: { type: "integer" },
+          },
+        },
+        RevenueByRole: {
+          type: "object",
+          description: "Phân bố tài chính theo role. Tất cả giá trị Coin là raw integer CoinUnit.",
+          properties: {
+            roles: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: {
+                  role: { type: "string", enum: ["Admin", "Mangaka", "Assistant", "Editor", "EB", "Reader"] },
+                  user_count: { type: "integer" },
+                  total_earnings_coin: { type: "integer", format: "int64", description: "Raw CoinUnit" },
+                  total_withdrawn_coin: { type: "integer", format: "int64", description: "Raw CoinUnit" },
+                  current_balance_coin: { type: "integer", format: "int64", description: "Raw CoinUnit" },
+                  pending_balance_coin: { type: "integer", format: "int64", description: "Raw CoinUnit" },
+                },
+              },
+            },
+            total_circulation_coin: { type: "integer", format: "int64", description: "Raw CoinUnit" },
+          },
+        },
+        RevenueTimeline: {
+          type: "object",
+          description: "Timeline doanh thu theo ngày. Tất cả giá trị Coin là raw integer CoinUnit.",
+          properties: {
+            period: { type: "string", enum: ["7d", "30d", "90d", "all"] },
+            points: {
+              type: "array",
+              items: {
+                type: "object",
+                properties: {
+                  date: { type: "string", format: "date", description: "Format YYYY-MM-DD" },
+                  revenue_coin: { type: "integer", format: "int64", description: "Raw CoinUnit" },
+                  withdrawal_coin: { type: "integer", format: "int64", description: "Raw CoinUnit" },
+                  new_users: { type: "integer" },
+                },
+              },
+            },
+            summary: {
+              type: "object",
+              properties: {
+                total_revenue_coin: { type: "integer", format: "int64", description: "Raw CoinUnit" },
+                total_withdrawal_coin: { type: "integer", format: "int64", description: "Raw CoinUnit" },
+                net_flow_coin: { type: "integer", format: "int64", description: "Raw CoinUnit" },
+              },
+            },
+          },
+        },
+        TopEarnersEntry: {
+          type: "object",
+          description: "Top earner entry. Tất cả giá trị Coin là raw integer CoinUnit.",
+          properties: {
+            user_id: { type: "string" },
+            username: { type: "string", nullable: true },
+            full_name: { type: "string", nullable: true },
+            avatar_url: { type: "string" },
+            role: { type: "string", enum: ["Mangaka", "Assistant"] },
+            total_earnings_coin: { type: "integer", format: "int64", description: "Raw CoinUnit" },
+            current_balance_coin: { type: "integer", format: "int64", description: "Raw CoinUnit" },
+            pending_balance_coin: { type: "integer", format: "int64", description: "Raw CoinUnit" },
+            total_withdrawn_coin: { type: "integer", format: "int64", description: "Raw CoinUnit - Chỉ withdrawal completed" },
+            series_count: { type: "integer", description: "Số series duy nhất có doanh thu" },
+            avg_monthly_revenue_coin: { type: "integer", format: "int64", description: "Raw CoinUnit - Làm tròn số nguyên" },
+          },
+        },
+        WithdrawalStats: {
+          type: "object",
+          description: "Thống kê withdrawals theo status. Tất cả giá trị Coin là raw integer CoinUnit.",
+          properties: {
+            pending_count: { type: "integer" },
+            pending_coin: { type: "integer", format: "int64", description: "Raw CoinUnit" },
+            approved_count: { type: "integer" },
+            approved_coin: { type: "integer", format: "int64", description: "Raw CoinUnit" },
+            completed_count: { type: "integer" },
+            completed_coin: { type: "integer", format: "int64", description: "Raw CoinUnit" },
+            rejected_count: { type: "integer" },
+            rejected_coin: { type: "integer", format: "int64", description: "Raw CoinUnit" },
+            cancelled_count: { type: "integer" },
+            cancelled_coin: { type: "integer", format: "int64", description: "Raw CoinUnit" },
+          },
+        },
       },
     },
     security: [{ BearerAuth: [] }],

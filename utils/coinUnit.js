@@ -113,6 +113,24 @@ const DISPLAY_FIELDS = {
   total_withdrawal: "total_withdrawal_display",
   total_refund: "total_refund_display",
   total_coin_received: "total_coin_received_display",
+  // Admin Finance fields
+  total_circulation_coin: "total_circulation_coin_display",
+  total_revenue_all_time_coin: "total_revenue_all_time_coin_display",
+  total_platform_coin: "total_platform_coin_display",
+  total_earnings_coin: "total_earnings_coin_display",
+  current_balance_coin: "current_balance_coin_display",
+  pending_balance_coin: "pending_balance_coin_display",
+  revenue_coin: "revenue_coin_display",
+  withdrawal_coin: "withdrawal_coin_display",
+  net_flow_coin: "net_flow_coin_display",
+  total_revenue_coin: "total_revenue_coin_display",
+  avg_monthly_revenue_coin: "avg_monthly_revenue_coin_display",
+  // Withdrawal stats fields
+  pending_coin: "pending_coin_display",
+  approved_coin: "approved_coin_display",
+  completed_coin: "completed_coin_display",
+  rejected_coin: "rejected_coin_display",
+  cancelled_coin: "cancelled_coin_display",
 };
 
 function formatCoinResponse(payload) {

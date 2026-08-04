@@ -3774,10 +3774,15 @@ router.get("/revenue/hub", async (req, res, next) => {
     // và gross/net_coin_amount lưu cùng giá trị trên MỌI record, nên nếu sum
     // thẳng sẽ bị nhân N lần. Group theo purchased_chapter_id trước, $first
     // lấy 1 bản đại diện rồi mới cộng tổng. Count chapters_sold = số purchase.
+    //
+    // platform_fee_coin là field CẤP SHARE nên phải SUM tất cả Revenue records
+    // của cùng purchase để tính tổng phí platform cho purchase đó.
+    // gross_coin và net_coin là field CẤP PURCHASE nên dùng $first.
     const purchaseLevel = [
       {
         $group: {
           _id: "$purchased_chapter_id",
+          platform_fee_coin: { $sum: "$platform_fee_coin" },
           gross_coin: { $first: "$gross_coin_amount" },
           net_coin: { $first: "$net_coin_amount" },
         },
