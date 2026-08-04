@@ -1297,6 +1297,30 @@ router.post("/series/:seriesId/evaluate", authMiddleware, requireEB, async (req,
       }
       await series.save();
 
+      // Notify Mangaka — cho cả first review và second review
+      if (result === "approved") {
+        await notifySeriesApproved(
+          Notification,
+          series.author_id,
+          series.name,
+          publication_schedule || "weekly"
+        );
+      } else if (result === "revision") {
+        await notifySeriesEBRevision(
+          Notification,
+          series.author_id,
+          series,
+          notes || ""
+        );
+      } else if (result === "rejected") {
+        await notifySeriesRejected(
+          Notification,
+          series.author_id,
+          series,
+          notes || ""
+        );
+      }
+
       return res.status(201).json({
         success: true,
         data: {
@@ -1343,31 +1367,30 @@ router.post("/series/:seriesId/evaluate", authMiddleware, requireEB, async (req,
         series.publication_schedule = publication_schedule;
       }
       await series.save();
-    }
 
-    // Notify Mangaka
-    const finalResult = result || quick_decision;
-    if (finalResult === "approved") {
-      await notifySeriesApproved(
-        Notification,
-        series.author_id,
-        series.name,
-        publication_schedule || "weekly"
-      );
-    } else if (finalResult === "revision") {
-      await notifySeriesEBRevision(
-        Notification,
-        series.author_id,
-        series,
-        notes || ""
-      );
-    } else if (finalResult === "rejected") {
-      await notifySeriesRejected(
-        Notification,
-        series.author_id,
-        series,
-        notes || ""
-      );
+      // Notify Mangaka cho second review
+      if (quick_decision === "approved") {
+        await notifySeriesApproved(
+          Notification,
+          series.author_id,
+          series.name,
+          publication_schedule || "weekly"
+        );
+      } else if (quick_decision === "revision") {
+        await notifySeriesEBRevision(
+          Notification,
+          series.author_id,
+          series,
+          quick_notes || ""
+        );
+      } else if (quick_decision === "rejected") {
+        await notifySeriesRejected(
+          Notification,
+          series.author_id,
+          series,
+          quick_notes || ""
+        );
+      }
     }
 
     return res.status(201).json({ success: true, data: { series, evaluation } });

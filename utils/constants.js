@@ -15,6 +15,7 @@ const SERIES_STATUS = {
   APPROVED: "approved",              // EB duyệt → đang xuất bản
   APPROVED_BY_EB: "approved_by_EB",  // EB duyệt, chờ publish theo lịch (Job scheduledPublish sẽ set → published)
   REJECTED: "rejected",             // EB từ chối
+  REVISION: "revision",              // EB/TE yêu cầu chỉnh sửa
   PUBLISHED: "published",            // Đã xuất bản công khai
   CANCELLED: "cancelled",            // Bị huỷ
 };
