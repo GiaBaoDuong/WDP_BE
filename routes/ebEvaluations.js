@@ -17,6 +17,8 @@ const {
   notifyChapterScheduledPublish,
   notifyChapterPublishConfirmed,
   notifySeriesPublished,
+  notifySeriesEBRevision,
+  notifySeriesRejected,
 } = require("../services/notificationService");
 const { isSeriesLockedForEBChapterReview, buildEBChapterLockError } = require("../services/debutGate");
 const {
@@ -1344,12 +1346,27 @@ router.post("/series/:seriesId/evaluate", authMiddleware, requireEB, async (req,
     }
 
     // Notify Mangaka
-    if (result === "approved" || quick_decision === "approved") {
+    const finalResult = result || quick_decision;
+    if (finalResult === "approved") {
       await notifySeriesApproved(
         Notification,
         series.author_id,
         series.name,
         publication_schedule || "weekly"
+      );
+    } else if (finalResult === "revision") {
+      await notifySeriesEBRevision(
+        Notification,
+        series.author_id,
+        series,
+        notes || ""
+      );
+    } else if (finalResult === "rejected") {
+      await notifySeriesRejected(
+        Notification,
+        series.author_id,
+        series,
+        notes || ""
       );
     }
 
