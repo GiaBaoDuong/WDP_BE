@@ -224,12 +224,18 @@ const notifySeriesEBRevision = async (Notification, mangakaId, series, notes) =>
   });
 };
 
-const notifySeriesRejected = async (Notification, mangakaId, series, notes) => {
+const notifySeriesRejected = async (Notification, mangakaId, series, notes, ageSafety = null) => {
+  const meta = { series_id: series._id, feedback: notes || "" };
+  if (ageSafety) {
+    meta.age_safety = ageSafety;
+  }
   await notifyUser(Notification, mangakaId, {
     type: "series_rejected",
     title: "Series bị từ chối",
-    message: `Series "${series.name}" không được duyệt. Vui lòng xem lý do trong feedback.`,
-    meta: { series_id: series._id, feedback: notes || "" },
+    message: ageSafety
+      ? `Series "${series.name}" không được duyệt. Vi phạm độ tuổi: ${ageSafety.violations.map((v) => v.label).join(", ")}. Vui lòng chỉnh sửa content_levels và gửi lại.`
+      : `Series "${series.name}" không được duyệt. Vui lòng xem lý do trong feedback.`,
+    meta,
   });
 };
 

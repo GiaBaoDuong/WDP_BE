@@ -1208,18 +1208,65 @@ router.post("/series/:seriesId/evaluate", authMiddleware, requireEB, async (req,
         return next(new AppError(`Rubric "${rubric_id}" không hợp lệ. Vui lòng chọn rubric khác.`, 400));
       }
 
-      // 3. Age Safety Gate — FAIL → reject immediately
+      // 3. Age Safety Gate — FAIL → tạo evaluation rejected + notify Mangaka kèm chi tiết vi phạm
       const ageRating = series.age_rating || "All ages";
       if (content_levels !== undefined) {
         const safetyResult = checkAgeSafety(content_levels, ageRating);
         if (!safetyResult.passed) {
-          return res.status(400).json({
-            success: false,
-            error: "AGE_SAFETY_FAIL",
-            message: "Nội dung không phù hợp với độ tuổi quy định. Vui lòng chỉnh sửa trước khi gửi lại.",
-            age_safety: safetyResult,
-            content_levels,
-            age_rating: ageRating,
+          // Build violation summary for notes
+          const violationLabels = safetyResult.violations.map((v) => v.label).join(", ");
+          const ageSafetyNotes = `Vi phạm độ tuổi (${ageRating}): ${violationLabels}`;
+
+          const appliedRubricWeightsMap = rubric ? new Map(Object.entries(rubric.weights)) : new Map();
+
+          // Tạo evaluation với result = "rejected"
+          const ageSafetyEvaluation = await EBEvaluation.create({
+            series_id:                   series._id,
+            evaluated_by:                req.user.nameid,
+            first_review:                true,
+            applied_rubric_id:           rubric ? rubric.id : null,
+            applied_rubric_weights:      appliedRubricWeightsMap,
+            applied_rubric_total_weight: rubric ? rubric.total_weight : 100,
+            age_safety: {
+              passed:     safetyResult.passed,
+              severity:  safetyResult.severity,
+              rules_note: safetyResult.rules_note,
+              violations: safetyResult.violations,
+            },
+            content_levels: {
+              violence:           content_levels?.violence || 0,
+              fear:              content_levels?.fear || 0,
+              profanity:         content_levels?.profanity || 0,
+              nudity:            content_levels?.nudity || 0,
+              danger_simulation: content_levels?.danger_simulation || 0,
+            },
+            member_scores: [],
+            result: "rejected",
+            notes: ageSafetyNotes,
+          });
+
+          // Cập nhật series status = "rejected"
+          series.status = "rejected";
+          series.eb_evaluation_id = ageSafetyEvaluation._id;
+          await series.save();
+
+          // Gửi notification kèm chi tiết vi phạm
+          await notifySeriesRejected(
+            Notification,
+            series.author_id,
+            series,
+            ageSafetyNotes,
+            safetyResult
+          );
+
+          return res.status(201).json({
+            success: true,
+            data: {
+              evaluation: ageSafetyEvaluation,
+              age_safety: safetyResult,
+              age_rating: ageRating,
+              content_levels,
+            },
           });
         }
       }
@@ -1573,18 +1620,58 @@ router.post("/chapter/:chapterId/evaluate", authMiddleware, requireEB, async (re
         return next(new AppError(`Rubric "${rubric_id}" không hợp lệ. Vui lòng chọn rubric khác.`, 400));
       }
 
-      // Age Safety Gate — FAIL → reject immediately
+      // Age Safety Gate — FAIL → tạo evaluation rejected + notify Mangaka kèm chi tiết vi phạm
       const ageRating = series.age_rating || "All ages";
       if (content_levels !== undefined) {
         const safetyResult = checkAgeSafety(content_levels, ageRating);
         if (!safetyResult.passed) {
-          return res.status(400).json({
-            success: false,
-            error: "AGE_SAFETY_FAIL",
-            message: "Nội dung không phù hợp với độ tuổi quy định. Vui lòng chỉnh sửa trước khi gửi lại.",
-            age_safety: safetyResult,
-            content_levels,
-            age_rating: ageRating,
+          const violationLabels = safetyResult.violations.map((v) => v.label).join(", ");
+          const ageSafetyNotes = `Vi phạm độ tuổi (${ageRating}): ${violationLabels}`;
+          const appliedRubricWeightsMap = rubric ? new Map(Object.entries(rubric.weights)) : new Map();
+
+          const ageSafetyEvaluation = await EBEvaluation.create({
+            series_id:                   chapter.series_id,
+            chapter_id:                  chapter._id,
+            evaluated_by:                req.user.nameid,
+            first_review:                true,
+            applied_rubric_id:           rubric ? rubric.id : null,
+            applied_rubric_weights:      appliedRubricWeightsMap,
+            applied_rubric_total_weight: rubric ? rubric.total_weight : 100,
+            age_safety: {
+              passed:     safetyResult.passed,
+              severity:  safetyResult.severity,
+              rules_note: safetyResult.rules_note,
+              violations: safetyResult.violations,
+            },
+            content_levels: {
+              violence:           content_levels?.violence || 0,
+              fear:              content_levels?.fear || 0,
+              profanity:         content_levels?.profanity || 0,
+              nudity:            content_levels?.nudity || 0,
+              danger_simulation: content_levels?.danger_simulation || 0,
+            },
+            member_scores: [],
+            result: "rejected",
+            notes: ageSafetyNotes,
+          });
+
+          // Gửi notification cho Mangaka
+          await notifySeriesRejected(
+            Notification,
+            series.author_id,
+            series,
+            ageSafetyNotes,
+            safetyResult
+          );
+
+          return res.status(201).json({
+            success: true,
+            data: {
+              evaluation: ageSafetyEvaluation,
+              age_safety: safetyResult,
+              age_rating: ageRating,
+              content_levels,
+            },
           });
         }
       }

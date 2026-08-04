@@ -136,11 +136,8 @@ async function buildDebutGate(series) {
       $in: [
         CHAPTER_STATUS.PENDING_TE,
         CHAPTER_STATUS.PENDING_EB,
-        CHAPTER_STATUS.EB_REVISION,
         CHAPTER_STATUS.APPROVED_BY_EB,
         CHAPTER_STATUS.PUBLISHED,
-        // TE_revision cũng tính (chapter đã từng được submit rồi, đang quay về TE revision)
-        CHAPTER_STATUS.TE_REVISION,
       ],
     },
   });
@@ -184,8 +181,8 @@ async function buildDebutGate(series) {
  * Rule:
  *  - Series unlocked (legacy hoặc qua debut gate) → luôn cho submit.
  *  - Series đang trong giai đoạn debut (locked):
- *      + Nếu đã có 1 chapter nào đó của series được submit (status ∈ pending_TE/pending_EB/
- *        approved_by_EB/published) → chặn submit chapter khác.
+ *      + Nếu series bị `rejected` hoặc `revision` (do EB Age Safety fail hoặc chấm điểm thấp)
+ *        → cho phép resubmit chapter để Mangaka sửa và gửi lại.
  *      + Nếu chưa có chapter nào được submit → cho submit bất kỳ chapter nào (kỳ vọng chapter 1).
  *      + Sau khi EB confirm-publish → unlock → cho submit chapter 2+.
  *
@@ -205,6 +202,12 @@ async function canSubmitChapterToTE({ series, chapterNumber }) {
     return { allowed: true };
   }
 
+  // Series bị EB từ chối (Age Safety fail hoặc điểm thấp) → cho phép resubmit
+  // Sau khi Mangaka sửa xong + gửi Assistant + duyệt task → được phép submit lại cho TE
+  if (series.status === SERIES_STATUS.REJECTED || series.status === SERIES_STATUS.REVISION) {
+    return { allowed: true, code: "RESUBMIT_AFTER_EB_REJECTION" };
+  }
+
   // Series đang locked — đếm số chapter đã từng được submit lên TE/EB
   // Status đã submit = đã qua cổng Mangaka→TE (chỉ những status sau khi submit chứ không phải trước submit).
   const submittedCount = await Chapter.countDocuments({
@@ -213,11 +216,8 @@ async function canSubmitChapterToTE({ series, chapterNumber }) {
       $in: [
         CHAPTER_STATUS.PENDING_TE,
         CHAPTER_STATUS.PENDING_EB,
-        CHAPTER_STATUS.EB_REVISION,
         CHAPTER_STATUS.APPROVED_BY_EB,
         CHAPTER_STATUS.PUBLISHED,
-        // TE_revision cũng tính (chapter đã từng được submit rồi)
-        CHAPTER_STATUS.TE_REVISION,
       ],
     },
   });
