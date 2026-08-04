@@ -33,6 +33,7 @@ const CORE_CRITERIA_LABELS = {
 
 // ─── Extension Criteria Definitions ───────────────────────────────────────────
 const EXTENSION_CRITERIA = {
+  // ─── Romance-Lifestyle ────────────────────────────────────────────────────
   character_development: {
     key:         "character_development",
     label:       "Phát triển nhân vật",
@@ -40,6 +41,29 @@ const EXTENSION_CRITERIA = {
     description: "Độ sâu nhân vật, character arc, sự kết nối với khán giả",
     for_families: ["Romance-Lifestyle", "Drama-SliceOfLife"],
   },
+  emotional_resonance: {
+    key:         "emotional_resonance",
+    label:       "Cộng hưởng cảm xúc",
+    label_en:    "Emotional Resonance",
+    description: "Khả năng tạo cảm xúc thật sự với khán giả",
+    for_families: ["Drama-SliceOfLife", "Romance-Lifestyle", "Horror-Suspense", "Mature-Adult"],
+  },
+  romantic_tension: {
+    key:         "romantic_tension",
+    label:       "Bầu không khí lãng mạn",
+    label_en:    "Romantic Tension",
+    description: "Chemistry, sự căng thẳng lãng mạn, buildup giữa các nhân vật",
+    for_families: ["Romance-Lifestyle"],
+  },
+  educational_value: {
+    key:         "educational_value",
+    label:       "Giá trị giáo dục",
+    label_en:    "Educational Value",
+    description: "Kiến thức đời sống, nấu ăn, thể thao, tính chính xác thông tin",
+    for_families: ["Romance-Lifestyle", "Drama-SliceOfLife"],
+  },
+
+  // ─── Horror-Suspense ───────────────────────────────────────────────────────
   atmosphere: {
     key:         "atmosphere",
     label:       "Bầu không khí",
@@ -47,19 +71,35 @@ const EXTENSION_CRITERIA = {
     description: "Khả năng tạo không khí phù hợp thể loại (rợn gáy, căng thẳng...)",
     for_families: ["Horror-Suspense"],
   },
+  pacing_horror: {
+    key:         "pacing_horror",
+    label:       "Nhịp độ kinh dị",
+    label_en:    "Horror Pacing",
+    description: "Buildup, payoff, timing jumpscare, kiểm soát nhịp gây sợ",
+    for_families: ["Horror-Suspense"],
+  },
+  mystery_setup: {
+    key:         "mystery_setup",
+    label:       "Xây dựng bí ẩn",
+    label_en:    "Mystery Setup",
+    description: "Plot twists, clues, intrigue, khả năng giữ bí mật",
+    for_families: ["Horror-Suspense", "Fantasy-SciFi"],
+  },
+  fear_impact: {
+    key:         "fear_impact",
+    label:       "Tác động gây sợ",
+    label_en:    "Fear Impact",
+    description: "Hiệu quả gây sợ thực tế, điểm rơi cảm xúc",
+    for_families: ["Horror-Suspense"],
+  },
+
+  // ─── Action-Adventure ──────────────────────────────────────────────────────
   action_choreography: {
     key:         "action_choreography",
     label:       "Triển khai hành động",
     label_en:    "Action Choreography",
     description: "Chất lượng cảnh chiến đấu, choreography, impact frames",
     for_families: ["Action-Adventure"],
-  },
-  comedy_timing: {
-    key:         "comedy_timing",
-    label:       "Timing hài & Tính giải trí",
-    label_en:    "Comedy Timing",
-    description: "Nhịp hài, miếng hài (gags), tính giải trí tổng thể",
-    for_families: ["Comedy"],
   },
   world_building: {
     key:         "world_building",
@@ -68,19 +108,134 @@ const EXTENSION_CRITERIA = {
     description: "Độ phong phú và logic của thế giới quan, hệ thống quy tắc",
     for_families: ["Fantasy-SciFi", "Action-Adventure"],
   },
-  educational_value: {
-    key:         "educational_value",
-    label:       "Giá trị giáo dục",
-    label_en:    "Educational Value",
-    description: "Tính chính xác thông tin, khả năng truyền tải kiến thức",
-    for_families: ["Romance-Lifestyle", "Drama-SliceOfLife"],
+  stakes_tension: {
+    key:         "stakes_tension",
+    label:       "Mức độ căng thẳng",
+    label_en:    "Stakes & Tension",
+    description: "Tạo hồi hộp, high stakes, cliffhanger, consequences",
+    for_families: ["Action-Adventure", "Fantasy-SciFi"],
   },
-  emotional_resonance: {
-    key:         "emotional_resonance",
-    label:       "Cộng hưởng cảm xúc",
-    label_en:    "Emotional Resonance",
-    description: "Khả năng tạo cảm xúc thật sự với khán giả",
-    for_families: ["Drama-SliceOfLife", "Romance-Lifestyle", "Horror-Suspense"],
+  fight_impact: {
+    key:         "fight_impact",
+    label:       "Hiệu ứng chiến đấu",
+    label_en:    "Fight Scene Impact",
+    description: "Splash pages, speed lines, visual impact, dynamism",
+    for_families: ["Action-Adventure"],
+  },
+
+  // ─── Comedy ───────────────────────────────────────────────────────────────
+  comedy_timing: {
+    key:         "comedy_timing",
+    label:       "Timing hài & Tính giải trí",
+    label_en:    "Comedy Timing",
+    description: "Nhịp hài, miếng hài (gags), tính giải trí tổng thể",
+    for_families: ["Comedy"],
+  },
+  comedy_originality: {
+    key:         "comedy_originality",
+    label:       "Tính độc đáo hài",
+    label_en:    "Comedy Originality",
+    description: "Ý tưởng mới, không cliché, unexpected humor",
+    for_families: ["Comedy"],
+  },
+  character_comedy: {
+    key:         "character_comedy",
+    label:       "Hài kịch nhân vật",
+    label_en:    "Character Comedy",
+    description: "Nhân vật hài hước, running gags, comedic archetypes",
+    for_families: ["Comedy"],
+  },
+  wordplay_translation: {
+    key:         "wordplay_translation",
+    label:       "Chơi chữ & Dịch thuật",
+    label_en:    "Wordplay & Translation",
+    description: "Quality translation, puns, double meanings, cultural jokes",
+    for_families: ["Comedy"],
+  },
+
+  // ─── Fantasy-SciFi ─────────────────────────────────────────────────────────
+  magic_system: {
+    key:         "magic_system",
+    label:       "Hệ thống phép thuật",
+    label_en:    "Magic/Ability System",
+    description: "Rõ ràng, thú vị, balanced, creative limitations",
+    for_families: ["Fantasy-SciFi"],
+  },
+  technology_logic: {
+    key:         "technology_logic",
+    label:       "Yếu tố khoa học",
+    label_en:    "Technology & Logic",
+    description: "Accuracy, futuristic logic, internal consistency",
+    for_families: ["Fantasy-SciFi"],
+  },
+  mythology_lore: {
+    key:         "mythology_lore",
+    label:       "Thần thoại & Lore",
+    label_en:    "Mythology & Lore",
+    description: "Độ sâu thế giới quan, Easter eggs, lore consistency",
+    for_families: ["Fantasy-SciFi"],
+  },
+
+  // ─── Drama-SliceOfLife ─────────────────────────────────────────────────────
+  narrative_depth: {
+    key:         "narrative_depth",
+    label:       "Chiều sâu câu chuyện",
+    label_en:    "Narrative Depth",
+    description: "Thông điệp, ý nghĩa ẩn, underlying themes",
+    for_families: ["Drama-SliceOfLife"],
+  },
+  relatability: {
+    key:         "relatability",
+    label:       "Tính liên quan",
+    label_en:    "Relatability",
+    description: "Gần gũi, thực tế, đời thường, everyday appeal",
+    for_families: ["Drama-SliceOfLife"],
+  },
+
+  // ─── Art-Heavy ─────────────────────────────────────────────────────────────
+  line_quality: {
+    key:         "line_quality",
+    label:       "Chất lượng nét vẽ",
+    label_en:    "Line Quality",
+    description: "Độ mượt, độ đậm, consistency, clean lines",
+    for_families: ["Art-Heavy"],
+  },
+  color_harmony: {
+    key:         "color_harmony",
+    label:       "Hài hòa màu sắc",
+    label_en:    "Color Harmony",
+    description: "Phối màu, shading, lighting, color theory",
+    for_families: ["Art-Heavy"],
+  },
+  splash_pages: {
+    key:         "splash_pages",
+    label:       "Trang đặc biệt",
+    label_en:    "Splash Pages",
+    description: "Chất lượng trang nổi bật, dramatic spreads",
+    for_families: ["Art-Heavy", "Action-Adventure"],
+  },
+  visual_expression: {
+    key:         "visual_expression",
+    label:       "Biểu đạt hình ảnh",
+    label_en:    "Visual Expression",
+    description: "Kể chuyện không cần lời, visual storytelling",
+    for_families: ["Art-Heavy", "Horror-Suspense"],
+  },
+
+  // ─── Mature-Adult ─────────────────────────────────────────────────────────
+  maturity_handling: {
+    key:         "maturity_handling",
+    label:       "Xử lý nội dung trưởng thành",
+    label_en:    "Maturity Handling",
+    description: "Tasteful, artistic intent, không gratuitous",
+    for_families: ["Mature-Adult"],
+  },
+  character_complexity: {
+    key:         "character_complexity",
+    label:       "Phức tạp nhân vật",
+    label_en:    "Character Complexity",
+    description: "Anti-hero, morally gray, nuanced characters",
+    for_families: ["Mature-Adult"],
   },
 };
 
@@ -188,58 +343,169 @@ const SAFETY_LEVELS = {
 };
 
 // ─── Weight Matrix: Genre Family × Age Rating ─────────────────────────────────
-// Format mỗi ô: { story, art, panel, pacing, color, extension, extWeight }
-// extension = null → không có extension
+// Format mỗi ô: { story, art, panel, pacing, color, extensions: [] }
+// extensions: mảng { key, weight } cho các extension criteria
 // null → không phù hợp / không accept submission
 
 const WEIGHT_MATRIX = {
   "Action-Adventure": {
-    "All ages":       { story: 15, art: 20, panel: 15, pacing: 25, color: 15, extension: null,       extWeight: 0  },
-    "Teens 13+":      { story: 20, art: 20, panel: 20, pacing: 25, color: 15, extension: null,       extWeight: 0  },
-    "Mature 17+":    { story: 20, art: 20, panel: 20, pacing: 20, color: 20, extension: null,       extWeight: 0  },
-    "Adults Only 18+":{ story: 20, art: 15, panel: 20, pacing: 20, color: 15, extension: null,       extWeight: 0  },
+    "All ages":       { story: 15, art: 20, panel: 15, pacing: 25, color: 15, extensions: [
+      { key: "world_building",     weight: 10 },
+      { key: "stakes_tension",     weight: 10 },
+    ]},
+    "Teens 13+":      { story: 20, art: 20, panel: 20, pacing: 25, color: 15, extensions: [
+      { key: "action_choreography", weight: 15 },
+      { key: "world_building",     weight: 10 },
+      { key: "stakes_tension",     weight: 10 },
+    ]},
+    "Mature 17+":    { story: 20, art: 20, panel: 20, pacing: 20, color: 20, extensions: [
+      { key: "action_choreography", weight: 15 },
+      { key: "fight_impact",        weight: 10 },
+      { key: "stakes_tension",      weight: 10 },
+    ]},
+    "Adults Only 18+":{ story: 20, art: 15, panel: 20, pacing: 20, color: 15, extensions: [
+      { key: "action_choreography", weight: 15 },
+      { key: "fight_impact",        weight: 10 },
+      { key: "world_building",      weight: 10 },
+      { key: "stakes_tension",      weight: 10 },
+    ]},
   },
   "Romance-Lifestyle": {
-    "All ages":       { story: 20, art: 15, panel: 10, pacing: 20, color: 10, extension: "character_development", extWeight: 25 },
-    "Teens 13+":      { story: 25, art: 15, panel: 10, pacing: 15, color: 10, extension: "character_development", extWeight: 25 },
-    "Mature 17+":    { story: 25, art: 15, panel: 10, pacing: 10, color: 15, extension: "character_development", extWeight: 25 },
-    "Adults Only 18+":{ story: 20, art: 15, panel: 10, pacing: 10, color: 20, extension: "character_development", extWeight: 25 },
+    "All ages":       { story: 20, art: 15, panel: 10, pacing: 20, color: 10, extensions: [
+      { key: "character_development", weight: 15 },
+      { key: "emotional_resonance",  weight: 10 },
+    ]},
+    "Teens 13+":      { story: 25, art: 15, panel: 10, pacing: 15, color: 10, extensions: [
+      { key: "character_development", weight: 15 },
+      { key: "emotional_resonance",  weight: 10 },
+      { key: "romantic_tension",     weight: 10 },
+    ]},
+    "Mature 17+":    { story: 25, art: 15, panel: 10, pacing: 10, color: 15, extensions: [
+      { key: "character_development", weight: 15 },
+      { key: "emotional_resonance",  weight: 15 },
+      { key: "romantic_tension",     weight: 10 },
+    ]},
+    "Adults Only 18+":{ story: 20, art: 15, panel: 10, pacing: 10, color: 20, extensions: [
+      { key: "character_development", weight: 15 },
+      { key: "emotional_resonance",  weight: 15 },
+      { key: "romantic_tension",     weight: 15 },
+    ]},
   },
   "Drama-SliceOfLife": {
-    "All ages":       { story: 20, art: 20, panel: 10, pacing: 15, color: 15, extension: "character_development", extWeight: 20 },
-    "Teens 13+":      { story: 25, art: 15, panel: 10, pacing: 15, color: 10, extension: "character_development", extWeight: 25 },
-    "Mature 17+":    { story: 25, art: 15, panel: 10, pacing: 10, color: 15, extension: "character_development", extWeight: 25 },
-    "Adults Only 18+":{ story: 20, art: 15, panel: 10, pacing: 10, color: 20, extension: "emotional_resonance",     extWeight: 25 },
+    "All ages":       { story: 20, art: 20, panel: 10, pacing: 15, color: 15, extensions: [
+      { key: "character_development", weight: 10 },
+      { key: "emotional_resonance",  weight: 10 },
+    ]},
+    "Teens 13+":      { story: 25, art: 15, panel: 10, pacing: 15, color: 10, extensions: [
+      { key: "character_development", weight: 15 },
+      { key: "emotional_resonance",  weight: 10 },
+      { key: "relatability",          weight: 10 },
+    ]},
+    "Mature 17+":    { story: 25, art: 15, panel: 10, pacing: 10, color: 15, extensions: [
+      { key: "character_development", weight: 15 },
+      { key: "emotional_resonance",  weight: 15 },
+      { key: "narrative_depth",       weight: 10 },
+    ]},
+    "Adults Only 18+":{ story: 20, art: 15, panel: 10, pacing: 10, color: 20, extensions: [
+      { key: "character_development", weight: 15 },
+      { key: "emotional_resonance",  weight: 20 },
+      { key: "narrative_depth",       weight: 10 },
+    ]},
   },
   "Horror-Suspense": {
     "All ages":       null, // Không phù hợp
-    "Teens 13+":      { story: 20, art: 15, panel: 15, pacing: 20, color: 10, extension: "atmosphere",             extWeight: 20 },
-    "Mature 17+":    { story: 15, art: 15, panel: 15, pacing: 20, color: 10, extension: "atmosphere",             extWeight: 25 },
-    "Adults Only 18+":{ story: 15, art: 15, panel: 15, pacing: 20, color: 10, extension: "atmosphere",             extWeight: 25 },
+    "Teens 13+":      { story: 20, art: 15, panel: 15, pacing: 20, color: 10, extensions: [
+      { key: "atmosphere",       weight: 10 },
+      { key: "pacing_horror",   weight: 10 },
+    ]},
+    "Mature 17+":    { story: 15, art: 15, panel: 15, pacing: 20, color: 10, extensions: [
+      { key: "atmosphere",       weight: 15 },
+      { key: "pacing_horror",   weight: 10 },
+      { key: "mystery_setup",   weight: 10 },
+    ]},
+    "Adults Only 18+":{ story: 15, art: 15, panel: 15, pacing: 20, color: 10, extensions: [
+      { key: "atmosphere",       weight: 15 },
+      { key: "fear_impact",      weight: 10 },
+      { key: "pacing_horror",   weight: 10 },
+      { key: "mystery_setup",   weight: 10 },
+    ]},
   },
   "Comedy": {
-    "All ages":       { story: 15, art: 15, panel: 15, pacing: 15, color: 15, extension: "comedy_timing",           extWeight: 25 },
-    "Teens 13+":      { story: 20, art: 15, panel: 15, pacing: 15, color: 10, extension: "comedy_timing",           extWeight: 25 },
-    "Mature 17+":    { story: 20, art: 15, panel: 15, pacing: 15, color: 10, extension: "comedy_timing",           extWeight: 25 },
-    "Adults Only 18+":{ story: 20, art: 15, panel: 15, pacing: 15, color: 10, extension: "comedy_timing",           extWeight: 25 },
+    "All ages":       { story: 15, art: 15, panel: 15, pacing: 15, color: 15, extensions: [
+      { key: "comedy_timing",        weight: 15 },
+      { key: "comedy_originality",   weight: 10 },
+    ]},
+    "Teens 13+":      { story: 20, art: 15, panel: 15, pacing: 15, color: 10, extensions: [
+      { key: "comedy_timing",        weight: 15 },
+      { key: "comedy_originality",  weight: 10 },
+      { key: "character_comedy",    weight: 10 },
+    ]},
+    "Mature 17+":    { story: 20, art: 15, panel: 15, pacing: 15, color: 10, extensions: [
+      { key: "comedy_timing",        weight: 15 },
+      { key: "comedy_originality",  weight: 10 },
+      { key: "wordplay_translation",weight: 10 },
+    ]},
+    "Adults Only 18+":{ story: 20, art: 15, panel: 15, pacing: 15, color: 10, extensions: [
+      { key: "comedy_timing",        weight: 15 },
+      { key: "comedy_originality",  weight: 10 },
+      { key: "character_comedy",    weight: 10 },
+      { key: "wordplay_translation",weight: 10 },
+    ]},
   },
   "Fantasy-SciFi": {
-    "All ages":       { story: 15, art: 20, panel: 15, pacing: 25, color: 10, extension: "world_building",          extWeight: 15 },
-    "Teens 13+":      { story: 20, art: 20, panel: 15, pacing: 25, color: 10, extension: "world_building",          extWeight: 10 },
-    "Mature 17+":    { story: 20, art: 20, panel: 15, pacing: 20, color: 10, extension: "world_building",          extWeight: 15 },
-    "Adults Only 18+":{ story: 20, art: 15, panel: 15, pacing: 20, color: 15, extension: "world_building",          extWeight: 15 },
+    "All ages":       { story: 15, art: 20, panel: 15, pacing: 25, color: 10, extensions: [
+      { key: "world_building",      weight: 10 },
+      { key: "mystery_setup",      weight: 5 },
+    ]},
+    "Teens 13+":      { story: 20, art: 20, panel: 15, pacing: 25, color: 10, extensions: [
+      { key: "world_building",      weight: 10 },
+      { key: "stakes_tension",      weight: 10 },
+      { key: "mythology_lore",      weight: 5 },
+    ]},
+    "Mature 17+":    { story: 20, art: 20, panel: 15, pacing: 20, color: 10, extensions: [
+      { key: "world_building",      weight: 10 },
+      { key: "magic_system",       weight: 10 },
+      { key: "stakes_tension",     weight: 10 },
+    ]},
+    "Adults Only 18+":{ story: 20, art: 15, panel: 15, pacing: 20, color: 15, extensions: [
+      { key: "world_building",      weight: 10 },
+      { key: "magic_system",       weight: 10 },
+      { key: "technology_logic",   weight: 10 },
+      { key: "mythology_lore",     weight: 5 },
+    ]},
   },
   "Art-Heavy": {
-    "All ages":       { story: 10, art: 25, panel: 15, pacing: 15, color: 25, extension: null,                     extWeight: 0  },
-    "Teens 13+":      { story: 15, art: 25, panel: 15, pacing: 15, color: 20, extension: null,                     extWeight: 0  },
-    "Mature 17+":    { story: 15, art: 25, panel: 15, pacing: 15, color: 20, extension: null,                     extWeight: 0  },
-    "Adults Only 18+":{ story: 15, art: 25, panel: 15, pacing: 15, color: 20, extension: null,                     extWeight: 0  },
+    "All ages":       { story: 10, art: 25, panel: 15, pacing: 15, color: 25, extensions: [
+      { key: "line_quality",         weight: 10 },
+    ]},
+    "Teens 13+":      { story: 15, art: 25, panel: 15, pacing: 15, color: 20, extensions: [
+      { key: "line_quality",         weight: 10 },
+      { key: "color_harmony",        weight: 5 },
+    ]},
+    "Mature 17+":    { story: 15, art: 25, panel: 15, pacing: 15, color: 20, extensions: [
+      { key: "line_quality",         weight: 10 },
+      { key: "color_harmony",        weight: 5 },
+      { key: "splash_pages",        weight: 5 },
+    ]},
+    "Adults Only 18+":{ story: 15, art: 25, panel: 15, pacing: 15, color: 20, extensions: [
+      { key: "line_quality",         weight: 10 },
+      { key: "color_harmony",        weight: 5 },
+      { key: "splash_pages",        weight: 5 },
+      { key: "visual_expression",   weight: 5 },
+    ]},
   },
   "Mature-Adult": {
     "All ages":       null,
     "Teens 13+":      null,
-    "Mature 17+":    { story: 20, art: 15, panel: 15, pacing: 20, color: 15, extension: "emotional_resonance",     extWeight: 15 },
-    "Adults Only 18+":{ story: 25, art: 15, panel: 10, pacing: 15, color: 20, extension: "emotional_resonance",     extWeight: 15 },
+    "Mature 17+":    { story: 20, art: 15, panel: 15, pacing: 20, color: 15, extensions: [
+      { key: "emotional_resonance",   weight: 10 },
+      { key: "maturity_handling",    weight: 5 },
+    ]},
+    "Adults Only 18+":{ story: 25, art: 15, panel: 10, pacing: 15, color: 20, extensions: [
+      { key: "emotional_resonance",   weight: 15 },
+      { key: "character_complexity", weight: 10 },
+      { key: "maturity_handling",    weight: 5 },
+    ]},
   },
 };
 
@@ -299,8 +565,6 @@ function getRubricById(rubricId) {
 
 // ─── Build Rubric Entry from Matrix Cell ─────────────────────────────────────
 function buildRubricEntry(family, ageRating, entry) {
-  const extDef = entry.extension ? EXTENSION_CRITERIA[entry.extension] : null;
-
   const weights = {
     story_dialogue: entry.story,
     art_design:     entry.art,
@@ -317,14 +581,27 @@ function buildRubricEntry(family, ageRating, entry) {
     { key: "color",           label: CORE_CRITERIA_LABELS.color,            weight: entry.color,   order: 5 },
   ];
 
-  if (extDef && entry.extWeight > 0) {
-    weights[extDef.key] = entry.extWeight;
-    criteria.push({
-      key:         extDef.key,
-      label:       extDef.label,
-      description: extDef.description,
-      weight:      entry.extWeight,
-      order:       6,
+  // Xử lý extensions (mảng thay vì 1 extension)
+  const extensions = [];
+  if (entry.extensions && entry.extensions.length > 0) {
+    entry.extensions.forEach((ext, index) => {
+      const extDef = EXTENSION_CRITERIA[ext.key];
+      if (extDef && ext.weight > 0) {
+        weights[ext.key] = ext.weight;
+        criteria.push({
+          key:         extDef.key,
+          label:       extDef.label,
+          description: extDef.description,
+          weight:      ext.weight,
+          order:       6 + index,
+        });
+        extensions.push({
+          key:         extDef.key,
+          label:       extDef.label,
+          description: extDef.description,
+          weight:      ext.weight,
+        });
+      }
     });
   }
 
@@ -337,16 +614,14 @@ function buildRubricEntry(family, ageRating, entry) {
     weights,
     criteria,
     total_weight: totalWeight,
-    has_extension: !!extDef,
-    extension:    extDef
-      ? { key: extDef.key, label: extDef.label, description: extDef.description }
-      : null,
+    has_extensions: extensions.length > 0,
+    extensions,
   };
 }
 
 // ─── Get Default Rubric (equal weights) ───────────────────────────────────────
 function getDefaultRubric() {
-  const entry = { story: 20, art: 20, panel: 20, pacing: 20, color: 20, extension: null, extWeight: 0 };
+  const entry = { story: 20, art: 20, panel: 20, pacing: 20, color: 20, extensions: [] };
   return buildRubricEntry("__default__", "All ages", entry);
 }
 

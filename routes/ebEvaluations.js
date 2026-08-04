@@ -2259,7 +2259,7 @@ router.post("/series/:seriesId/confirm-publish", authMiddleware, requireEB, asyn
  *     success: true,
  *     data: {
  *       rubrics: [
- *         { id, family, age_rating, weights, criteria, total_weight, has_extension, extension }
+ *         { id, family, age_rating, weights, criteria, total_weight, has_extensions, extensions }
  *       ],
  *       families: [...],
  *       age_ratings: [...]
