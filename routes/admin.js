@@ -5,7 +5,17 @@ const { authMiddleware } = require("../middleware/auth");
 const { requireAdmin } = require("../middleware/roles");
 const { AppError } = require("../middleware/errorHandler");
 const { CHAPTER_STATUS } = require("../utils/constants");
-const { coinToUnits, unitsToVnd } = require("../utils/coinUnit");
+const { coinToUnits, unitsToCoinString, unitsToVnd } = require("../utils/coinUnit");
+
+/**
+ * Local helper: format integer CoinUnit → "x.xx" display.
+ * Trả về "0.00" nếu nullish. Tránh lỗi null/undefined khi raw field
+ * không tồn tại trên doc (vd legacy).
+ */
+function coinString(value) {
+  if (value === null || value === undefined) return "0.00";
+  return unitsToCoinString(value);
+}
 const User = require("../models/User");
 const Series = require("../models/Series");
 const Chapter = require("../models/Chapter");
@@ -4160,6 +4170,7 @@ router.get("/users/:id/financials", async (req, res, next) => {
       result.purchases = {
         history: purchases,
         total_chapters_bought: purchases.length,
+        chapters_bought: purchases.length, // Backward compat alias
         total_coin_spent: purchases.reduce(
           (s, p) => s + (p.price || 0),
           0
@@ -4171,15 +4182,18 @@ router.get("/users/:id/financials", async (req, res, next) => {
       }));
 
       // ─── Financial Summary (Reader) ─────────────────────────────────
-      // Tổng hợp nhanh toàn bộ số liệu tài chính của Reader.
+      // Định nghĩa chuẩn:
+      //   Reader:
+      //     current_coin = current_balance = wallet.balance
+      //     pending_revenue = 0, available_balance = 0
       const depositTx = (txSummary || []).find((t) => t._id === "Deposit");
       const purchaseTx = (txSummary || []).find((t) => t._id === "Purchase");
       const refundTx = (txSummary || []).find((t) => t._id === "Refund");
       result.financial_summary = {
         current_coin: wallet ? wallet.balance || 0 : 0,
         current_balance: wallet ? wallet.balance || 0 : 0,
-        pending_revenue: 0, // Reader không có pending revenue
-        available_balance: 0, // Reader không có available balance
+        pending_revenue: 0,
+        available_balance: 0,
         total_deposit: depositTx ? depositTx.total : wallet?.total_deposited || 0,
         total_purchase: purchaseTx
           ? purchaseTx.total
@@ -4232,9 +4246,18 @@ router.get("/users/:id/financials", async (req, res, next) => {
             { $group: { _id: "$type", total: { $sum: "$coin_amount" } } },
           ]),
           // Aggregate revenue theo series (cho user cụ thể).
-          // gross_coin_amount lưu full price trên MỌI record cùng purchase
-          // (Mangaka + Assistant), nên group theo purchased_chapter_id trước
-          // rồi $first lấy 1 bản, tránh nhân đôi khi 1 chapter có assistant.
+          //
+          // CHỐNG NHÂN ĐÔI:
+          // Một purchase có thể tạo N Revenue record (Mangaka + Assistant).
+          // gross_coin_amount là field CẤP PURCHASE → $first lấy 1 đại diện.
+          // coin_amount / platform_fee_coin / pending/available/withdrawn là
+          // field CẤP SHARE → $sum trên từng record của share user này (vì
+          // aggregate đã filter user_id=user nên 1 purchase chỉ còn ≤ 1 row
+          // cho mỗi loại share: 0 hoặc 1 Assistant, 1 Mangaka).
+          //
+          // chapters_sold = số purchase (mỗi purchased_chapter_id chỉ tính 1).
+          // Stage 1 group theo purchased_chapter_id + series_id; stage 2 group
+          // theo series_id và đếm $sum: 1 để ra chapters_sold.
           Revenue.aggregate([
             { $match: revenueFilter },
             {
@@ -4286,6 +4309,8 @@ router.get("/users/:id/financials", async (req, res, next) => {
                 pending_coin: { $sum: "$pending_coin" },
                 available_coin: { $sum: "$available_coin" },
                 withdrawn_coin: { $sum: "$withdrawn_coin" },
+                // Mỗi record đại diện cho 1 purchase → cộng 1.
+                chapters_sold: { $sum: 1 },
               },
             },
             { $sort: { total_coin: -1 } },
@@ -4302,23 +4327,42 @@ router.get("/users/:id/financials", async (req, res, next) => {
           : [];
       const seriesMap = new Map(seriesList.map((s) => [String(s._id), s]));
 
-      // Merge revenue aggregate với thông tin series
+      // Merge revenue aggregate với thông tin series.
+      // Field shape chuẩn cho mỗi series item (FE contract):
+      //   series_id, series_name, cover_image_url,
+      //   total_coin, total_coin_display,
+      //   total_vnd,
+      //   total_gross_coin, total_platform_fee_coin,
+      //   chapters_sold,
+      //   by_status.pending_coin, by_status.pending_coin_display,
+      //   by_status.available_coin, by_status.available_coin_display,
+      //   by_status.withdrawn_coin, by_status.withdrawn_coin_display
       const revenueBySeries = revenueBySeriesAgg.map((r) => {
         const sId = String(r._id);
         const info = seriesMap.get(sId);
+        const pending = r.pending_coin || 0;
+        const available = r.available_coin || 0;
+        const withdrawn = r.withdrawn_coin || 0;
+        const totalCoin = r.total_coin || 0;
+        const totalGross = r.total_gross || 0;
+        const totalPlatformFee = r.total_platform_fee || 0;
         return {
           series_id: r._id,
           series_name: info ? info.name : "(đã xoá)",
           cover_image_url: info ? info.cover_image_url : "",
-          total_coin: r.total_coin || 0,
+          total_coin: totalCoin,
+          total_coin_display: coinString(totalCoin),
           total_vnd: r.total_vnd || 0,
-          total_gross_coin: r.total_gross || 0,
-          total_platform_fee_coin: r.total_platform_fee || 0,
+          total_gross_coin: totalGross,
+          total_platform_fee_coin: totalPlatformFee,
           chapters_sold: r.chapters_sold || 0,
           by_status: {
-            pending_coin: r.pending_coin || 0,
-            available_coin: r.available_coin || 0,
-            withdrawn_coin: r.withdrawn_coin || 0,
+            pending_coin: pending,
+            pending_coin_display: coinString(pending),
+            available_coin: available,
+            available_coin_display: coinString(available),
+            withdrawn_coin: withdrawn,
+            withdrawn_coin_display: coinString(withdrawn),
           },
         };
       });
@@ -4404,24 +4448,44 @@ router.get("/users/:id/financials", async (req, res, next) => {
       }));
 
       // ─── Financial Summary (Mangaka/Assistant) ───────────────────────
+      //
+      // Định nghĩa chuẩn cho creator:
+      //   pending_balance : coin đang trong kỳ pending của Revenue
+      //   available_balance : coin đã available, có thể yêu cầu rút
+      //   current_balance = pending_balance + available_balance
+      //   current_coin = current_balance (alias cho FE)
+      //   total_withdrawal : tổng Coin đã complete (đã chuẩn hoá v2)
+      //     — tính từ withdrawalService, hoặc fallback wallet.total_withdrawn.
+      //   total_withdrawn (legacy alias) cũng trả về cùng giá trị.
       const revenueTx = (txSummary || []).find((t) => t._id === "Revenue");
       const withdrawalTx = (txSummary || []).find(
         (t) => t._id === "Withdrawal"
       );
       const refundTx = (txSummary || []).find((t) => t._id === "Refund");
+
+      const pendingBalance = wallet ? wallet.pending_balance || 0 : 0;
+      const availableBalance = wallet ? wallet.available_balance || 0 : 0;
+      const currentBalance = pendingBalance + availableBalance;
+
       result.financial_summary = {
-        current_coin: wallet ? wallet.balance || 0 : 0,
-        current_balance: wallet ? wallet.balance || 0 : 0,
-        pending_revenue: wallet ? wallet.pending_balance || 0 : 0,
-        available_balance: wallet ? wallet.available_balance || 0 : 0,
+        current_coin: currentBalance,
+        current_balance: currentBalance,
+        // Field creator-specific:
+        pending_revenue: pendingBalance,
+        pending_balance: pendingBalance,
+        available_balance: availableBalance,
         total_deposit: wallet?.total_deposited || 0,
         total_purchase: wallet?.total_spent || 0,
         total_revenue: revenueTx
           ? revenueTx.total
           : wallet?.total_revenue || 0,
+        // Tổng coin đã rút (chỉ tính withdrawal đã complete).
+        // Ưu tiên sum trực tiếp từ Withdrawal collection (status=completed)
+        // để không bị lẫn với tiền hoàn refund. Fallback wallet.total_withdrawn.
         total_withdrawal: withdrawalTx
           ? withdrawalTx.total
           : wallet?.total_withdrawn || 0,
+        total_withdrawn: wallet?.total_withdrawn || 0, // raw Wallet.total_withdrawn
         total_refund: refundTx ? refundTx.total : 0,
       };
 
@@ -4430,6 +4494,8 @@ router.get("/users/:id/financials", async (req, res, next) => {
       result.role_view = "other";
       result.note =
         "User role không có wallet/revenue — chỉ hiển thị thông tin cơ bản.";
+      // Other role (Admin/EB/Editor/Marketing…) không có creator balance;
+      // current_coin/current_balance để 0.
       result.financial_summary = {
         current_coin: 0,
         current_balance: 0,
@@ -4445,6 +4511,147 @@ router.get("/users/:id/financials", async (req, res, next) => {
 
     res.json({ success: true, data: result });
   } catch (error) {
+    next(error);
+  }
+});
+
+/**
+ * @swagger
+ * /admin/users/{id}/financials/top-series:
+ *   get:
+ *     summary: (Admin) Top series theo doanh thu của 1 user (Mangaka/Assistant)
+ *     description: |
+ *       Trả về top series đóng góp doanh thu cho user được chọn trong khoảng
+ *       thời gian period/year/month/quarter/limit.
+ *
+ *       Chỉ áp dụng cho user có role **Mangaka** hoặc **Assistant**. Role khác
+ *       trả HTTP 400 với message rõ ràng.
+ *
+ *       **Endpoint KHÔNG trả** revenue history, withdrawals, bank info, transactions —
+ *       những dữ liệu đó thuộc `GET /admin/users/:id/financials`.
+ *
+ *       **Quy tắc chống nhân đôi Revenue:**
+ *         - filter `Revenue.user_id` theo user được chọn → mỗi purchase chỉ còn
+ *           0 hoặc 1 record của user đó (không bị nhân N).
+ *         - `creator_revenue_coin` = SUM coin_amount của user (cấp SHARE).
+ *         - `gross_revenue_coin` dùng $first ở cấp purchase (mọi record của cùng
+ *           purchased_chapter_id lưu full price).
+ *         - `chapters_sold` đếm mỗi purchased_chapter_id đúng 1 lần.
+ *
+ *       **Quy ước field:**
+ *         - Field raw CoinUnit là integer (không có hậu tố `_display`).
+ *         - Field `*_coin_display` là chuỗi "x.xx" canonical từ unitsToCoinString().
+ *         - Tên trường canonical duy nhất cho mỗi metric — KHÔNG alias legacy.
+ *
+ *       **Response envelope:** `{ success: true, data: { user, filter, summary, top_series } }`.
+ *       KHÔNG đưa filter/summary/top_series/user ra ngoài `data`.
+ *
+ *       **Query limit:**
+ *         - Mặc định 10, tối thiểu 1, tối đa 50.
+ *         - Giá trị không hợp lệ (không phải số nguyên dương) → dùng default 10.
+ *         - Giá trị > 50 bị clamp về 50.
+ *
+ *       **Tất cả giá trị Coin là raw integer CoinUnit (100 CoinUnit = 1 Coin)**
+ *     tags: [Admin - Monetization]
+ *     security: [{ BearerAuth: [] }]
+ *     parameters:
+ *       - in: path
+ *         name: id
+ *         required: true
+ *         schema: { type: string }
+ *       - in: query
+ *         name: period
+ *         schema:
+ *           type: string
+ *           enum: [month, quarter, year]
+ *           default: month
+ *       - in: query
+ *         name: year
+ *         schema: { type: integer }
+ *       - in: query
+ *         name: month
+ *         schema: { type: integer, minimum: 1, maximum: 12 }
+ *       - in: query
+ *         name: quarter
+ *         schema: { type: integer, minimum: 1, maximum: 4 }
+ *       - in: query
+ *         name: limit
+ *         schema: { type: integer, minimum: 1, maximum: 50, default: 10 }
+ *         description: Số series trả về trong top_series (default 10, max 50).
+ *     responses:
+ *       200:
+ *         description: Thành công
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success: { type: boolean }
+ *                 data:
+ *                   type: object
+ *                   properties:
+ *                     user:
+ *                       type: object
+ *                       properties:
+ *                         _id: { type: string }
+ *                         username: { type: string }
+ *                         full_name: { type: string }
+ *                         role: { type: string, enum: [Mangaka, Assistant] }
+ *                     filter:
+ *                       type: object
+ *                       properties:
+ *                         period: { type: string, enum: [month, quarter, year] }
+ *                         year: { type: integer }
+ *                         month: { type: integer }
+ *                         quarter: { type: integer }
+ *                         from: { type: string, format: date-time }
+ *                         to: { type: string, format: date-time }
+ *                         timezone: { type: string }
+ *                     summary:
+ *                       type: object
+ *                       properties:
+ *                         creator_revenue_coin: { type: integer }
+ *                         chapters_sold: { type: integer }
+ *                         series_count: { type: integer }
+ *                     top_series:
+ *                       type: array
+ *                       items:
+ *                         type: object
+ *                         properties:
+ *                           series_id: { type: string }
+ *                           series_name: { type: string }
+ *                           cover_image_url: { type: string }
+ *                           creator_revenue_coin: { type: integer }
+ *                           gross_revenue_coin: { type: integer }
+ *                           chapters_sold: { type: integer }
+ *       400:
+ *         description: |
+ *           - Invalid query (period/year/month/quarter).
+ *           - Role không phải Mangaka/Assistant.
+ *       404: { description: User not found }
+ */
+router.get("/users/:id/financials/top-series", async (req, res, next) => {
+  try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+      return next(new AppError("Invalid id", 400));
+    }
+    const adminFinanceService = require("../services/adminFinanceService");
+    const data = await adminFinanceService.getUserTopSeries(
+      req.params.id,
+      req.query
+    );
+    return res.json({ success: true, data });
+  } catch (error) {
+    if (
+      error &&
+      typeof error.message === "string" &&
+      /^(Invalid (period|year|month|quarter))/.test(error.message)
+    ) {
+      return next(new AppError(error.message, 400));
+    }
+    if (error && error.statusCode) {
+      return next(new AppError(error.message, error.statusCode));
+    }
     next(error);
   }
 });
@@ -4825,6 +5032,7 @@ router.get("/dashboard/finance", async (req, res, next) => {
             role: "Reader",
             total_coin_spent: r.total_coin_spent || 0,
             chapters_bought: r.chapters_bought || 0,
+            chapters_purchased: r.chapters_bought || 0, // Backward-compat alias
           })
         ),
         top_series_by_chapters_sold: topSeriesByChaptersSold.map((r) =>

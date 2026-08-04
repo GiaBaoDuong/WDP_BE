@@ -4,15 +4,25 @@ const mongoose = require("mongoose");
  * Withdrawal - Yêu cầu rút tiền của Mangaka/Assistant.
  * `coin_amount` is integer CoinUnit; scale/rate/VND are immutable snapshots.
  *
- * Lifecycle:
+ * Lifecycle (chuẩn hoá v2):
  *   pending  ──approve──►  approved  ──complete──►  completed
  *      │
- *      └────reject────►  rejected (tiền quay lại available_balance)
+ *      └────reject────►  rejected  (tiền quay lại available_balance)
+ *
+ * Quy ước số dư:
+ *   - available_balance : Coin khả dụng mà user có thể yêu cầu rút.
+ *   - pending/approved withdrawal đã giữ coin (debit khỏi available_balance)
+ *     nhưng chưa tính vào total_withdrawn.
+ *   - total_withdrawn chỉ tăng khi status = completed.
+ *   - rejected: hoàn coin về available_balance; KHÔNG giảm total_withdrawn
+ *     (vì field này chưa được tăng trước complete).
+ *
+ * `revenue_ids` (mảng ObjectId trỏ tới Revenue): snapshot các Revenue được
+ * "rút" bởi yêu cầu này. Khi complete sẽ chuyển các Revenue trong mảng từ
+ * `available → withdrawn`. Withdrawal cũ (tạo trước khi cập nhật) sẽ không
+ * có field này — xem withdrawalService.completeWithdrawal để xử lý legacy.
  *
  * Snapshot thông tin ngân hàng tại thời điểm tạo yêu cầu (tránh thay đổi sau).
- *
- * `coin_amount`: số Coin muốn rút (giá trị khả dụng tại thời điểm tạo)
- * `vnd_amount` : số tiền VNĐ quy đổi tương ứng theo tỷ giá lúc tạo
  */
 const WITHDRAWAL_STATUS = {
   PENDING: "pending",
@@ -67,6 +77,19 @@ const withdrawalSchema = new mongoose.Schema(
     admin_note: { type: String, default: "", maxlength: 500 },
     // Khi hoàn tiền (reject / cancel) - tiền được cộng lại available_balance
     refunded_at: { type: Date, default: null },
+    // Revenue IDs được "rút" bởi yêu cầu này (snapshot tại thời điểm tạo).
+    // Khi complete, các Revenue này chuyển từ `available` → `withdrawn`.
+    // Có thể rỗng với dữ liệu legacy tạo trước khi field ra đời.
+    revenue_ids: {
+      type: [
+        {
+          type: mongoose.Schema.Types.ObjectId,
+          ref: "Revenue",
+        },
+      ],
+      default: [],
+      index: true,
+    },
   },
   { timestamps: true }
 );

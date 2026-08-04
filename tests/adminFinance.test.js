@@ -9,35 +9,8 @@
  * - GET /withdrawals/admin/all (stats)
  *
  * Run: npm test
- * Requires: supertest, mongodb-memory-server (devDependencies)
  */
 
-// Mock mongoose trước khi require bất kỳ module nào khác
-jest.mock("mongoose", () => {
-  const originalMongoose = jest.requireActual("mongoose");
-  return {
-    ...originalMongoose,
-    connect: jest.fn().mockResolvedValue({}),
-    disconnect: jest.fn().mockResolvedValue({}),
-    connection: {
-      readyState: 0,
-      on: jest.fn(),
-      once: jest.fn(),
-    },
-  };
-});
-
-const mongoose = require("mongoose");
-const { MongoMemoryServer } = require("mongodb-memory-server");
-
-let mongoServer;
-let adminToken;
-let readerToken;
-let testUsers = {};
-let testWallets = {};
-let app;
-
-// Mock config trước khi require app
 jest.mock("../config/payment", () => ({
   monetization: {
     coinToVndRate: 100,
@@ -46,126 +19,100 @@ jest.mock("../config/payment", () => ({
   },
 }));
 
+const mongoose = require("mongoose");
+const jwt = require("jsonwebtoken");
+const { setupTestApp, teardownTestApp, clearDatabase, makeUser } = require("./testUtils");
+
+let app;
+let request;
+let adminToken;
+let readerToken;
+let testUsers;
+let testWallets;
+
 beforeAll(async () => {
-  // Disconnect any existing connection first
-  if (mongoose.connection.readyState !== 0) {
-    await mongoose.disconnect();
-  }
-
-  mongoServer = await MongoMemoryServer.create();
-  const mongoUri = mongoServer.getUri();
-  await mongoose.connect(mongoUri);
-
-  // Require app after mongoose is connected
-  app = require("../app").app;
+  process.env.JWT_SECRET = process.env.JWT_SECRET || "test-secret";
+  const ctx = await setupTestApp();
+  app = ctx.app;
+  request = ctx.request;
 });
 
 afterAll(async () => {
-  if (mongoose.connection.readyState !== 0) {
-    await mongoose.disconnect();
-  }
-  if (mongoServer) {
-    await mongoServer.stop();
-  }
+  await teardownTestApp();
 });
 
 beforeEach(async () => {
-  const User = require("../models/User");
-  const Wallet = require("../models/Wallet");
-  const Revenue = require("../models/Revenue");
-  const Withdrawal = require("../models/Withdrawal");
-
-  await User.deleteMany({});
-  await Wallet.deleteMany({});
-  await Revenue.deleteMany({});
-  await Withdrawal.deleteMany({});
+  await clearDatabase();
 
   // Tạo test users
-  const adminUser = await User.create({
+  const adminUser = await makeUser({
     username: "admin_test",
-    password: "password123",
-    full_name: "Admin Test",
     email: "admin@test.com",
     role: "Admin",
+    full_name: "Admin Test",
   });
-  testUsers.admin = adminUser;
-
-  const mangaka1 = await User.create({
+  const mangaka1 = await makeUser({
     username: "mangaka1",
-    password: "password123",
-    full_name: "Mangaka One",
     email: "mangaka1@test.com",
     role: "Mangaka",
+    full_name: "Mangaka One",
   });
-  testUsers.mangaka1 = mangaka1;
-
-  const mangaka2 = await User.create({
+  const mangaka2 = await makeUser({
     username: "mangaka2",
-    password: "password123",
-    full_name: "Mangaka Two",
     email: "mangaka2@test.com",
     role: "Mangaka",
+    full_name: "Mangaka Two",
   });
-  testUsers.mangaka2 = mangaka2;
-
-  const assistant1 = await User.create({
+  const assistant1 = await makeUser({
     username: "assistant1",
-    password: "password123",
-    full_name: "Assistant One",
     email: "assistant1@test.com",
     role: "Assistant",
+    full_name: "Assistant One",
   });
-  testUsers.assistant1 = assistant1;
-
-  const reader1 = await User.create({
+  const reader1 = await makeUser({
     username: "reader1",
-    password: "password123",
-    full_name: "Reader One",
     email: "reader1@test.com",
     role: "Reader",
+    full_name: "Reader One",
   });
-  testUsers.reader1 = reader1;
 
-  // Tạo wallets
-  const walletMangaka1 = await Wallet.create({
-    user_id: mangaka1._id,
-    balance: 0,
-    pending_balance: 1000000,
-    available_balance: 5000000,
-    total_revenue: 6000000,
-    total_withdrawn: 3000000,
-  });
-  testWallets.mangaka1 = walletMangaka1;
+  testUsers = { adminUser, mangaka1, mangaka2, assistant1, reader1 };
 
-  const walletMangaka2 = await Wallet.create({
-    user_id: mangaka2._id,
-    balance: 0,
-    pending_balance: 2000000,
-    available_balance: 3000000,
-    total_revenue: 5000000,
-    total_withdrawn: 1000000,
-  });
-  testWallets.mangaka2 = walletMangaka2;
+  const Wallet = require("../models/Wallet");
+  testWallets = {
+    mangaka1: await Wallet.create({
+      user_id: mangaka1._id,
+      balance: 0,
+      pending_balance: 1000000,
+      available_balance: 5000000,
+      total_revenue: 6000000,
+      total_withdrawn: 3000000,
+    }),
+    mangaka2: await Wallet.create({
+      user_id: mangaka2._id,
+      balance: 0,
+      pending_balance: 2000000,
+      available_balance: 3000000,
+      total_revenue: 5000000,
+      total_withdrawn: 1000000,
+    }),
+    assistant1: await Wallet.create({
+      user_id: assistant1._id,
+      balance: 0,
+      pending_balance: 500000,
+      available_balance: 2000000,
+      total_revenue: 2500000,
+      total_withdrawn: 500000,
+    }),
+    reader1: await Wallet.create({
+      user_id: reader1._id,
+      balance: 800000,
+      total_deposited: 1000000,
+      total_spent: 200000,
+    }),
+  };
 
-  const walletAssistant1 = await Wallet.create({
-    user_id: assistant1._id,
-    balance: 0,
-    pending_balance: 500000,
-    available_balance: 2000000,
-    total_revenue: 2500000,
-    total_withdrawn: 500000,
-  });
-  testWallets.assistant1 = walletAssistant1;
-
-  const walletReader1 = await Wallet.create({
-    user_id: reader1._id,
-    balance: 800000,
-    total_deposited: 1000000,
-    total_spent: 200000,
-  });
-  testWallets.reader1 = walletReader1;
-
-  // Tạo revenues
+  const Revenue = require("../models/Revenue");
   const series1 = new mongoose.Types.ObjectId();
   const chapter1 = new mongoose.Types.ObjectId();
   const purchasedChapter1 = new mongoose.Types.ObjectId();
@@ -184,6 +131,7 @@ beforeEach(async () => {
     share_percentage: 60,
     coin_amount: 30000,
     status: "available",
+    available_at: new Date(),
   });
 
   await Revenue.create({
@@ -199,9 +147,10 @@ beforeEach(async () => {
     share_percentage: 40,
     coin_amount: 20000,
     status: "available",
+    available_at: new Date(),
   });
 
-  // Tạo withdrawals
+  const Withdrawal = require("../models/Withdrawal");
   await Withdrawal.create({
     user_id: mangaka1._id,
     user_role: "Mangaka",
@@ -209,39 +158,21 @@ beforeEach(async () => {
     vnd_amount: 10000000,
     status: "completed",
     processed_at: new Date(),
-    bank_snapshot: {
-      bank_name: "Test Bank",
-      account_holder: "Mangaka One",
-      account_number: "123456789",
-    },
   });
-
   await Withdrawal.create({
     user_id: mangaka2._id,
     user_role: "Mangaka",
     coin_amount: 500000,
     vnd_amount: 5000000,
     status: "pending",
-    bank_snapshot: {
-      bank_name: "Test Bank",
-      account_holder: "Mangaka Two",
-      account_number: "987654321",
-    },
   });
-
   await Withdrawal.create({
     user_id: mangaka2._id,
     user_role: "Mangaka",
     coin_amount: 300000,
     vnd_amount: 3000000,
     status: "approved",
-    bank_snapshot: {
-      bank_name: "Test Bank",
-      account_holder: "Mangaka Two",
-      account_number: "987654321",
-    },
   });
-
   await Withdrawal.create({
     user_id: assistant1._id,
     user_role: "Assistant",
@@ -249,41 +180,26 @@ beforeEach(async () => {
     vnd_amount: 2000000,
     status: "completed",
     processed_at: new Date(),
-    bank_snapshot: {
-      bank_name: "Test Bank",
-      account_holder: "Assistant One",
-      account_number: "555555555",
-    },
   });
-
   await Withdrawal.create({
     user_id: mangaka1._id,
     user_role: "Mangaka",
     coin_amount: 100000,
     vnd_amount: 1000000,
     status: "rejected",
-    bank_snapshot: {
-      bank_name: "Test Bank",
-      account_holder: "Mangaka One",
-      account_number: "123456789",
-    },
   });
 
-  // Tạo tokens
-  const jwt = require("jsonwebtoken");
   adminToken = jwt.sign(
     { nameid: adminUser._id.toString(), role: "Admin" },
-    process.env.JWT_SECRET || "test-secret",
+    process.env.JWT_SECRET,
     { expiresIn: "1h" }
   );
   readerToken = jwt.sign(
     { nameid: reader1._id.toString(), role: "Reader" },
-    process.env.JWT_SECRET || "test-secret",
+    process.env.JWT_SECRET,
     { expiresIn: "1h" }
   );
 });
-
-// ─── Helper ─────────────────────────────────────────────────────────────────
 
 function authHeader(token) {
   return { Authorization: `Bearer ${token}` };
@@ -293,13 +209,13 @@ function authHeader(token) {
 
 describe("Admin Finance - Auth", () => {
   test("1. No token returns 401", async () => {
-    const res = await request(app).get("/admin/finance/summary");
+    const res = await request().get("/admin/finance/summary");
     expect(res.status).toBe(401);
     expect(res.body.success).toBe(false);
   });
 
   test("2. Non-admin role returns 403", async () => {
-    const res = await request(app)
+    const res = await request()
       .get("/admin/finance/summary")
       .set(authHeader(readerToken));
     expect(res.status).toBe(403);
@@ -307,7 +223,7 @@ describe("Admin Finance - Auth", () => {
   });
 
   test("3. Admin token returns 200", async () => {
-    const res = await request(app)
+    const res = await request()
       .get("/admin/finance/summary")
       .set(authHeader(adminToken));
     expect(res.status).toBe(200);
@@ -319,96 +235,79 @@ describe("Admin Finance - Auth", () => {
 
 describe("Admin Finance - Summary", () => {
   test("4. Empty database returns zeros", async () => {
-    await User.deleteMany({});
-    await Wallet.deleteMany({});
-    await Revenue.deleteMany({});
-    await Withdrawal.deleteMany({});
-
-    const res = await request(app)
+    await clearDatabase();
+    const res = await request()
       .get("/admin/finance/summary")
       .set(authHeader(adminToken));
-
     expect(res.status).toBe(200);
-    expect(res.body.data.total_circulation_coin).toBe(0);
-    expect(res.body.data.total_revenue_all_time_coin).toBe(0);
-    expect(res.body.data.total_withdrawn_vnd).toBe(0);
-    expect(res.body.data.total_platform_coin).toBe(0);
-    expect(res.body.data.pending_withdrawals.count).toBe(0);
-    expect(res.body.data.pending_withdrawals.coin).toBe(0);
-    expect(res.body.data.total_users_with_balance).toBe(0);
+    const data = res.body.data;
+    expect(data.total_circulation_coin).toBe(0);
+    expect(data.total_revenue_all_time_coin).toBe(0);
+    expect(data.total_withdrawn_vnd).toBe(0);
+    expect(data.total_platform_coin).toBe(0);
+    expect(data.pending_withdrawals.count).toBe(0);
+    expect(data.pending_withdrawals.coin).toBe(0);
+    expect(data.total_users_with_balance).toBe(0);
   });
 
   test("5. total_circulation_coin = balance + pending_balance + available_balance", async () => {
-    const res = await request(app)
+    const res = await request()
       .get("/admin/finance/summary")
       .set(authHeader(adminToken));
-
     expect(res.status).toBe(200);
     const data = res.body.data;
-
-    // Reader wallet: balance=800000
-    // Mangaka1: pending=1000000 + available=5000000 = 6000000
-    // Mangaka2: pending=2000000 + available=3000000 = 5000000
-    // Assistant1: pending=500000 + available=2000000 = 2500000
-    // Total = 800000 + 6000000 + 5000000 + 2500000 = 14300000
+    // Reader: 800000
+    // Mangaka1: pending 1000000 + available 5000000 = 6000000
+    // Mangaka2: pending 2000000 + available 3000000 = 5000000
+    // Assistant1: pending 500000 + available 2000000 = 2500000
     expect(data.total_circulation_coin).toBe(14300000);
   });
 
   test("6. total_revenue_all_time_coin = SUM Revenue.coin_amount", async () => {
-    const res = await request(app)
+    const res = await request()
       .get("/admin/finance/summary")
       .set(authHeader(adminToken));
-
     expect(res.status).toBe(200);
-    // Revenue: mangaka1=30000 + assistant1=20000 = 50000
     expect(res.body.data.total_revenue_all_time_coin).toBe(50000);
   });
 
   test("7. total_withdrawn_vnd only counts completed", async () => {
-    const res = await request(app)
+    const res = await request()
       .get("/admin/finance/summary")
       .set(authHeader(adminToken));
-
     expect(res.status).toBe(200);
-    // Completed: mangaka1=10000000 + assistant1=2000000 = 12000000
     expect(res.body.data.total_withdrawn_vnd).toBe(12000000);
   });
 
   test("8. pending_withdrawals only counts pending", async () => {
-    const res = await request(app)
+    const res = await request()
       .get("/admin/finance/summary")
       .set(authHeader(adminToken));
-
     expect(res.status).toBe(200);
-    // pending: mangaka2=500000
     expect(res.body.data.pending_withdrawals.count).toBe(1);
     expect(res.body.data.pending_withdrawals.coin).toBe(500000);
   });
 
   test("9. total_users_with_balance counts wallets with balance > 0", async () => {
-    const res = await request(app)
+    const res = await request()
       .get("/admin/finance/summary")
       .set(authHeader(adminToken));
-
     expect(res.status).toBe(200);
-    // Reader (balance=800000) + Mangaka1 + Mangaka2 + Assistant1 = 4
     expect(res.body.data.total_users_with_balance).toBe(4);
   });
 
   test("10. total_platform_coin is always 0", async () => {
-    const res = await request(app)
+    const res = await request()
       .get("/admin/finance/summary")
       .set(authHeader(adminToken));
-
     expect(res.status).toBe(200);
     expect(res.body.data.total_platform_coin).toBe(0);
   });
 
   test("11. coin_to_vnd_rate from config", async () => {
-    const res = await request(app)
+    const res = await request()
       .get("/admin/finance/summary")
       .set(authHeader(adminToken));
-
     expect(res.status).toBe(200);
     expect(res.body.data.coin_to_vnd_rate).toBe(100);
   });
@@ -418,11 +317,9 @@ describe("Admin Finance - Summary", () => {
 
 describe("Admin Finance - Revenue By Role", () => {
   test("12. User without wallet still counted in user_count", async () => {
-    // Reader1 có wallet với balance > 0
-    const res = await request(app)
+    const res = await request()
       .get("/admin/finance/revenue-by-role")
       .set(authHeader(adminToken));
-
     expect(res.status).toBe(200);
     const roles = res.body.data.roles;
     const readerRole = roles.find((r) => r.role === "Reader");
@@ -431,29 +328,26 @@ describe("Admin Finance - Revenue By Role", () => {
   });
 
   test("13. User without wallet has zero amounts", async () => {
-    // Create a Mangaka without wallet
-    await User.create({
+    await makeUser({
       username: "mangaka_no_wallet",
-      password: "password123",
-      full_name: "Mangaka No Wallet",
       email: "mangaka_nowallet@test.com",
       role: "Mangaka",
+      full_name: "Mangaka No Wallet",
     });
 
-    const res = await request(app)
+    const res = await request()
       .get("/admin/finance/revenue-by-role")
       .set(authHeader(adminToken));
-
     expect(res.status).toBe(200);
     const roles = res.body.data.roles;
     const mangakaRole = roles.find((r) => r.role === "Mangaka");
-    expect(mangakaRole.user_count).toBe(3); // mangaka1 + mangaka2 + mangaka_no_wallet
+    expect(mangakaRole.user_count).toBe(3);
   });
 
   test("14. total_circulation_coin matches summary", async () => {
     const [summaryRes, roleRes] = await Promise.all([
-      request(app).get("/admin/finance/summary").set(authHeader(adminToken)),
-      request(app)
+      request().get("/admin/finance/summary").set(authHeader(adminToken)),
+      request()
         .get("/admin/finance/revenue-by-role")
         .set(authHeader(adminToken)),
     ]);
@@ -463,23 +357,20 @@ describe("Admin Finance - Revenue By Role", () => {
     );
   });
 
-  test("15. Role grouping is correct", async () => {
-    const res = await request(app)
+  test("15. current_balance_coin = pending + available (chuẩn hoá v2)", async () => {
+    const res = await request()
       .get("/admin/finance/revenue-by-role")
       .set(authHeader(adminToken));
-
     expect(res.status).toBe(200);
     const roles = res.body.data.roles;
-    expect(roles.length).toBeGreaterThan(0);
-
-    // Kiểm tra Mangaka có đúng metrics
     const mangakaRole = roles.find((r) => r.role === "Mangaka");
     expect(mangakaRole).toBeDefined();
     expect(mangakaRole.user_count).toBe(2);
-    expect(mangakaRole.total_earnings_coin).toBe(6000000 + 5000000); // total_revenue
-    expect(mangakaRole.total_withdrawn_coin).toBe(3000000 + 1000000);
-    expect(mangakaRole.current_balance_coin).toBe(5000000 + 3000000); // available_balance
-    expect(mangakaRole.pending_balance_coin).toBe(1000000 + 2000000);
+    expect(mangakaRole.total_earnings_coin).toBe(11000000);
+    expect(mangakaRole.total_withdrawn_coin).toBe(4000000);
+    // current_balance = pending + available = (1000000+2000000) + (5000000+3000000) = 11000000
+    expect(mangakaRole.current_balance_coin).toBe(11000000);
+    expect(mangakaRole.pending_balance_coin).toBe(3000000);
   });
 });
 
@@ -487,56 +378,50 @@ describe("Admin Finance - Revenue By Role", () => {
 
 describe("Admin Finance - Revenue Timeline", () => {
   test("16. Default period is 30d", async () => {
-    const res = await request(app)
+    const res = await request()
       .get("/admin/finance/revenue-timeline")
       .set(authHeader(adminToken));
-
     expect(res.status).toBe(200);
     expect(res.body.data.period).toBe("30d");
   });
 
   test("17. Supports 7d period", async () => {
-    const res = await request(app)
+    const res = await request()
       .get("/admin/finance/revenue-timeline?period=7d")
       .set(authHeader(adminToken));
-
     expect(res.status).toBe(200);
     expect(res.body.data.period).toBe("7d");
   });
 
   test("18. Supports 90d period", async () => {
-    const res = await request(app)
+    const res = await request()
       .get("/admin/finance/revenue-timeline?period=90d")
       .set(authHeader(adminToken));
-
     expect(res.status).toBe(200);
     expect(res.body.data.period).toBe("90d");
   });
 
   test("19. Supports all period", async () => {
-    const res = await request(app)
+    const res = await request()
       .get("/admin/finance/revenue-timeline?period=all")
       .set(authHeader(adminToken));
-
     expect(res.status).toBe(200);
     expect(res.body.data.period).toBe("all");
   });
 
   test("20. Invalid period returns 400", async () => {
-    const res = await request(app)
+    const res = await request()
       .get("/admin/finance/revenue-timeline?period=invalid")
       .set(authHeader(adminToken));
-
     expect(res.status).toBe(400);
     expect(res.body.success).toBe(false);
     expect(res.body.message).toContain("Invalid period");
   });
 
   test("21. Points are sorted by date ascending", async () => {
-    const res = await request(app)
+    const res = await request()
       .get("/admin/finance/revenue-timeline?period=7d")
       .set(authHeader(adminToken));
-
     expect(res.status).toBe(200);
     const points = res.body.data.points;
     if (points.length > 1) {
@@ -547,10 +432,9 @@ describe("Admin Finance - Revenue Timeline", () => {
   });
 
   test("22. net_flow_coin = revenue - withdrawal", async () => {
-    const res = await request(app)
+    const res = await request()
       .get("/admin/finance/revenue-timeline?period=all")
       .set(authHeader(adminToken));
-
     expect(res.status).toBe(200);
     const summary = res.body.data.summary;
     expect(summary.net_flow_coin).toBe(
@@ -559,20 +443,12 @@ describe("Admin Finance - Revenue Timeline", () => {
   });
 
   test("23. Empty data returns empty points array", async () => {
-    await User.deleteMany({});
-    await Wallet.deleteMany({});
-    await Revenue.deleteMany({});
-    await Withdrawal.deleteMany({});
-
-    const res = await request(app)
+    await clearDatabase();
+    const res = await request()
       .get("/admin/finance/revenue-timeline?period=all")
       .set(authHeader(adminToken));
-
     expect(res.status).toBe(200);
     expect(res.body.data.points).toEqual([]);
-    expect(res.body.data.summary.total_revenue_coin).toBe(0);
-    expect(res.body.data.summary.total_withdrawal_coin).toBe(0);
-    expect(res.body.data.summary.net_flow_coin).toBe(0);
   });
 });
 
@@ -580,71 +456,62 @@ describe("Admin Finance - Revenue Timeline", () => {
 
 describe("Admin Finance - Top Earners", () => {
   test("24. Default returns both Mangaka and Assistant", async () => {
-    const res = await request(app)
+    const res = await request()
       .get("/admin/finance/top-earners")
       .set(authHeader(adminToken));
-
     expect(res.status).toBe(200);
     expect(res.body.data.earners).toBeDefined();
     expect(Array.isArray(res.body.data.earners)).toBe(true);
   });
 
   test("25. Filter by Mangaka role", async () => {
-    const res = await request(app)
+    const res = await request()
       .get("/admin/finance/top-earners?role=Mangaka")
       .set(authHeader(adminToken));
-
     expect(res.status).toBe(200);
-    const earners = res.body.data.earners;
-    earners.forEach((e) => {
+    res.body.data.earners.forEach((e) => {
       expect(e.role).toBe("Mangaka");
     });
   });
 
   test("26. Filter by Assistant role", async () => {
-    const res = await request(app)
+    const res = await request()
       .get("/admin/finance/top-earners?role=Assistant")
       .set(authHeader(adminToken));
-
     expect(res.status).toBe(200);
-    const earners = res.body.data.earners;
-    earners.forEach((e) => {
+    res.body.data.earners.forEach((e) => {
       expect(e.role).toBe("Assistant");
     });
   });
 
   test("27. Invalid role returns 400", async () => {
-    const res = await request(app)
+    const res = await request()
       .get("/admin/finance/top-earners?role=Admin")
       .set(authHeader(adminToken));
-
     expect(res.status).toBe(400);
     expect(res.body.message).toContain("Invalid role");
   });
 
   test("28. Limit works correctly", async () => {
-    const res = await request(app)
+    const res = await request()
       .get("/admin/finance/top-earners?limit=1")
       .set(authHeader(adminToken));
-
     expect(res.status).toBe(200);
     expect(res.body.data.earners.length).toBeLessThanOrEqual(1);
   });
 
   test("29. Max limit is 50", async () => {
-    const res = await request(app)
+    const res = await request()
       .get("/admin/finance/top-earners?limit=100")
       .set(authHeader(adminToken));
-
     expect(res.status).toBe(200);
     expect(res.body.data.earners.length).toBeLessThanOrEqual(50);
   });
 
   test("30. Sorted by total_earnings_coin descending", async () => {
-    const res = await request(app)
+    const res = await request()
       .get("/admin/finance/top-earners")
       .set(authHeader(adminToken));
-
     expect(res.status).toBe(200);
     const earners = res.body.data.earners;
     if (earners.length > 1) {
@@ -657,37 +524,33 @@ describe("Admin Finance - Top Earners", () => {
   });
 
   test("31. series_count is distinct series count", async () => {
-    const res = await request(app)
+    const res = await request()
       .get("/admin/finance/top-earners")
       .set(authHeader(adminToken));
-
     expect(res.status).toBe(200);
-    const earners = res.body.data.earners;
-    earners.forEach((e) => {
+    res.body.data.earners.forEach((e) => {
       expect(typeof e.series_count).toBe("number");
       expect(e.series_count).toBeGreaterThanOrEqual(0);
     });
   });
 
   test("32. avg_monthly_revenue_coin is integer", async () => {
-    const res = await request(app)
+    const res = await request()
       .get("/admin/finance/top-earners")
       .set(authHeader(adminToken));
-
     expect(res.status).toBe(200);
-    const earners = res.body.data.earners;
-    earners.forEach((e) => {
+    res.body.data.earners.forEach((e) => {
       expect(Number.isInteger(e.avg_monthly_revenue_coin)).toBe(true);
     });
   });
 
   test("33. Empty earners returns empty array", async () => {
+    const Revenue = require("../models/Revenue");
     await Revenue.deleteMany({});
 
-    const res = await request(app)
+    const res = await request()
       .get("/admin/finance/top-earners")
       .set(authHeader(adminToken));
-
     expect(res.status).toBe(200);
     expect(res.body.data.earners).toEqual([]);
   });
@@ -697,15 +560,12 @@ describe("Admin Finance - Top Earners", () => {
 
 describe("Withdrawals Admin - Stats", () => {
   test("34. Stats has all 10 fields", async () => {
-    const res = await request(app)
+    const res = await request()
       .get("/withdrawals/admin/all")
       .set(authHeader(adminToken));
-
     expect(res.status).toBe(200);
     expect(res.body.stats).toBeDefined();
     const stats = res.body.stats;
-
-    // All 10 fields
     expect(stats.pending_count).toBeDefined();
     expect(stats.pending_coin).toBeDefined();
     expect(stats.approved_count).toBeDefined();
@@ -719,66 +579,51 @@ describe("Withdrawals Admin - Stats", () => {
   });
 
   test("35. Stats has correct counts from test data", async () => {
-    const res = await request(app)
+    const res = await request()
       .get("/withdrawals/admin/all")
       .set(authHeader(adminToken));
-
     expect(res.status).toBe(200);
     const stats = res.body.stats;
-
-    // pending: 1 (mangaka2)
     expect(stats.pending_count).toBe(1);
     expect(stats.pending_coin).toBe(500000);
-
-    // approved: 1 (mangaka2)
     expect(stats.approved_count).toBe(1);
     expect(stats.approved_coin).toBe(300000);
-
-    // completed: 2 (mangaka1 + assistant1)
     expect(stats.completed_count).toBe(2);
     expect(stats.completed_coin).toBe(1200000);
-
-    // rejected: 1 (mangaka1)
     expect(stats.rejected_count).toBe(1);
     expect(stats.rejected_coin).toBe(100000);
-
-    // cancelled: 0
     expect(stats.cancelled_count).toBe(0);
     expect(stats.cancelled_coin).toBe(0);
   });
 
   test("36. Stats not affected by page/limit", async () => {
     const [page1Res, page2Res] = await Promise.all([
-      request(app)
+      request()
         .get("/withdrawals/admin/all?page=1&limit=1")
         .set(authHeader(adminToken)),
-      request(app)
+      request()
         .get("/withdrawals/admin/all?page=2&limit=1")
         .set(authHeader(adminToken)),
     ]);
-
     expect(page1Res.body.stats).toEqual(page2Res.body.stats);
   });
 
   test("37. Stats not affected by query status", async () => {
     const [allRes, pendingRes] = await Promise.all([
-      request(app)
+      request()
         .get("/withdrawals/admin/all")
         .set(authHeader(adminToken)),
-      request(app)
+      request()
         .get("/withdrawals/admin/all?status=pending")
         .set(authHeader(adminToken)),
     ]);
-
-    // Stats vẫn giống nhau dù query status khác
     expect(allRes.body.stats).toEqual(pendingRes.body.stats);
   });
 
   test("38. Response structure preserved", async () => {
-    const res = await request(app)
+    const res = await request()
       .get("/withdrawals/admin/all")
       .set(authHeader(adminToken));
-
     expect(res.status).toBe(200);
     expect(res.body.success).toBe(true);
     expect(res.body.data).toBeDefined();

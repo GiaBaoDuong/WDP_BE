@@ -20,7 +20,11 @@ const config = require("../config/payment");
 const {
   withCreatorVndBalances,
   withWalletCoinDisplayFields,
+  formatCoinResponse,
 } = require("../utils/coinUnit");
+
+// Các field kiểu CoinUnit của WalletTransaction để sinh *_display alias.
+const TX_COIN_FIELDS = ["coin_amount", "balance_after", "vnd_amount"];
 
 // ─── GET /wallet ──────────────────────────────────────────────────────────────
 /**
@@ -104,9 +108,12 @@ router.get("/transactions", authMiddleware, async (req, res, next) => {
       WalletTransaction.countDocuments(filter),
     ]);
 
+    // Format từng item: thêm coin_amount_coin_display + *_coin_display alias.
+    const formattedItems = formatCoinResponse(items);
+
     return res.json({
       success: true,
-      data: items,
+      data: formattedItems,
       pagination: {
         total,
         page,

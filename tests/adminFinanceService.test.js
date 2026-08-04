@@ -2,30 +2,11 @@
  * Admin Finance Service Tests
  *
  * Unit tests cho adminFinanceService.js
- * Sử dụng mongodb-memory-server
+ * Sử dụng testUtils.setupTestApp để bootstrap mongodb-memory-server + app.
  *
  * Run: npm test
  */
 
-// Mock mongoose
-jest.mock("mongoose", () => {
-  const originalMongoose = jest.requireActual("mongoose");
-  return {
-    ...originalMongoose,
-    connect: jest.fn().mockResolvedValue({}),
-    disconnect: jest.fn().mockResolvedValue({}),
-    connection: {
-      readyState: 0,
-      on: jest.fn(),
-      once: jest.fn(),
-      db: {
-        createCollection: jest.fn().mockResolvedValue({}),
-      },
-    },
-  };
-});
-
-// Mock config
 jest.mock("../config/payment", () => ({
   monetization: {
     coinToVndRate: 100,
@@ -35,36 +16,24 @@ jest.mock("../config/payment", () => ({
 }));
 
 const mongoose = require("mongoose");
-const { MongoMemoryServer } = require("mongodb-memory-server");
+const { setupTestApp, teardownTestApp, clearDatabase } = require("./testUtils");
 const adminFinanceService = require("../services/adminFinanceService");
 
-let mongoServer;
+let app;
+let request;
 
 beforeAll(async () => {
-  mongoServer = await MongoMemoryServer.create();
-  const mongoUri = mongoServer.getUri();
-  await mongoose.connect(mongoUri);
+  const ctx = await setupTestApp();
+  app = ctx.app;
+  request = ctx.request;
 });
 
 afterAll(async () => {
-  await mongoose.disconnect();
-  await mongoServer.stop();
+  await teardownTestApp();
 });
 
 beforeEach(async () => {
-  const User = require("../models/User");
-  const Wallet = require("../models/Wallet");
-  const Revenue = require("../models/Revenue");
-  const Withdrawal = require("../models/Withdrawal");
-  const Series = require("../models/Series");
-
-  await Promise.all([
-    User.deleteMany({}),
-    Wallet.deleteMany({}),
-    Revenue.deleteMany({}),
-    Withdrawal.deleteMany({}),
-    Series.deleteMany({}),
-  ]);
+  await clearDatabase();
 });
 
 // ─── SERVICE UNIT TESTS ─────────────────────────────────────────────────────
@@ -105,7 +74,6 @@ describe("Admin Finance Service", () => {
 
       const result = await adminFinanceService.getFinanceSummary();
 
-      // 1000 + 2000 + 3000 = 6000
       expect(result.total_circulation_coin).toBe(6000);
     });
 
@@ -126,13 +94,12 @@ describe("Admin Finance Service", () => {
         balance: 1000,
         pending_balance: 2000,
         available_balance: 3000,
-        total_revenue: 100000, // Should NOT be added to circulation
-        total_withdrawn: 50000, // Should NOT be added to circulation
+        total_revenue: 100000,
+        total_withdrawn: 50000,
       });
 
       const result = await adminFinanceService.getFinanceSummary();
 
-      // Should be 6000, NOT 106000
       expect(result.total_circulation_coin).toBe(6000);
     });
 
@@ -159,6 +126,8 @@ describe("Admin Finance Service", () => {
         platform_fee_coin: 1000,
         net_coin_amount: 4000,
         coin_amount: 3000,
+        share_percentage: 100,
+        available_at: new Date(),
       });
 
       await Revenue.create({
@@ -172,11 +141,12 @@ describe("Admin Finance Service", () => {
         platform_fee_coin: 600,
         net_coin_amount: 2400,
         coin_amount: 2000,
+        share_percentage: 100,
+        available_at: new Date(),
       });
 
       const result = await adminFinanceService.getFinanceSummary();
 
-      // 3000 + 2000 = 5000
       expect(result.total_revenue_all_time_coin).toBe(5000);
     });
 
@@ -219,7 +189,6 @@ describe("Admin Finance Service", () => {
 
       const result = await adminFinanceService.getFinanceSummary();
 
-      // Only completed: 500000
       expect(result.total_withdrawn_vnd).toBe(500000);
     });
 
@@ -311,7 +280,7 @@ describe("Admin Finance Service", () => {
       expect(mangakaRole.pending_balance_coin).toBe(0);
     });
 
-    test("10. total_circulation_coin = sum of all role balances", async () => {
+    test("10. total_circulation_coin = sum of all role balances (pending+available for creators)", async () => {
       const User = require("../models/User");
       const Wallet = require("../models/Wallet");
 
@@ -347,8 +316,35 @@ describe("Admin Finance Service", () => {
 
       const result = await adminFinanceService.getRevenueByRole();
 
-      // 10000 + 5000 + 8000 + 3000 = 26000
+      // 10000 + 5000 + 8000 + 3000 = 26000 (pending + available for each creator)
       expect(result.total_circulation_coin).toBe(26000);
+    });
+
+    test("10b. current_balance_coin = pending + available per creator (NOT balance)", async () => {
+      const User = require("../models/User");
+      const Wallet = require("../models/Wallet");
+
+      const mangaka = await User.create({
+        username: "cur_mangaka",
+        password: "password123",
+        full_name: "CurrentBalance Mangaka",
+        email: "cur_mangaka@test.com",
+        role: "Mangaka",
+      });
+
+      await Wallet.create({
+        user_id: mangaka._id,
+        balance: 50000, // Reader-style balance — should NOT count for creator
+        available_balance: 10000,
+        pending_balance: 5000,
+      });
+
+      const result = await adminFinanceService.getRevenueByRole();
+      const m = result.roles.find((r) => r.role === "Mangaka");
+      // current_balance = pending + available = 5000 + 10000 = 15000
+      // (NOT balance + available = 60000)
+      expect(m.current_balance_coin).toBe(15000);
+      expect(m.pending_balance_coin).toBe(5000);
     });
   });
 
@@ -368,9 +364,9 @@ describe("Admin Finance Service", () => {
     });
 
     test("13. Throws error for invalid period", async () => {
-      await expect(adminFinanceService.getRevenueTimeline("invalid")).rejects.toThrow(
-        "Invalid period"
-      );
+      await expect(
+        adminFinanceService.getRevenueTimeline("invalid")
+      ).rejects.toThrow("Invalid period");
     });
 
     test("14. net_flow_coin = revenue - withdrawal", async () => {
@@ -397,6 +393,8 @@ describe("Admin Finance Service", () => {
         platform_fee_coin: 1000,
         net_coin_amount: 4000,
         coin_amount: 3000,
+        share_percentage: 100,
+        available_at: new Date(),
       });
 
       await Withdrawal.create({
@@ -453,6 +451,8 @@ describe("Admin Finance Service", () => {
         platform_fee_coin: 1000,
         net_coin_amount: 4000,
         coin_amount: 3000,
+        share_percentage: 100,
+        available_at: new Date(),
       });
 
       await Revenue.create({
@@ -466,6 +466,8 @@ describe("Admin Finance Service", () => {
         platform_fee_coin: 600,
         net_coin_amount: 2400,
         coin_amount: 1500,
+        share_percentage: 100,
+        available_at: new Date(),
       });
 
       const result = await adminFinanceService.getTopEarners({ role: "Mangaka" });
@@ -485,17 +487,24 @@ describe("Admin Finance Service", () => {
       const User = require("../models/User");
       const Revenue = require("../models/Revenue");
 
+      // Bulk insert để tăng tốc (test trước chậm vì 60 insert tuần tự).
+      const usersToInsert = [];
+      const revenuesToInsert = [];
+      const now = new Date();
       for (let i = 0; i < 60; i++) {
-        const user = await User.create({
+        const userId = new mongoose.Types.ObjectId();
+        usersToInsert.push({
+          _id: userId,
           username: `user_${i}`,
           password: "password123",
           full_name: `User ${i}`,
           email: `user${i}@test.com`,
           role: "Mangaka",
+          createdAt: now,
+          updatedAt: now,
         });
-
-        await Revenue.create({
-          user_id: user._id,
+        revenuesToInsert.push({
+          user_id: userId,
           user_role: "Mangaka",
           series_id: new mongoose.Types.ObjectId(),
           chapter_id: new mongoose.Types.ObjectId(),
@@ -505,16 +514,20 @@ describe("Admin Finance Service", () => {
           platform_fee_coin: 200,
           net_coin_amount: 800,
           coin_amount: 500 + i * 100,
+          share_percentage: 100,
+          available_at: now,
+          createdAt: now,
+          updatedAt: now,
         });
       }
+      await User.insertMany(usersToInsert);
+      await Revenue.insertMany(revenuesToInsert);
 
       const result = await adminFinanceService.getTopEarners();
 
-      // Should be limited to 10 by default
       expect(result.earners.length).toBe(10);
 
       const maxResult = await adminFinanceService.getTopEarners({ limit: 100 });
-      // Should be capped at 50
       expect(maxResult.earners.length).toBe(50);
     });
 
@@ -549,6 +562,8 @@ describe("Admin Finance Service", () => {
         platform_fee_coin: 200,
         net_coin_amount: 800,
         coin_amount: 1000,
+        share_percentage: 100,
+        available_at: new Date(),
       });
 
       await Revenue.create({
@@ -562,6 +577,8 @@ describe("Admin Finance Service", () => {
         platform_fee_coin: 1000,
         net_coin_amount: 4000,
         coin_amount: 5000,
+        share_percentage: 100,
+        available_at: new Date(),
       });
 
       const result = await adminFinanceService.getTopEarners();
@@ -582,7 +599,6 @@ describe("Admin Finance Service", () => {
         role: "Mangaka",
       });
 
-      // Create revenue in 2 different months
       const now = new Date();
       const lastMonth = new Date(now.getFullYear(), now.getMonth() - 1, 15);
 
@@ -597,6 +613,8 @@ describe("Admin Finance Service", () => {
         platform_fee_coin: 1000,
         net_coin_amount: 4000,
         coin_amount: 6000,
+        share_percentage: 100,
+        available_at: now,
         createdAt: now,
       });
 
@@ -611,14 +629,58 @@ describe("Admin Finance Service", () => {
         platform_fee_coin: 600,
         net_coin_amount: 2400,
         coin_amount: 4000,
+        share_percentage: 100,
+        available_at: lastMonth,
         createdAt: lastMonth,
       });
 
       const result = await adminFinanceService.getTopEarners();
 
-      // 10000 total / 2 months = 5000
       expect(result.earners[0].avg_monthly_revenue_coin).toBe(5000);
-      expect(Number.isInteger(result.earners[0].avg_monthly_revenue_coin)).toBe(true);
+      expect(Number.isInteger(result.earners[0].avg_monthly_revenue_coin)).toBe(
+        true
+      );
+    });
+
+    test("20b. current_balance_coin = pending + available (chuẩn hoá v2)", async () => {
+      const User = require("../models/User");
+      const Wallet = require("../models/Wallet");
+      const Revenue = require("../models/Revenue");
+
+      const u = await User.create({
+        username: "cbtest",
+        password: "password123",
+        full_name: "CB Test",
+        email: "cbtest@test.com",
+        role: "Mangaka",
+      });
+
+      await Wallet.create({
+        user_id: u._id,
+        balance: 999, // should NOT count for creator's current_balance
+        pending_balance: 200,
+        available_balance: 300,
+        total_revenue: 500,
+      });
+
+      await Revenue.create({
+        user_id: u._id,
+        user_role: "Mangaka",
+        series_id: new mongoose.Types.ObjectId(),
+        chapter_id: new mongoose.Types.ObjectId(),
+        purchased_chapter_id: new mongoose.Types.ObjectId(),
+        reader_id: new mongoose.Types.ObjectId(),
+        gross_coin_amount: 1000,
+        platform_fee_coin: 200,
+        net_coin_amount: 800,
+        coin_amount: 500,
+        share_percentage: 100,
+        available_at: new Date(),
+      });
+
+      const result = await adminFinanceService.getTopEarners();
+      expect(result.earners[0].current_balance_coin).toBe(500); // 200 + 300
+      expect(result.earners[0].pending_balance_coin).toBe(200);
     });
   });
 });

@@ -28,8 +28,13 @@ function coinToUnits(coinValue) {
 }
 
 function unitsToCoinString(units) {
-  assertCoinUnits(units);
-  return `${Math.floor(units / COIN_UNIT_SCALE)}.${String(units % COIN_UNIT_SCALE).padStart(2, "0")}`;
+  if (!Number.isSafeInteger(units)) {
+    throw coinError("Invalid coin_units", "invalid_coin_units");
+  }
+  // Cho phép số âm (vd net_flow_coin có thể < 0). Phần thập phân vẫn giữ 2 chữ số.
+  const sign = units < 0 ? "-" : "";
+  const abs = Math.abs(units);
+  return `${sign}${Math.floor(abs / COIN_UNIT_SCALE)}.${String(abs % COIN_UNIT_SCALE).padStart(2, "0")}`;
 }
 
 function unitsToVnd(units, coinToVndRate) {
@@ -101,6 +106,8 @@ const DISPLAY_FIELDS = {
   total_revenue: "total_revenue_coin",
   total_withdrawn: "total_withdrawn_coin",
   coin_amount: "coin_amount_coin",
+  // Alias canonical display cho coin_amount — FE muốn key nào cũng có.
+  // coin_amount_coin_display LUÔN được sinh song song với coin_amount_coin.
   bonus_coin: "bonus_coin_display",
   total_coin: "total_coin_display",
   coin_price: "coin_price_coin",
@@ -130,17 +137,21 @@ const DISPLAY_FIELDS = {
   total_refund: "total_refund_display",
   total_coin_received: "total_coin_received_display",
   // Admin Finance fields
-  total_circulation_coin: "total_circulation_coin_display",
-  total_revenue_all_time_coin: "total_revenue_all_time_coin_display",
-  total_platform_coin: "total_platform_coin_display",
-  total_earnings_coin: "total_earnings_coin_display",
-  current_balance_coin: "current_balance_coin_display",
   pending_balance_coin: "pending_balance_coin_display",
   revenue_coin: "revenue_coin_display",
   withdrawal_coin: "withdrawal_coin_display",
   net_flow_coin: "net_flow_coin_display",
   total_revenue_coin: "total_revenue_coin_display",
   avg_monthly_revenue_coin: "avg_monthly_revenue_coin_display",
+  // Revenue Analytics fields (month/quarter/year) — endpoint /admin/finance/revenue-analytics
+  gross_revenue_coin: "gross_revenue_coin_display",
+  creator_revenue_coin: "creator_revenue_coin_display",
+  mangaka_revenue_coin: "mangaka_revenue_coin_display",
+  assistant_revenue_coin: "assistant_revenue_coin_display",
+  // platform_fee_coin đã có entry ở trên map sang legacy "platform_fee" (giữ
+  // backward compat cho các endpoint cũ). Endpoint revenue-analytics mới cần
+  // alias canonical "platform_fee_coin_display" — được service gắn explicit
+  // sau khi gọi formatCoinResponse (xem routes/adminFinance.js#revenue-analytics).
   // Withdrawal stats fields
   pending_coin: "pending_coin_display",
   approved_coin: "approved_coin_display",
@@ -148,6 +159,11 @@ const DISPLAY_FIELDS = {
   rejected_coin: "rejected_coin_display",
   cancelled_coin: "cancelled_coin_display",
 };
+
+// Fields có thể âm (delta, flow). Vẫn phải là integer nhưng không assert >= 0.
+const SIGNED_COIN_FIELDS = new Set([
+  "net_flow_coin",
+]);
 
 function formatCoinResponse(payload) {
   const visit = (input) => {
@@ -177,8 +193,22 @@ function formatCoinResponse(payload) {
     }
     for (const [rawField, displayField] of Object.entries(DISPLAY_FIELDS)) {
       if (Object.prototype.hasOwnProperty.call(source, rawField) && source[rawField] !== null) {
-        assertCoinUnits(source[rawField], rawField);
+        // Signed fields (delta) chỉ yêu cầu safe integer, cho phép âm.
+        if (SIGNED_COIN_FIELDS.has(rawField)) {
+          if (!Number.isSafeInteger(source[rawField])) {
+            throw coinError(`Invalid ${rawField}`, "invalid_coin_units");
+          }
+        } else {
+          assertCoinUnits(source[rawField], rawField);
+        }
         value[displayField] = unitsToCoinString(source[rawField]);
+        // Canonical alias: mọi response có *_coin cũng có *_coin_display.
+        if (displayField.endsWith("_coin") && !displayField.endsWith("_coin_display")) {
+          const altName = `${displayField}_display`;
+          if (!Object.prototype.hasOwnProperty.call(value, altName)) {
+            value[altName] = value[displayField];
+          }
+        }
         hasCoin = true;
         hasDirectCoin = true;
       }
