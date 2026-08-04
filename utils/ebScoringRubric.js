@@ -625,36 +625,258 @@ function getDefaultRubric() {
   return buildRubricEntry("__default__", "All ages", entry);
 }
 
+// ─── Normalize genre key (trim + lowercase) ───────────────────────────────────
+function normalizeGenreKey(genre) {
+  if (typeof genre !== "string") return "";
+  return genre.trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+// ─── Find family for a single genre (case-insensitive + trim) ─────────────────
+// Returns { family, matched_genre } — matched_genre là key gốc đã matched
+function findFamilyForGenre(genre) {
+  if (typeof genre !== "string" || !genre.trim()) {
+    return { family: null, matched_genre: null, normalized: "" };
+  }
+  const original = genre.trim();
+
+  // 1. Exact match (nhanh nhất, tránh overhead)
+  if (GENRE_TO_FAMILY[original]) {
+    return { family: GENRE_TO_FAMILY[original], matched_genre: original, normalized: normalizeGenreKey(original) };
+  }
+
+  // 2. Case-insensitive match (handle "hành động" vs "Hành Động")
+  const normalized = normalizeGenreKey(original);
+  for (const [key, family] of Object.entries(GENRE_TO_FAMILY)) {
+    if (normalizeGenreKey(key) === normalized) {
+      return { family, matched_genre: key, normalized };
+    }
+  }
+
+  return { family: null, matched_genre: null, normalized };
+}
+
+// ─── Resolve all families from multi-genre array ──────────────────────────────
+// Multi-genre: 1 series có thể thuộc nhiều families (vd ["Hành Động", "Lãng Mạn"])
+// Returns unique families theo thứ tự gặp trong input.
+function getAllFamiliesForGenres(genres) {
+  if (!Array.isArray(genres) || genres.length === 0) return [];
+
+  const seen = new Set();
+  const families = [];
+  const mapping = [];
+
+  for (const g of genres) {
+    const { family, matched_genre, normalized } = findFamilyForGenre(g);
+    mapping.push({
+      input_genre:    g,
+      matched_genre:  matched_genre,
+      normalized,
+      family,
+    });
+    if (family && !seen.has(family)) {
+      seen.add(family);
+      families.push(family);
+    }
+  }
+
+  return { families, mapping };
+}
+
+// ─── Validate age rating value ─────────────────────────────────────────────────
+// Returns { valid, normalized, suggested } 
+// normalized: key chuẩn trong WEIGHT_MATRIX nếu match
+function validateAgeRating(ageRating) {
+  if (typeof ageRating !== "string" || !ageRating.trim()) {
+    return { valid: false, normalized: null, suggested: "All ages" };
+  }
+  const trimmed = ageRating.trim();
+
+  // Exact match
+  if (WEIGHT_MATRIX_AGE_KEYS.includes(trimmed)) {
+    return { valid: true, normalized: trimmed, suggested: trimmed };
+  }
+
+  // Case-insensitive match
+  const normalized = trimmed.toLowerCase();
+  for (const key of WEIGHT_MATRIX_AGE_KEYS) {
+    if (key.toLowerCase() === normalized) {
+      return { valid: true, normalized: key, suggested: key };
+    }
+  }
+
+  // Common abbreviations / variations
+  const VARIANTS = {
+    "all":          "All ages",
+    "13+":          "Teens 13+",
+    "teen":         "Teens 13+",
+    "teens":        "Teens 13+",
+    "17+":          "Mature 17+",
+    "mature":       "Mature 17+",
+    "18+":          "Adults Only 18+",
+    "adults":       "Adults Only 18+",
+    "adult":        "Adults Only 18+",
+  };
+  for (const [variant, canonical] of Object.entries(VARIANTS)) {
+    if (normalized === variant || normalized === variant.replace(/\s+/g, "_") || normalized === variant.replace(/\+/g, "")) {
+      return { valid: false, normalized: null, suggested: canonical };
+    }
+  }
+
+  return { valid: false, normalized: null, suggested: "All ages" };
+}
+
+// Computed once at module load — keys ở tất cả age_ratings trong matrix
+const WEIGHT_MATRIX_AGE_KEYS = Array.from(
+  new Set(
+    Object.values(WEIGHT_MATRIX).flatMap((ages) => Object.keys(ages))
+  )
+);
+
+// ─── Validate series for rubric suggestion ────────────────────────────────────
+// Returns { valid, errors[], warnings[], can_suggest, normalized: {...} }
+function validateSeriesForRubric(series) {
+  const errors = [];
+  const warnings = [];
+  const normalized = {
+    raw_genres:      Array.isArray(series?.genre) ? series.genre : [],
+    raw_age_rating:  series?.age_rating || null,
+    matched_genres:  [],
+    matched_families: [],
+    unmatched_genres: [],
+    normalized_age_rating: null,
+  };
+
+  // 1. Validate genre
+  if (!Array.isArray(series?.genre) || series.genre.length === 0) {
+    errors.push({
+      code:    "NO_GENRE",
+      message: "Series chưa có genre — BE không thể gợi ý rubric theo thể loại.",
+    });
+  } else {
+    for (const g of series.genre) {
+      const { family, matched_genre, normalized: gNorm } = findFamilyForGenre(g);
+      if (family) {
+        normalized.matched_genres.push({ input: g, matched: matched_genre, family });
+        if (!normalized.matched_families.includes(family)) {
+          normalized.matched_families.push(family);
+        }
+      } else {
+        normalized.unmatched_genres.push({ input: g, normalized: gNorm });
+      }
+    }
+
+    if (normalized.matched_families.length === 0) {
+      errors.push({
+        code:    "NO_MATCHING_FAMILY",
+        message: `Không genre nào khớp với ma trận rubric: ${normalized.unmatched_genres.map((u) => u.input).join(", ")}`,
+      });
+    } else if (normalized.unmatched_genres.length > 0) {
+      warnings.push({
+        code:    "PARTIAL_GENRE_MATCH",
+        message: `Một số genre chưa có trong ma trận: ${normalized.unmatched_genres.map((u) => u.input).join(", ")}. Sẽ dùng các genre còn lại.`,
+        unmatched: normalized.unmatched_genres,
+      });
+    }
+  }
+
+  // 2. Validate age_rating
+  const ageCheck = validateAgeRating(series?.age_rating);
+  if (!ageCheck.valid) {
+    errors.push({
+      code:    "INVALID_AGE_RATING",
+      message: `age_rating "${series?.age_rating}" không hợp lệ. Gợi ý dùng: "${ageCheck.suggested}".`,
+      suggested: ageCheck.suggested,
+    });
+  } else if (ageCheck.normalized !== series?.age_rating) {
+    warnings.push({
+      code:    "AGE_RATING_NORMALIZED",
+      message: `age_rating "${series?.age_rating}" đã được chuẩn hóa thành "${ageCheck.normalized}".`,
+    });
+  }
+  normalized.normalized_age_rating = ageCheck.normalized;
+
+  // 3. Validate family × age_rating combination
+  if (normalized.matched_families.length > 0 && ageCheck.normalized) {
+    const invalidCombos = [];
+    for (const fam of normalized.matched_families) {
+      const entry = WEIGHT_MATRIX[fam]?.[ageCheck.normalized];
+      if (!entry) {
+        invalidCombos.push({ family: fam, age_rating: ageCheck.normalized });
+      }
+    }
+    if (invalidCombos.length === normalized.matched_families.length) {
+      // All families × age_rating đều null → không accept submission
+      errors.push({
+        code:    "ALL_FAMILIES_UNSUPPORTED_FOR_AGE",
+        message: `Không family nào trong [${normalized.matched_families.join(", ")}] hỗ trợ age_rating "${ageCheck.normalized}". EB cần chọn rubric khác.`,
+        invalid_combinations: invalidCombos,
+      });
+    }
+  }
+
+  return {
+    valid:        errors.length === 0,
+    can_suggest:  errors.length === 0,
+    errors,
+    warnings,
+    normalized,
+  };
+}
+
 // ─── Get Suggested Rubric for a Series ───────────────────────────────────────
 function getSuggestedRubricForSeries(series) {
-  const primaryGenre = series.genre && series.genre.length > 0 ? series.genre[0] : null;
-  const age_rating = series.age_rating || "All ages";
+  const validation = validateSeriesForRubric(series);
 
-  if (!primaryGenre) {
-    return { ...getDefaultRubric(), suggested: false, reason: "Không có genre" };
-  }
-
-  const family = GENRE_TO_FAMILY[primaryGenre];
-  if (!family) {
-    return { ...getDefaultRubric(), suggested: false, reason: `Genre "${primaryGenre}" không có trong ma trận` };
-  }
-
-  const entry = WEIGHT_MATRIX[family]?.[age_rating];
-  if (!entry) {
-    // Genre × Age không hợp lệ → fallback default
+  // Không thể gợi ý → fallback default + reason
+  if (!validation.can_suggest) {
+    const primaryError = validation.errors[0];
     return {
       ...getDefaultRubric(),
       suggested: false,
-      reason: `Genre "${primaryGenre}" không phù hợp với "${age_rating}". Vui lòng chọn rubric khác.`,
+      reason: primaryError.message,
+      validation,
     };
   }
 
-  const rubric = buildRubricEntry(family, age_rating, entry);
+  const { matched_families, normalized_age_rating, raw_genres } = validation.normalized;
+
+  // Primary suggestion: family[0] × age_rating
+  const primaryFamily = matched_families[0];
+  const primaryEntry = WEIGHT_MATRIX[primaryFamily]?.[normalized_age_rating];
+
+  if (!primaryEntry) {
+    // Family đầu hợp lệ nhưng age không khớp → fallback default
+    return {
+      ...getDefaultRubric(),
+      suggested: false,
+      reason: `Family "${primaryFamily}" không hỗ trợ age_rating "${normalized_age_rating}"`,
+      validation,
+    };
+  }
+
+  const primaryRubric = buildRubricEntry(primaryFamily, normalized_age_rating, primaryEntry);
+
+  // Same-family alternatives: cùng family, các age_rating khác
+  const sameFamilyAlternatives = listRubricsForFamily(primaryFamily)
+    .filter((r) => r.id !== primaryRubric.id);
+
+  // Cross-family alternatives: các family khác × cùng age_rating
+  const crossFamilyAlternatives = [];
+  for (const fam of matched_families.slice(1)) {
+    const entry = WEIGHT_MATRIX[fam]?.[normalized_age_rating];
+    if (entry) {
+      crossFamilyAlternatives.push(buildRubricEntry(fam, normalized_age_rating, entry));
+    }
+  }
+
   return {
-    ...rubric,
+    ...primaryRubric,
     suggested: true,
-    source_genre: primaryGenre,
-    source_family: family,
+    source_genres:    raw_genres,
+    source_family:   primaryFamily,
+    same_family_alternatives:    sameFamilyAlternatives,
+    cross_family_alternatives:   crossFamilyAlternatives,
+    validation,
   };
 }
 
@@ -835,6 +1057,11 @@ module.exports = {
   getSuggestedRubricForSeries,
   listAllRubrics,
   listRubricsForFamily,
+  normalizeGenreKey,
+  findFamilyForGenre,
+  getAllFamiliesForGenres,
+  validateAgeRating,
+  validateSeriesForRubric,
   checkAgeSafety,
   validateContentLevels,
   computeWeightedCouncilAverage,

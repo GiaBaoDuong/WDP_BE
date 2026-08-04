@@ -45,6 +45,11 @@ const {
   AGE_SAFETY_FIELDS,
   AGE_SAFETY_LEVELS,
   EXTENSION_CRITERIA,
+  findFamilyForGenre,
+  normalizeGenreKey,
+  validateAgeRating,
+  validateSeriesForRubric,
+  WEIGHT_MATRIX,
 } = require("../utils/ebScoringRubric");
 
 // ─── Helper: phân loại kết quả theo phổ điểm ────────────────────────────────
@@ -2299,15 +2304,33 @@ router.get("/rubrics", authMiddleware, requireEB, async (req, res, next) => {
 
 // ─── GET /eb-evaluations/suggest-rubric/:seriesId ─────────────────────────────
 /**
- * Gợi ý rubric cho một series cụ thể dựa trên genre[0] + age_rating.
+ * Gợi ý rubric cho một series cụ thể dựa trên genre[] + age_rating.
+ *
+ * Hỗ trợ multi-genre: BE sẽ thử tất cả genre trong `series.genre`,
+ * sau đó trả về rubric theo family[0] (theo thứ tự trong mảng) + alternatives.
+ *
+ * Hỗ trợ debug mode (?debug=true) — trả về raw DB values cho FE inspect.
+ *
+ * Query:
+ *   debug    (optional, "true")  — include raw input + validation details
  *
  * Response:
  *   {
  *     success: true,
  *     data: {
- *       suggested_rubric: { id, family, age_rating, weights, criteria, total_weight, ... },
- *       series_info: { genre, age_rating, name },
- *       alternatives: [...]  // các rubric khác cùng family
+ *       suggested_rubric: {
+ *         id, family, age_rating, weights, criteria, total_weight,
+ *         has_extensions, extensions,
+ *         source_genres, source_family,
+ *         same_family_alternatives,    // cùng family, age_rating khác
+ *         cross_family_alternatives,   // family khác, cùng age_rating
+ *         suggested: true | false,
+ *         reason?: string,
+ *       },
+ *       validation: { valid, can_suggest, errors, warnings, normalized },
+ *       series_info: { _id, name, genre, age_rating },
+ *       alternatives: [...],          // gộp same + cross family
+ *       debug?: { raw_input, lookup_trace }  // chỉ khi debug=true
  *     }
  *   }
  */
@@ -2317,22 +2340,59 @@ router.get("/suggest-rubric/:seriesId", authMiddleware, requireEB, async (req, r
     if (!series) return next(new AppError("Series not found", 404));
 
     const suggested = getSuggestedRubricForSeries(series);
-    const family = suggested.family !== "__default__" ? suggested.family : null;
-    const alternatives = family ? listRubricsForFamily(family) : [];
+    const validation = suggested.validation;
 
-    return res.json({
-      success: true,
-      data: {
-        suggested_rubric: suggested,
-        series_info: {
-          _id:          series._id,
-          name:         series.name,
-          genre:        series.genre,
-          age_rating:   series.age_rating,
-        },
-        alternatives: alternatives.filter((r) => r.id !== suggested.id),
+    // Gộp same + cross family alternatives, loại bỏ primary
+    const sameFamily = suggested.same_family_alternatives || [];
+    const crossFamily = suggested.cross_family_alternatives || [];
+    const allAlternatives = [...sameFamily, ...crossFamily].filter(
+      (r) => r.id !== suggested.id
+    );
+
+    const responseData = {
+      suggested_rubric: suggested,
+      validation,
+      series_info: {
+        _id:        series._id,
+        name:       series.name,
+        genre:      series.genre,
+        age_rating: series.age_rating,
       },
-    });
+      alternatives: allAlternatives,
+    };
+
+    // Debug mode: trả raw values + lookup trace
+    if (req.query.debug === "true") {
+      const genreTrace = (series.genre || []).map((g) => {
+        const result = findFamilyForGenre(g);
+        return {
+          input_genre:   g,
+          normalized:    normalizeGenreKey(g),
+          matched_genre: result.matched_genre,
+          family:        result.family,
+          match_type:    result.matched_genre === g ? "exact" : "normalized",
+        };
+      });
+
+      const ageCheck = validateAgeRating(series.age_rating);
+      responseData.debug = {
+        raw_input: {
+          genre:      series.genre,
+          age_rating: series.age_rating,
+        },
+        lookup_trace: {
+          genre_resolution: genreTrace,
+          age_rating_check: ageCheck,
+          matrix_lookup:    validation.normalized.matched_families.map((fam) => ({
+            family:     fam,
+            entry:      WEIGHT_MATRIX[fam]?.[validation.normalized.normalized_age_rating] || null,
+            entry_keys: WEIGHT_MATRIX[fam] ? Object.keys(WEIGHT_MATRIX[fam]) : [],
+          })),
+        },
+      };
+    }
+
+    return res.json({ success: true, data: responseData });
   } catch (error) {
     next(error);
   }
