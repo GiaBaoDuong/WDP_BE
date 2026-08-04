@@ -780,13 +780,15 @@ router.post(
 
       // Chỉ cho phép quick-revision khi:
       // - chapter đang ở trạng thái revision (TE_revision, EB_revision, revision_requested), HOẶC
-      // - series bị EB reject (series.status = "rejected")
+      // - series bị EB reject (series.status = "rejected"), HOẶC
+      // - series đang revision (series.status = "revision")
       const revisionStatuses = [CHAPTER_STATUS.EB_REVISION, CHAPTER_STATUS.TE_REVISION, "revision_requested"];
-      const isSeriesRejected = chapter.series_id && chapter.series_id.status === "rejected";
-      if (!revisionStatuses.includes(chapter.status) && !isSeriesRejected) {
+      const isSeriesRejectedOrRevision = chapter.series_id && 
+        (chapter.series_id.status === "rejected" || chapter.series_id.status === "revision");
+      if (!revisionStatuses.includes(chapter.status) && !isSeriesRejectedOrRevision) {
         return next(
           new AppError(
-            `Chỉ cho phép quick-revision khi chapter đang ở trạng thái revision hoặc series bị EB reject (hiện tại: chapter="${chapter.status}", series="${chapter.series_id?.status || 'unknown'}")`,
+            `Chỉ cho phép quick-revision khi chapter đang ở trạng thái revision hoặc series bị EB reject/revision (hiện tại: chapter="${chapter.status}", series="${chapter.series_id?.status || 'unknown'}")`,
             400
           )
         );
