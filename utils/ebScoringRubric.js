@@ -237,6 +237,287 @@ const EXTENSION_CRITERIA = {
     description: "Anti-hero, morally gray, nuanced characters",
     for_families: ["Mature-Adult"],
   },
+
+  // ─── Sports ──────────────────────────────────────────────────────────────
+  sports_specificity: {
+    key:         "sports_specificity",
+    label:       "Chuyên môn thể thao",
+    label_en:    "Sports Specificity",
+    description: "Kiến thức sport sâu, accurate gameplay, rules",
+    for_families: ["Sports"],
+  },
+  athletic_determination: {
+    key:         "athletic_determination",
+    label:       "Quyết tâm thể thao",
+    label_en:    "Athletic Determination",
+    description: "Training, perseverance, spirit of competition",
+    for_families: ["Sports"],
+  },
+  team_dynamics: {
+    key:         "team_dynamics",
+    label:       "Động lực đội nhóm",
+    label_en:    "Team Dynamics",
+    description: "Rivalry, camaraderie, coach-student relationship",
+    for_families: ["Sports"],
+  },
+  match_tension: {
+    key:         "match_tension",
+    label:       "Căng thẳng trận đấu",
+    label_en:    "Match Tension",
+    description: "Drama of competition, close matches, comebacks, upsets",
+    for_families: ["Sports"],
+  },
+  injury_recovery_realism: {
+    key:         "injury_recovery_realism",
+    label:       "Chấn thương & Hồi phục",
+    label_en:    "Injury/Recovery Realism",
+    description: "Training arcs, injury recovery realistic",
+    for_families: ["Sports"],
+  },
+
+  // ─── Mystery-Thriller ───────────────────────────────────────────────────
+  clue_fairness: {
+    key:         "clue_fairness",
+    label:       "Công bằng manh mối",
+    label_en:    "Clue Fairness",
+    description: "Reader có cơ hội giải trước, không cheating",
+    for_families: ["Mystery-Thriller"],
+  },
+  red_herring_balance: {
+    key:         "red_herring_balance",
+    label:       "Cân bằng manh mối giả",
+    label_en:    "Red Herring Balance",
+    description: "Đủ để confuse, không quá nhiều để frustrate",
+    for_families: ["Mystery-Thriller"],
+  },
+  detective_reasoning: {
+    key:         "detective_reasoning",
+    label:       "Lập luận thám tử",
+    label_en:    "Detective Reasoning",
+    description: "Logic deduction, not lucky guesses",
+    for_families: ["Mystery-Thriller"],
+  },
+  investigation_logic: {
+    key:         "investigation_logic",
+    label:       "Logic điều tra",
+    label_en:    "Investigation Logic",
+    description: "Tiến trình điều tra có logic, sequence đúng",
+    for_families: ["Mystery-Thriller"],
+  },
+  reveal_impact: {
+    key:         "reveal_impact",
+    label:       "Tác động của tiết lộ",
+    label_en:    "Revelation Impact",
+    description: "Plot twist có weight, satisfying payoff",
+    for_families: ["Mystery-Thriller"],
+  },
+
+  // ─── Historical ─────────────────────────────────────────────────────────
+  historical_accuracy: {
+    key:         "historical_accuracy",
+    label:       "Độ chính xác lịch sử",
+    label_en:    "Historical Accuracy",
+    description: "Events, figures, setting đúng thời đại",
+    for_families: ["Historical"],
+  },
+  period_immersion: {
+    key:         "period_immersion",
+    label:       "Đắm chìm thời đại",
+    label_en:    "Period Immersion",
+    description: "Cảm giác được đưa về quá khứ, atmosphere",
+    for_families: ["Historical"],
+  },
+  costume_propaganda: {
+    key:         "costume_propaganda",
+    label:       "Trang phục & Kiến trúc",
+    label_en:    "Costume & Architecture",
+    description: "Clothing, weapons, architecture đúng period",
+    for_families: ["Historical"],
+  },
+  political_context: {
+    key:         "political_context",
+    label:       "Bối cảnh chính trị",
+    label_en:    "Political/Social Context",
+    description: "War, class struggle, cultural norms đúng thời",
+    for_families: ["Historical"],
+  },
+
+  // ─── Romance-Lifestyle (extensions) ─────────────────────────────────────
+  relationship_pacing: {
+    key:         "relationship_pacing",
+    label:       "Nhịp độ mối quan hệ",
+    label_en:    "Relationship Pacing",
+    description: "Tốc độ phát triển romance, không vội vàng",
+    for_families: ["Romance-Lifestyle"],
+  },
+  confession_moment: {
+    key:         "confession_moment",
+    label:       "Khoảnh khắc thú nhận",
+    label_en:    "Confession Moment",
+    description: "Cảnh tỏ tình, điểm cao trào cảm xúc",
+    for_families: ["Romance-Lifestyle"],
+  },
+  everyday_romance: {
+    key:         "everyday_romance",
+    label:       "Lãng mạn đời thường",
+    label_en:    "Iyashikei Romance",
+    description: "Thú vị từ chi tiết nhỏ, không cần drama lớn",
+    for_families: ["Romance-Lifestyle"],
+  },
+
+  // ─── Horror-Suspense (extensions) ───────────────────────────────────────
+  psychological_horror: {
+    key:         "psychological_horror",
+    label:       "Kinh dị tâm lý",
+    label_en:    "Psychological Horror",
+    description: "Đe dọa từ tâm trí, dread, paranoia, mind games",
+    for_families: ["Horror-Suspense"],
+  },
+  body_horror: {
+    key:         "body_horror",
+    label:       "Kinh dị cơ thể",
+    label_en:    "Body Horror",
+    description: "Biến dạng cơ thể, gross-out có artistic intent",
+    for_families: ["Horror-Suspense"],
+  },
+  creature_design: {
+    key:         "creature_design",
+    label:       "Thiết kế quái vật",
+    label_en:    "Creature Design",
+    description: "Originality, memorability của monster designs",
+    for_families: ["Horror-Suspense"],
+  },
+
+  // ─── Action-Adventure (extensions) ──────────────────────────────────────
+  power_scaling: {
+    key:         "power_scaling",
+    label:       "Thang đo sức mạnh",
+    label_en:    "Power Scaling",
+    description: "Logical progression, không inflation quá nhanh",
+    for_families: ["Action-Adventure"],
+  },
+  strategy_tactics: {
+    key:         "strategy_tactics",
+    label:       "Chiến lược & Chiến thuật",
+    label_en:    "Strategy & Tactics",
+    description: "Sử dụng não, không chỉ brute force",
+    for_families: ["Action-Adventure"],
+  },
+  enemy_design: {
+    key:         "enemy_design",
+    label:       "Thiết kế kẻ địch",
+    label_en:    "Villain/Enemy Design",
+    description: "Đa chiều, đáng ghét, memorable antagonists",
+    for_families: ["Action-Adventure"],
+  },
+
+  // ─── Fantasy-SciFi (extensions) ─────────────────────────────────────────
+  prophecy_destiny: {
+    key:         "prophecy_destiny",
+    label:       "Tiên tri & Số phận",
+    label_en:    "Prophecy & Destiny",
+    description: "Destiny narrative có twist hay cliché",
+    for_families: ["Fantasy-SciFi"],
+  },
+  reincarnation_logic: {
+    key:         "reincarnation_logic",
+    label:       "Logic trùng sinh",
+    label_en:    "Reincarnation Logic",
+    description: "Cơ chế trùng sinh có rõ ràng, fair",
+    for_families: ["Fantasy-SciFi"],
+  },
+  foreshadowing: {
+    key:         "foreshadowing",
+    label:       "Che giấu thông tin",
+    label_en:    "Foreshadowing & Setup",
+    description: "Plot seeds, hints, không deus ex machina",
+    for_families: ["Fantasy-SciFi"],
+  },
+
+  // ─── Drama-SliceOfLife (extensions) ─────────────────────────────────────
+  iyashikei_healing: {
+    key:         "iyashikei_healing",
+    label:       "Giá trị chữa lành",
+    label_en:    "Iyashikei/Healing Aspect",
+    description: "Therapeutic, calming effect",
+    for_families: ["Drama-SliceOfLife"],
+  },
+  ensemble_cast: {
+    key:         "ensemble_cast",
+    label:       "Dàn diễn viên",
+    label_en:    "Ensemble Cast Balance",
+    description: "Mọi nhân vật đều có khoảnh khắc nổi bật",
+    for_families: ["Drama-SliceOfLife"],
+  },
+
+  // ─── Comedy (extensions) ───────────────────────────────────────────────
+  gag_execution: {
+    key:         "gag_execution",
+    label:       "Triển khai gag",
+    label_en:    "Gag Execution",
+    description: "Setup → punchline timing, panel đặt joke chuẩn",
+    for_families: ["Comedy"],
+  },
+  absurdity_logic: {
+    key:         "absurdity_logic",
+    label:       "Logic phi lý",
+    label_en:    "Absurdism Logic",
+    description: "Hài phi lý có internal consistency",
+    for_families: ["Comedy"],
+  },
+  parody_skills: {
+    key:         "parody_skills",
+    label:       "Kỹ năng parody",
+    label_en:    "Parody & Meta Humor",
+    description: "Bắt chước/troll genre khác có thông minh",
+    for_families: ["Comedy"],
+  },
+
+  // ─── Art-Heavy (extensions) ─────────────────────────────────────────────
+  background_detail: {
+    key:         "background_detail",
+    label:       "Chi tiết nền",
+    label_en:    "Background & Environment",
+    description: "Depth, atmospheric backgrounds",
+    for_families: ["Art-Heavy"],
+  },
+  anatomy_proportion: {
+    key:         "anatomy_proportion",
+    label:       "Giải phẫu & Tỉ lệ",
+    label_en:    "Anatomy & Proportion",
+    description: "Correct, stylized anatomy, không lỗi nghiêm trọng",
+    for_families: ["Art-Heavy"],
+  },
+  cinematography: {
+    key:         "cinematography",
+    label:       "Đạo cụ quay phim",
+    label_en:    "Cinematography",
+    description: "Camera angles, panel composition như phim",
+    for_families: ["Art-Heavy"],
+  },
+
+  // ─── Mature-Adult (extensions) ──────────────────────────────────────────
+  psychological_complexity: {
+    key:         "psychological_complexity",
+    label:       "Phức tạp tâm lý",
+    label_en:    "Psychological Depth",
+    description: "Human psyche explored, trauma realism",
+    for_families: ["Mature-Adult"],
+  },
+  moral_ambiguity: {
+    key:         "moral_ambiguity",
+    label:       "Đạo đức mơ hồ",
+    label_en:    "Moral Ambiguity",
+    description: "Không phân biệt trắng/đen rõ ràng",
+    for_families: ["Mature-Adult"],
+  },
+  political_intrigue: {
+    key:         "political_intrigue",
+    label:       "Thâm nhập chính trị",
+    label_en:    "Political/Social Intrigue",
+    description: "Power dynamics, conspiracy, manipulation",
+    for_families: ["Mature-Adult"],
+  },
 };
 
 // ─── Genre → Family Mapping ───────────────────────────────────────────────────
@@ -264,8 +545,6 @@ const GENRE_TO_FAMILY = {
   "Manhua":     "Drama-SliceOfLife",
   "Slice of life": "Drama-SliceOfLife",
   "Nấu Ăn":     "Drama-SliceOfLife",
-  "Thể Thao":   "Drama-SliceOfLife",
-  "Lịch Sử":    "Drama-SliceOfLife",
   // Horror-Suspense
   "Kinh Dị":    "Horror-Suspense",
   "Huyền Bí":   "Horror-Suspense",
@@ -294,7 +573,14 @@ const GENRE_TO_FAMILY = {
   "Harem":               "Mature-Adult",
   "Boylove":             "Mature-Adult",
   "Murim":               "Mature-Adult",
-  "Ngôn Tình":           "Mature-Adult",
+  // Sports
+  "Thể Thao":            "Sports",
+  // Mystery-Thriller
+  "Trinh Thám":          "Mystery-Thriller",
+  "Kinh Dị-Tâm Lý":     "Mystery-Thriller",
+  // Historical
+  "Lịch Sử":            "Historical",
+  "Xuyên Không":        "Historical",
 };
 
 // ─── Age Safety Rules ─────────────────────────────────────────────────────────

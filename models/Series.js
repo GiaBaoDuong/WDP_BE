@@ -8,6 +8,7 @@ const GENRES = [
   "Trùng Sinh", "Game", "Viễn Tưởng", "Khoa Học", "Truyện Màu", "Người Lớn",
   "Boylove", "Hầm Ngục", "Săn Bắn", "Ngôn Từ Nhạy Cảm", "Doujinshi", "Bạo Lực",
   "Ngôn Tình", "Nữ Cường", "Gender Bender", "Murim", "Leo Tháp", "Nấu Ăn",
+  "Trinh Thám", "Kinh Dị-Tâm Lý", "Xuyên Không",
 ];
 
 const seriesSchema = new mongoose.Schema(
