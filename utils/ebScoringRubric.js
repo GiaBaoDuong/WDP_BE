@@ -816,12 +816,16 @@ function parseRubricId(rubricId) {
   const parts = (rubricId || "").split("|");
   if (parts.length !== 2) return null;
 
-  // Convert family: "action-adventure" → "Action-Adventure"
-  // Split on both _ and - to handle hyphenated family names
-  const family = parts[0]
-    .split(/[-_]/)
-    .map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
-    .join("-");
+  // Lookup family theo case-insensitive match với key trong WEIGHT_MATRIX.
+  // Lý do: buildRubricId chỉ toLowerCase() + replace space → underscore,
+  // nên ta không thể round-trip bằng cách split trên [-_] rồi capitalize
+  // (sẽ vỡ với các family có từ ghép viết liền như "Drama-SliceOfLife" → "sliceoflife",
+  // hoặc "Fantasy-SciFi" → "scifi").
+  const familyLower = parts[0].toLowerCase();
+  const familyKey = Object.keys(WEIGHT_MATRIX).find(
+    (k) => k.toLowerCase() === familyLower
+  );
+  if (!familyKey) return null;
 
   // Normalize age rating key
   const ageMap = {
@@ -835,7 +839,7 @@ function parseRubricId(rubricId) {
 
   if (!normalizedAge) return null;
 
-  return { family, age_rating: normalizedAge };
+  return { family: familyKey, age_rating: normalizedAge };
 }
 
 // ─── Get Rubric by ID ─────────────────────────────────────────────────────────
