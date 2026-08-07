@@ -136,10 +136,11 @@ router.get("/dashboard", async (req, res, next) => {
     startDate.setDate(startDate.getDate() - days);
     startDate.setHours(0, 0, 0, 0);
 
-    const [totalUsers, totalSeries, totalChapters, totalViewsAgg, topManga] = await Promise.all([
+    const [totalUsers, totalSeries, totalChapters, totalComments, totalViewsAgg, topManga] = await Promise.all([
       User.countDocuments(),
       Series.countDocuments({ deleted_at: null }),
       Chapter.countDocuments(),
+      Comment.countDocuments(),
       Series.aggregate([
         { $match: { deleted_at: null } },
         { $group: { _id: null, total: { $sum: "$views_count" } } },
@@ -178,7 +179,7 @@ router.get("/dashboard", async (req, res, next) => {
           totalViews: totalViewsAgg[0]?.total || 0,
           totalReads: totalChapters,
           totalUsers,
-          totalComments: 0,
+          totalComments,
         },
         viewsPerDay: viewsPerDay.map((v) => ({ date: v._id, views: v.views })),
         topManga: topManga.map((s) => ({
